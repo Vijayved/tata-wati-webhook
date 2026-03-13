@@ -5,11 +5,11 @@ const bodyParser = require('body-parser');
 const app = express();
 app.use(bodyParser.json());
 
-// WATI Configuration - YEH APNI VALUES DALO
+// WATI Configuration - Aapka sahi token
 const WATI_TOKEN = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1bmlxdWVfbmFtZSI6Im1haWx0b2RyYW1pdEBnbWFpbC5jb20iLCJuYW1laWQiOiJtYWlsdG9kcmFtaXRAZ21haWwuY29tIiwiZW1haWwiOiJtYWlsdG9kcmFtaXRAZ21haWwuY29tIiwiYXV0aF90aW1lIjoiMDMvMTMvMjAyNiAwOTo0NToyMSIsInRlbmFudF9pZCI6IjExMTAiLCJkYl9uYW1lIjoibXQtcHJvZC1UZW5hbnRzIiwiaHR0cDovL3NjaGVtYXMubWljcm9zb2Z0LmNvbS93cy8yMDA4LzA2L2lkZW50aXR5L2NsYWltcy9yb2xlIjoiQURNSU5JU1RSQVRPUiIsImV4cCI6MjUzNDAyMzAwODAwLCJpc3MiOiJDbGFyZV9BSSIsImF1ZCI6IkNsYXJlX0FJIn0.BVwEFq7t4Z9QN3Y1CbXAdR6zgIHqPN83jFtmrNq_2lc';
 const WATI_BASE_URL = 'https://live-mt-server.wati.io/1110';
 
-// Branch Mapping - APNE BRANCH NUMBERS YAHAN DALO
+// Branch Mapping - Aapke branch numbers
 const BRANCHES = {
   '9898989898': 'Satellite',
   '9898989899': 'Naroda',
@@ -17,7 +17,9 @@ const BRANCHES = {
   '9898989896': 'Vadaj'
 };
 
-// 📞 TATA TELE WEBOOK - Miss Call handler
+// ============================================
+// 📞 TATA TELE WEBHOOK - Miss Call Handler
+// ============================================
 app.post('/tata-misscall', async (req, res) => {
   console.log('📞 Miss Call Received:', JSON.stringify(req.body, null, 2));
   
@@ -69,7 +71,9 @@ app.post('/tata-misscall', async (req, res) => {
   }
 });
 
-// 📱 WATI se message bhejne ka function
+// ============================================
+// 📱 WATI SE MESSAGE BHEJNE KA FUNCTION - SAHI V1 ENDPOINT
+// ============================================
 async function sendWATIMessage(whatsappNumber, branch) {
   const messageText = `Namaste! 🙏
 
@@ -85,11 +89,12 @@ Reply karein:
 3 - Executive se baat ke liye`;
 
   try {
-    console.log(`📤 Sending to WATI: ${whatsappNumber}`);
+    console.log(`📤 Sending to WATI (v1): ${whatsappNumber}`);
     
+    // ✅ FIXED: /api/v1/sendSessionMessage/ (pehle v2 tha)
     const response = await axios({
       method: 'POST',
-      url: `${WATI_BASE_URL}/api/v2/sendSessionMessage/${whatsappNumber}`,
+      url: `${WATI_BASE_URL}/api/v1/sendSessionMessage/${whatsappNumber}`,
       headers: {
         'Authorization': WATI_TOKEN,
         'Content-Type': 'application/json'
@@ -101,18 +106,24 @@ Reply karein:
       timeout: 10000 // 10 seconds timeout
     });
     
+    console.log('✅ WATI Response:', response.data);
     return response.data;
     
   } catch (error) {
     console.error('❌ WATI API Error:', error.message);
+    if (error.response) {
+      console.error('❌ Error Details:', JSON.stringify(error.response.data, null, 2));
+    }
     throw error;
   }
 }
 
-// 🧪 TEST ROUTE - Direct WATI test karne ke liye (bina miss call ke)
+// ============================================
+// 🧪 TEST ROUTE - Direct WATI test
+// ============================================
 app.get('/test-wati', async (req, res) => {
-  // Apna WhatsApp number yahan dalo ya URL mein ?number=91XXXXXXXXXX dekar test karo
-  const testNumber = req.query.number || '919876543210'; // ISKO APNE NUMBER SE BADLO
+  // URL mein ?number=919106959092 daal kar test karo
+  const testNumber = req.query.number || '919106959092';
   const testBranch = req.query.branch || 'Test Branch';
   
   console.log(`🧪 TEST ROUTE: Testing WATI with number: ${testNumber}`);
@@ -120,66 +131,131 @@ app.get('/test-wati', async (req, res) => {
   try {
     const result = await sendWATIMessage(testNumber, testBranch);
     
-    res.json({ 
-      success: true, 
-      message: `✅ Test message sent to ${testNumber}`,
-      response: result 
-    });
+    // Send nice HTML response
+    res.send(`
+      <html>
+        <head><title>WATI Test Result</title></head>
+        <body style="font-family: Arial; padding: 20px;">
+          <h2 style="color: green;">✅ Success!</h2>
+          <p>Message sent to: <strong>${testNumber}</strong></p>
+          <p>Branch: <strong>${testBranch}</strong></p>
+          <p>Check your WhatsApp for the test message!</p>
+          <pre style="background: #f4f4f4; padding: 10px; border-radius: 5px;">${JSON.stringify(result, null, 2)}</pre>
+          <p><a href="/">← Back to Home</a></p>
+        </body>
+      </html>
+    `);
   } catch (error) {
-    console.error('❌ Test route error:', error.message);
-    res.json({ 
-      success: false, 
-      error: error.message,
-      details: error.response?.data || 'No additional details'
-    });
+    res.send(`
+      <html>
+        <head><title>WATI Test Result</title></head>
+        <body style="font-family: Arial; padding: 20px;">
+          <h2 style="color: red;">❌ Failed!</h2>
+          <p>Error: <strong>${error.message}</strong></p>
+          <p style="background: #ffeeee; padding: 10px; border-radius: 5px;">
+            ${error.response ? JSON.stringify(error.response.data) : 'No additional details'}
+          </p>
+          <p><a href="/">← Back to Home</a></p>
+        </body>
+      </html>
+    `);
   }
 });
 
-// 🧪 TEST ROUTE 2 - Tata Tele webhook simulate karne ke liye
-app.get('/simulate-misscall', (req, res) => {
-  const testCaller = req.query.caller || '9876543210';
-  const testCalled = req.query.called || '9898989898';
-  
-  // Create a fake Tata Tele request
-  const fakeReq = {
-    body: {
-      caller_id_number: testCaller,
-      call_to_number: testCalled,
-      start_stamp: new Date().toISOString(),
-      call_id: 'TEST_' + Date.now()
-    }
+// ============================================
+// 🧪 DEBUG ROUTE - WATI connection test
+// ============================================
+app.get('/debug-wati', async (req, res) => {
+  const results = {
+    token_valid: !!WATI_TOKEN,
+    token_preview: WATI_TOKEN.substring(0, 20) + '...',
+    base_url: WATI_BASE_URL,
+    tests: {}
   };
   
-  const fakeRes = {
-    json: (data) => {
-      res.json({ simulated: true, result: data });
-    },
-    status: (code) => {
-      console.log(`Status code would be: ${code}`);
-      return fakeRes;
-    }
-  };
+  // Test 1: Get contacts (simple GET request to check token)
+  try {
+    const contactsRes = await axios({
+      method: 'GET',
+      url: `${WATI_BASE_URL}/api/v1/getContacts?pageSize=1`,
+      headers: { 'Authorization': WATI_TOKEN },
+      timeout: 5000
+    });
+    results.tests.getContacts = { 
+      success: true, 
+      status: contactsRes.status,
+      message: 'Token is valid!'
+    };
+  } catch (e) {
+    results.tests.getContacts = { 
+      success: false, 
+      error: e.message, 
+      status: e.response?.status,
+      data: e.response?.data
+    };
+  }
   
-  // Call the miss call handler
-  app.handle(fakeReq, fakeRes, () => {});
-  
-  res.json({ message: 'Simulation triggered, check logs' });
+  res.json(results);
 });
 
-// 🏠 Health check routes
+// ============================================
+// 🏠 HOME PAGE - All endpoints list
+// ============================================
 app.get('/', (req, res) => {
   res.send(`
-    <h1>🚀 Tata-WATI Webhook Server is Running!</h1>
-    <p>Available endpoints:</p>
-    <ul>
-      <li><b>POST /tata-misscall</b> - Tata Tele webhook endpoint</li>
-      <li><b>GET /test-wati?number=91XXXXXXXXXX</b> - Test WATI directly</li>
-      <li><b>GET /simulate-misscall?caller=9876543210&called=9898989898</b> - Simulate miss call</li>
-      <li><b>GET /health</b> - Health check</li>
-    </ul>
+    <html>
+      <head>
+        <title>Tata-WATI Webhook</title>
+        <style>
+          body { font-family: Arial; padding: 30px; background: #f5f5f5; }
+          .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+          h1 { color: #333; }
+          .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-left: 4px solid #007bff; border-radius: 4px; }
+          .method { font-weight: bold; color: #007bff; }
+          .url { font-family: monospace; background: #eee; padding: 3px 6px; border-radius: 3px; }
+          .test-btn { background: #28a745; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; text-decoration: none; display: inline-block; margin-top: 5px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>🚀 Tata-WATI Webhook Server</h1>
+          <p>Your server is running successfully!</p>
+          
+          <h2>📌 Available Endpoints:</h2>
+          
+          <div class="endpoint">
+            <div><span class="method">POST</span> <span class="url">/tata-misscall</span></div>
+            <small>Tata Tele webhook endpoint - Miss call yahan aayegi</small>
+          </div>
+          
+          <div class="endpoint">
+            <div><span class="method">GET</span> <span class="url">/test-wati?number=919106959092</span></div>
+            <small>Direct WATI test - Apna number daal kar try karo</small><br>
+            <a href="/test-wati?number=919106959092" class="test-btn">🔍 Test with your number</a>
+          </div>
+          
+          <div class="endpoint">
+            <div><span class="method">GET</span> <span class="url">/debug-wati</span></div>
+            <small>Check WATI connection and token validity</small><br>
+            <a href="/debug-wati" class="test-btn">🔧 Run Debug</a>
+          </div>
+          
+          <div class="endpoint">
+            <div><span class="method">GET</span> <span class="url">/health</span></div>
+            <small>Health check endpoint</small>
+          </div>
+          
+          <hr>
+          <p style="color: #666;">Server time: ${new Date().toLocaleString()}</p>
+        </div>
+      </body>
+    </html>
   `);
 });
 
+// ============================================
+// 🏥 HEALTH CHECK ROUTE
+// ============================================
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
@@ -189,15 +265,31 @@ app.get('/health', (req, res) => {
   });
 });
 
-// 404 handler for undefined routes
+// ============================================
+// 404 HANDLER - For undefined routes
+// ============================================
 app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found', available_endpoints: ['/', '/health', '/test-wati', '/simulate-misscall', 'POST /tata-misscall'] });
+  res.status(404).json({ 
+    error: 'Route not found', 
+    available_endpoints: [
+      'GET /',
+      'GET /health',
+      'GET /test-wati?number=91XXXXXXXXXX',
+      'GET /debug-wati',
+      'POST /tata-misscall'
+    ]
+  });
 });
 
-// Server start
+// ============================================
+// 🚀 SERVER START
+// ============================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
+  console.log('='.repeat(50));
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Test WATI: http://localhost:${PORT}/test-wati?number=91XXXXXXXXXX`);
-  console.log(`📍 Simulate Miss Call: http://localhost:${PORT}/simulate-misscall?caller=9876543210&called=9898989898`);
+  console.log(`📍 Home: http://localhost:${PORT}`);
+  console.log(`📍 Test WATI: http://localhost:${PORT}/test-wati?number=919106959092`);
+  console.log(`📍 Debug: http://localhost:${PORT}/debug-wati`);
+  console.log('='.repeat(50));
 });
