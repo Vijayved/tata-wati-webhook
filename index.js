@@ -1,15 +1,26 @@
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
+const multer = require('multer');  // For file uploads
+const FormData = require('form-data');
 
 const app = express();
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 
-// WATI Configuration - Aapka sahi token
+// ============================================
+// CONFIGURATION
+// ============================================
 const WATI_TOKEN = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1bmlxdWVfbmFtZSI6Im1haWx0b2RyYW1pdEBnbWFpbC5jb20iLCJuYW1laWQiOiJtYWlsdG9kcmFtaXRAZ21haWwuY29tIiwiZW1haWwiOiJtYWlsdG9kcmFtaXRAZ21haWwuY29tIiwiYXV0aF90aW1lIjoiMDMvMTMvMjAyNiAwOTo0NToyMSIsInRlbmFudF9pZCI6IjExMTAiLCJkYl9uYW1lIjoibXQtcHJvZC1UZW5hbnRzIiwiaHR0cDovL3NjaGVtYXMubWljcm9zb2Z0LmNvbS93cy8yMDA4LzA2L2lkZW50aXR5L2NsYWltcy9yb2xlIjoiQURNSU5JU1RSQVRPUiIsImV4cCI6MjUzNDAyMzAwODAwLCJpc3MiOiJDbGFyZV9BSSIsImF1ZCI6IkNsYXJlX0FJIn0.BVwEFq7t4Z9QN3Y1CbXAdR6zgIHqPN83jFtmrNq_2lc';
 const WATI_BASE_URL = 'https://live-mt-server.wati.io/1110';
 
-// Branch Mapping - Aapke branch numbers
+// Google Vision API (OPTIONAL - Comment out if not using)
+// const vision = require('@google-cloud/vision');
+// const visionClient = new vision.ImageAnnotatorClient({
+//   keyFilename: './google-credentials.json'
+// });
+
+// Branch Mapping
 const BRANCHES = {
   '9898989898': 'Satellite',
   '9898989899': 'Naroda',
@@ -18,70 +29,20 @@ const BRANCHES = {
 };
 
 // ============================================
-// 📞 TATA TELE WEBHOOK - Miss Call Handler
-// ============================================
-app.post('/tata-misscall', async (req, res) => {
-  console.log('📞 Miss Call Received:', JSON.stringify(req.body, null, 2));
-  
-  // Extract caller and called number
-  const callerNumber = req.body.caller_number || req.body.from || req.body.msisdn || req.body.caller_id_number;
-  const calledNumber = req.body.called_number || req.body.to || req.body.destination || req.body.call_to_number;
-  
-  console.log(`📞 Caller: ${callerNumber}, Called: ${calledNumber}`);
-  
-  if (!callerNumber) {
-    console.log('❌ Caller number not found');
-    return res.status(400).json({ error: 'Caller number not found' });
-  }
-  
-  // Format number (add 91 if not present)
-  let whatsappNumber = callerNumber.toString().replace(/\D/g, '');
-  if (!whatsappNumber.startsWith('91')) {
-    whatsappNumber = '91' + whatsappNumber;
-  }
-  
-  // Detect branch
-  const branch = BRANCHES[calledNumber] || 'Main Branch';
-  console.log(`🏥 Branch detected: ${branch}`);
-  
-  try {
-    // Send message via WATI
-    console.log(`📤 Sending WhatsApp to ${whatsappNumber}...`);
-    const watiResponse = await sendWATIMessage(whatsappNumber, branch);
-    
-    console.log(`✅ Message sent successfully to ${whatsappNumber}`);
-    res.json({ 
-      status: 'success', 
-      message: `WhatsApp message sent to ${whatsappNumber}`,
-      branch: branch
-    });
-  } catch (error) {
-    console.error('❌ Error sending WhatsApp:', error.message);
-    res.status(500).json({ 
-      error: 'Failed to send WhatsApp message', 
-      details: error.message
-    });
-  }
-});
-
-// ============================================
-// 📱 WATI SE MESSAGE BHEJNE KA FUNCTION - FIXED VERSION
+// FUNCTION 1: SEND WATI MESSAGE WITH BRANCH INFO
 // ============================================
 async function sendWATIMessage(whatsappNumber, branch) {
-  // Simple English message (pehle test ke liye)
   const messageText = `Namaste! Aapne humein miss call kiya tha (${branch} branch). Main aapki kya help kar sakta hoon?
 
-1. Book Test
-2. Upload Prescription
-3. Talk to Executive
+1️⃣ Book Test
+2️⃣ Upload Prescription
+3️⃣ Talk to Executive
 
-Reply with 1, 2, or 3`;
+Reply karein: 1, 2, ya 3`;
 
   try {
-    console.log(`📤 Sending to WATI: ${whatsappNumber}`);
-    console.log(`📝 Message: ${messageText}`);
+    console.log(`📤 Sending to WATI: ${whatsappNumber} for branch ${branch}`);
     
-    // WATI API call - exact format as per docs
     const response = await axios({
       method: 'POST',
       url: `${WATI_BASE_URL}/api/v1/sendSessionMessage/${whatsappNumber}`,
@@ -91,7 +52,11 @@ Reply with 1, 2, or 3`;
       },
       data: {
         messageText: messageText,
-        messageType: 'text'
+        messageType: 'TEXT',
+        customParams: {  // ✅ Branch as custom parameter for WATI
+          branch: branch,
+          source: 'misscall'
+        }
       },
       timeout: 10000
     });
@@ -101,156 +66,237 @@ Reply with 1, 2, or 3`;
     
   } catch (error) {
     console.error('❌ WATI API Error:', error.message);
-    if (error.response) {
-      console.error('❌ Full Error:', JSON.stringify(error.response.data, null, 2));
-    }
     throw error;
   }
 }
 
 // ============================================
-// 🧪 TEST ROUTE - Direct WATI test
+// FUNCTION 2: OCR WITH GOOGLE VISION (OPTION B)
 // ============================================
+async function extractWithGoogleVision(imageUrl) {
+  try {
+    console.log('🔍 Running Google Vision OCR on:', imageUrl);
+    
+    // METHOD 1: If you have Google Vision setup
+    // const [result] = await visionClient.textDetection(imageUrl);
+    // const text = result.fullTextAnnotation.text;
+    
+    // METHOD 2: Using free OCR API (for testing)
+    const formData = new FormData();
+    formData.append('url', imageUrl);
+    formData.append('apikey', 'K81411447188957');  // Free OCR.space API key
+    formData.append('language', 'eng');
+    
+    const ocrResponse = await axios.post('https://api.ocr.space/parse/image', formData, {
+      headers: formData.getHeaders()
+    });
+    
+    if (ocrResponse.data.ParsedResults) {
+      const text = ocrResponse.data.ParsedResults[0].ParsedText;
+      return parsePrescriptionText(text);
+    }
+    
+    return {
+      patientName: 'Not found',
+      doctorName: 'Not found',
+      tests: 'Not found'
+    };
+    
+  } catch (error) {
+    console.error('❌ OCR Error:', error);
+    return {
+      patientName: 'OCR Failed',
+      doctorName: 'OCR Failed',
+      tests: 'OCR Failed',
+      error: error.message
+    };
+  }
+}
+
+// ============================================
+// FUNCTION 3: PARSE OCR TEXT
+// ============================================
+function parsePrescriptionText(text) {
+  console.log('📝 OCR Text:', text);
+  
+  // Simple regex patterns (you can improve these)
+  const patientMatch = text.match(/Patient(?:\s*Name)?[:\s]+([A-Za-z\s]+)/i) || 
+                       text.match(/Name[:\s]+([A-Za-z\s]+)/i) ||
+                       text.match(/([A-Z][a-z]+\s+[A-Z][a-z]+)/); // Simple name pattern
+  
+  const doctorMatch = text.match(/Dr\.?\s*([A-Za-z\s]+)/i) ||
+                      text.match(/Doctor[:\s]+([A-Za-z\s]+)/i);
+  
+  // Common test names
+  const testKeywords = ['blood', 'x-ray', 'xray', 'ultrasound', 'cbc', 'thyroid', 
+                        'lipid', 'liver', 'kidney', 'urine', 'stool', 'ecg', 'mri', 'ct scan'];
+  
+  const foundTests = [];
+  testKeywords.forEach(keyword => {
+    if (text.toLowerCase().includes(keyword)) {
+      foundTests.push(keyword.toUpperCase());
+    }
+  });
+  
+  return {
+    patientName: patientMatch ? patientMatch[1].trim() : 'Not found',
+    doctorName: doctorMatch ? doctorMatch[1].trim() : 'Not found',
+    tests: foundTests.length ? foundTests.join(', ') : 'Not found',
+    rawText: text.substring(0, 200) + '...' // Preview
+  };
+}
+
+// ============================================
+// ENDPOINT 1: TATA TELE WEBHOOK
+// ============================================
+app.post('/tata-misscall', async (req, res) => {
+  console.log('📞 Miss Call Received:', JSON.stringify(req.body, null, 2));
+  
+  const callerNumber = req.body.caller_number || req.body.from || req.body.msisdn || req.body.caller_id_number;
+  const calledNumber = req.body.called_number || req.body.to || req.body.destination || req.body.call_to_number;
+  
+  if (!callerNumber) {
+    return res.status(400).json({ error: 'Caller number not found' });
+  }
+  
+  let whatsappNumber = callerNumber.toString().replace(/\D/g, '');
+  if (!whatsappNumber.startsWith('91')) {
+    whatsappNumber = '91' + whatsappNumber;
+  }
+  
+  const branch = BRANCHES[calledNumber] || 'Main Branch';
+  console.log(`🏥 Branch: ${branch}, WhatsApp: ${whatsappNumber}`);
+  
+  try {
+    await sendWATIMessage(whatsappNumber, branch);
+    res.json({ status: 'success', branch: branch });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// ENDPOINT 2: OCR PROCESSING (Called by WATI)
+// ============================================
+app.post('/ocr-prescription', async (req, res) => {
+  console.log('📸 OCR Request Received');
+  
+  const { imageUrl, whatsappNumber, branch, watiChatId } = req.body;
+  
+  if (!imageUrl) {
+    return res.status(400).json({ error: 'Image URL required' });
+  }
+  
+  try {
+    // Step 1: Run OCR
+    const extractedData = await extractWithGoogleVision(imageUrl);
+    
+    // Step 2: Send to Executive via WATI
+    const executiveMessage = `📸 *New Prescription Uploaded*
+━━━━━━━━━━━━━━━━━━
+🏥 *Branch:* ${branch || 'Not specified'}
+👤 *Patient:* ${extractedData.patientName}
+👨‍⚕️ *Doctor:* ${extractedData.doctorName}
+🔬 *Tests:* ${extractedData.tests}
+━━━━━━━━━━━━━━━━━━
+💬 *Raw OCR Preview:*
+${extractedData.rawText}
+
+🔗 Image: ${imageUrl}`;
+
+    // Send to WATI (to executive's chat)
+    await axios({
+      method: 'POST',
+      url: `${WATI_BASE_URL}/api/v1/sendSessionMessage/919825086011`, // Executive number
+      headers: { 'Authorization': WATI_TOKEN },
+      data: {
+        messageText: executiveMessage,
+        messageType: 'TEXT'
+      }
+    });
+    
+    // Also send to original patient chat (confirmation)
+    await axios({
+      method: 'POST',
+      url: `${WATI_BASE_URL}/api/v1/sendSessionMessage/${whatsappNumber}`,
+      headers: { 'Authorization': WATI_TOKEN },
+      data: {
+        messageText: `✅ Aapki prescription receive ho gayi. Hamari team check karke aapse contact karegi.`,
+        messageType: 'TEXT'
+      }
+    });
+    
+    res.json({ 
+      success: true, 
+      extracted: extractedData,
+      notified: true
+    });
+    
+  } catch (error) {
+    console.error('❌ OCR Endpoint Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// ENDPOINT 3: WATI Webhook (For receiving messages)
+// ============================================
+app.post('/wati-webhook', async (req, res) => {
+  console.log('📨 WATI Webhook:', JSON.stringify(req.body, null, 2));
+  
+  // WATI se message aaya - can be used for logging or custom logic
+  const { text, from, customParams } = req.body;
+  
+  // Log for debugging
+  console.log(`Message from ${from}: ${text}`);
+  console.log('Custom Params:', customParams);
+  
+  res.json({ received: true });
+});
+
+// ============================================
+// TEST ENDPOINTS
+// ============================================
+app.get('/test-ocr', async (req, res) => {
+  const testImage = req.query.image || 'https://i.imgur.com/sample-prescription.jpg';
+  const result = await extractWithGoogleVision(testImage);
+  res.json(result);
+});
+
 app.get('/test-wati', async (req, res) => {
   const testNumber = req.query.number || '919106959092';
-  const testBranch = req.query.branch || 'Test Branch';
-  
-  console.log(`🧪 TEST ROUTE: Testing WATI with number: ${testNumber}`);
-  
+  const branch = req.query.branch || 'Satellite';
   try {
-    const result = await sendWATIMessage(testNumber, testBranch);
-    
-    res.send(`
-      <html>
-        <head><title>WATI Test Result</title></head>
-        <body style="font-family: Arial; padding: 20px;">
-          <h2 style="color: green;">✅ Success!</h2>
-          <p>Message sent to: <strong>${testNumber}</strong></p>
-          <p>Branch: <strong>${testBranch}</strong></p>
-          <p>Check your WhatsApp for the test message!</p>
-          <pre style="background: #f4f4f4; padding: 10px; border-radius: 5px;">${JSON.stringify(result, null, 2)}</pre>
-          <p><a href="/">← Back to Home</a></p>
-        </body>
-      </html>
-    `);
+    await sendWATIMessage(testNumber, branch);
+    res.send(`✅ Test message sent to ${testNumber} for branch ${branch}`);
   } catch (error) {
-    res.send(`
-      <html>
-        <head><title>WATI Test Result</title></head>
-        <body style="font-family: Arial; padding: 20px;">
-          <h2 style="color: red;">❌ Failed!</h2>
-          <p>Error: <strong>${error.message}</strong></p>
-          <p style="background: #ffeeee; padding: 10px; border-radius: 5px;">
-            ${error.response ? JSON.stringify(error.response.data) : 'No additional details'}
-          </p>
-          <p><a href="/">← Back to Home</a></p>
-        </body>
-      </html>
-    `);
+    res.send(`❌ Error: ${error.message}`);
   }
 });
 
-// ============================================
-// 🧪 DEBUG ROUTE - Check WATI connection
-// ============================================
-app.get('/debug-wati', async (req, res) => {
-  const results = {
-    token_valid: !!WATI_TOKEN,
-    token_preview: WATI_TOKEN.substring(0, 30) + '...',
-    base_url: WATI_BASE_URL,
-    tests: {}
-  };
-  
-  // Test 1: Get contacts
-  try {
-    const contactsRes = await axios({
-      method: 'GET',
-      url: `${WATI_BASE_URL}/api/v1/getContacts?pageSize=1`,
-      headers: { 'Authorization': WATI_TOKEN },
-      timeout: 5000
-    });
-    results.tests.getContacts = { 
-      success: true, 
-      status: contactsRes.status,
-      message: 'Token is valid!'
-    };
-  } catch (e) {
-    results.tests.getContacts = { 
-      success: false, 
-      error: e.message, 
-      status: e.response?.status
-    };
-  }
-  
-  res.json(results);
-});
-
-// ============================================
-// 🏠 HOME PAGE
-// ============================================
 app.get('/', (req, res) => {
   res.send(`
-    <html>
-      <head>
-        <title>Tata-WATI Webhook</title>
-        <style>
-          body { font-family: Arial; padding: 30px; background: #f5f5f5; }
-          .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }
-          h1 { color: #333; }
-          .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-left: 4px solid #007bff; }
-          .method { font-weight: bold; color: #007bff; }
-          .url { font-family: monospace; background: #eee; padding: 3px 6px; border-radius: 3px; }
-          .test-btn { background: #28a745; color: white; padding: 8px 15px; border-radius: 4px; text-decoration: none; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>🚀 Tata-WATI Webhook Server</h1>
-          <p>Server is running successfully!</p>
-          
-          <h2>Available Endpoints:</h2>
-          
-          <div class="endpoint">
-            <div><span class="method">POST</span> <span class="url">/tata-misscall</span></div>
-            <small>Tata Tele webhook endpoint</small>
-          </div>
-          
-          <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/test-wati?number=919106959092</span></div>
-            <small>Test WATI directly</small><br>
-            <a href="/test-wati?number=919106959092" class="test-btn">🔍 Test Now</a>
-          </div>
-          
-          <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/debug-wati</span></div>
-            <small>Check WATI connection</small><br>
-            <a href="/debug-wati" class="test-btn">🔧 Debug</a>
-          </div>
-        </div>
-      </body>
-    </html>
+    <h1>🚀 Tata-WATI Webhook Server</h1>
+    <p>Available endpoints:</p>
+    <ul>
+      <li><b>POST /tata-misscall</b> - Tata Tele webhook</li>
+      <li><b>POST /ocr-prescription</b> - OCR endpoint for WATI</li>
+      <li><b>POST /wati-webhook</b> - WATI webhook</li>
+      <li><b>GET /test-ocr?image=URL</b> - Test OCR</li>
+      <li><b>GET /test-wati?number=91XXXX&branch=Satellite</b> - Test WATI</li>
+    </ul>
   `);
 });
 
 // ============================================
-// 404 HANDLER
-// ============================================
-app.use((req, res) => {
-  res.status(404).json({ 
-    error: 'Route not found', 
-    available_endpoints: ['/', '/health', '/test-wati', '/debug-wati', 'POST /tata-misscall']
-  });
-});
-
-// ============================================
-// 🚀 SERVER START
+// SERVER START
 // ============================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log('='.repeat(50));
+  console.log('='.repeat(60));
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Home: http://localhost:${PORT}`);
-  console.log(`📍 Test: /test-wati?number=919106959092`);
-  console.log(`📍 Debug: /debug-wati`);
-  console.log('='.repeat(50));
+  console.log(`📍 Tata Tele Webhook: POST /tata-misscall`);
+  console.log(`📍 OCR Endpoint: POST /ocr-prescription`);
+  console.log(`📍 WATI Webhook: POST /wati-webhook`);
+  console.log('='.repeat(60));
 });
