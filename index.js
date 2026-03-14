@@ -58,64 +58,57 @@ const recentMissCalls = new Map();
 const userContext = new Map();
 
 // ============================================
-// IMPROVED: iPhone number normalization
+// IPHONE SPECIAL: किसी भी format को handle करेगा
 // ============================================
 function normalizeIndianNumber(number) {
   if (!number) return '';
   
-  console.log('📱 Normalizing number:', number);
+  console.log('📱 iPhone Normalizing:', number);
   
-  // Step 1: Remove all special characters
-  let digits = String(number).replace(/[\s\-\+\(\)]/g, '');
-  console.log('Step 1 - After removing special chars:', digits);
+  // Remove ALL non-digit characters
+  let digits = String(number).replace(/\D/g, '');
+  console.log('Step 1 - Only digits:', digits);
   
-  // Step 2: Remove 00 prefix (international format)
+  // अगर कुछ नहीं बचा तो return
+  if (!digits) return '';
+  
+  // Remove leading 00 (international format)
   if (digits.startsWith('00')) {
     digits = digits.slice(2);
     console.log('Step 2 - After removing 00:', digits);
   }
   
-  // Step 3: Handle different lengths and formats
-  if (digits.length === 10) {
-    // Local number: 9876543210 → 919876543210
-    digits = '91' + digits;
-    console.log('Step 3a - 10-digit number, added 91:', digits);
-  }
-  else if (digits.length === 11 && digits.startsWith('0')) {
-    // 0XXXXXXXXXX → 91XXXXXXXXXX
-    digits = '91' + digits.slice(1);
-    console.log('Step 3b - 11-digit with leading 0, converted:', digits);
-  }
-  else if (digits.length === 12) {
-    if (digits.startsWith('91')) {
-      // Already correct format: 91XXXXXXXXXX
-      console.log('Step 3c - Already in correct format:', digits);
-    } else {
-      // 12 digits but not starting with 91, take last 10 and add 91
-      const last10 = digits.slice(-10);
-      digits = '91' + last10;
-      console.log('Step 3d - 12 digits not starting with 91, converted:', digits);
-    }
-  }
-  else if (digits.length > 12) {
-    // More than 12 digits, take last 12
-    digits = digits.slice(-12);
-    console.log('Step 3e - More than 12 digits, took last 12:', digits);
-  }
-  
-  // Final validation: must be 12 digits starting with 91
-  if (digits.length === 12 && digits.startsWith('91')) {
+  // अगर 91 से start हो और length 12 हो
+  if (digits.startsWith('91') && digits.length === 12) {
     console.log('✅ Valid Indian number:', digits);
     return digits;
-  } else {
-    console.log('❌ Failed to normalize number:', number, '→', digits);
-    return '';
   }
+  
+  // अगल 91 से start हो और length 12 से ज्यादा हो
+  if (digits.startsWith('91') && digits.length > 12) {
+    digits = digits.slice(0, 12);
+    console.log('Step 3 - Trimmed to 12 digits:', digits);
+    return digits;
+  }
+  
+  // अगर 91 से नहीं start होता
+  if (digits.length >= 10) {
+    // Last 10 digits लो
+    const last10 = digits.slice(-10);
+    digits = '91' + last10;
+    console.log('Step 4 - Took last 10 digits and added 91:', digits);
+    return digits;
+  }
+  
+  console.log('❌ Could not normalize:', number);
+  return '';
 }
 
 function normalizeWhatsAppNumber(number) {
-  const local = normalizeIndianNumber(number);
-  return local ? `${DEFAULT_COUNTRY_CODE}${local.slice(-10)}` : '';
+  const normalized = normalizeIndianNumber(number);
+  if (!normalized) return '';
+  // WhatsApp number should be 91 + last 10 digits
+  return '91' + normalized.slice(-10);
 }
 
 function getBranchByCalledNumber(calledNumber) {
@@ -138,78 +131,84 @@ function shouldSkipDuplicateMissCall(whatsappNumber, calledNumber) {
 }
 
 // ============================================
-// IMPROVED: iPhone caller number extraction
+// IPHONE SPECIAL: हर possible field से number ढूंढो
 // ============================================
 function getCallerNumberFromPayload(body) {
-  console.log('🔍 Extracting caller number from payload...');
+  console.log('🔍 iPhone: Searching for caller number...');
+  console.log('🔍 Full Payload:', JSON.stringify(body, null, 2));
   
-  // Comprehensive list of all possible fields where caller number might appear
+  // ALL possible fields where caller number might hide
   const possibleFields = [
-    { key: 'caller_id_number', value: body.caller_id_number },
-    { key: 'caller_number', value: body.caller_number },
-    { key: 'from', value: body.from },
-    { key: 'msisdn', value: body.msisdn },
-    { key: 'mobile', value: body.mobile },
-    { key: 'customer_number', value: body.customer_number },
-    { key: 'customer_no_with_prefix', value: body.customer_no_with_prefix },
-    { key: 'cli', value: body.cli },
-    { key: 'caller', value: body.caller },
-    { key: 'phone', value: body.phone },
-    { key: 'source', value: body.source },
-    { key: 'destination_number', value: body.destination_number },
-    { key: 'ani', value: body.ani },  // Automatic Number Identification
-    { key: 'calling_party', value: body.calling_party },
-    { key: 'calling_number', value: body.calling_number }
+    'caller_id_number', 'caller_number', 'from', 'msisdn', 'mobile',
+    'customer_number', 'customer_no_with_prefix', 'cli', 'caller',
+    'phone', 'source', 'destination_number', 'ani', 'calling_party',
+    'calling_number', 'callerid', 'callerId', 'caller_id',
+    'calleridnumber', 'callerid_number', 'source_number',
+    'originating_number', 'originating', 'source_did',
+    'caller_number_raw', 'caller_number_formatted'
   ];
   
-  // First check all possible fields
+  // First check all known fields
   for (let field of possibleFields) {
-    if (field.value) {
-      console.log(`✅ Found caller number in field '${field.key}': ${field.value}`);
-      return field.value;
+    if (body[field]) {
+      console.log(`✅ iPhone: Found in field '${field}':`, body[field]);
+      return String(body[field]);
     }
   }
   
-  // If not found in specific fields, search through all fields for any number
-  console.log('🔍 Searching all fields for numbers...');
+  // If not found, search through EVERY field in the payload
+  console.log('🔍 iPhone: Scanning ALL fields for numbers...');
   for (let key in body) {
     const value = body[key];
     if (value && typeof value === 'string') {
-      // Look for patterns that look like phone numbers (at least 10 digits)
-      const numbers = value.match(/\d{10,}/g);
-      if (numbers) {
-        console.log(`🔍 Found potential number in field '${key}': ${value} → extracted: ${numbers[0]}`);
-        return numbers[0];
+      // Check if string contains at least 10 digits
+      const digits = value.replace(/\D/g, '');
+      if (digits.length >= 10) {
+        console.log(`✅ iPhone: Found number in field '${key}': ${value} (digits: ${digits})`);
+        return value;
+      }
+    } else if (value && typeof value === 'number') {
+      // If value is number, convert to string
+      const strValue = String(value);
+      if (strValue.length >= 10) {
+        console.log(`✅ iPhone: Found number in field '${key}': ${strValue}`);
+        return strValue;
       }
     }
   }
   
-  console.log('❌ No caller number found in payload');
+  // Special case: कहीं पूरा payload ही number तो नहीं?
+  try {
+    const stringified = JSON.stringify(body);
+    const matches = stringified.match(/\d{10,}/);
+    if (matches) {
+      console.log(`✅ iPhone: Found number in stringified payload: ${matches[0]}`);
+      return matches[0];
+    }
+  } catch (e) {}
+  
+  console.log('❌ iPhone: No caller number found anywhere!');
   return '';
 }
 
 function getCalledNumberFromPayload(body) {
-  console.log('🔍 Extracting called number from fields...');
+  console.log('🔍 iPhone: Extracting called number...');
   
   const possibleFields = [
-    { key: 'call_to_number', value: body.call_to_number },
-    { key: 'called_number', value: body.called_number },
-    { key: 'to', value: body.to },
-    { key: 'destination', value: body.destination },
-    { key: 'did', value: body.did },
-    { key: 'virtual_number', value: body.virtual_number },
-    { key: 'called_party', value: body.called_party },
-    { key: 'called_id', value: body.called_id }
+    'call_to_number', 'called_number', 'to', 'destination',
+    'did', 'virtual_number', 'called_party', 'called_id',
+    'calledid', 'calledid_number', 'destination_number',
+    'terminating_number', 'terminating'
   ];
   
   for (let field of possibleFields) {
-    if (field.value) {
-      console.log(`✅ Found called number in field '${field.key}': ${field.value}`);
-      return field.value;
+    if (body[field]) {
+      console.log(`✅ iPhone: Found called number in field '${field}':`, body[field]);
+      return String(body[field]);
     }
   }
   
-  console.log('❌ No called number found in payload');
+  console.log('❌ iPhone: No called number found');
   return '';
 }
 
@@ -296,31 +295,35 @@ function parsePrescriptionText(text) {
 }
 
 // ============================================
-// MAIN ENDPOINT - FIXED for iPhone
+// MAIN ENDPOINT - iPhone Special
 // ============================================
 app.post('/tata-misscall', async (req, res) => {
   try {
-    console.log('📞 Tata Miss Call Payload:', JSON.stringify(req.body, null, 2));
+    console.log('📞 Tata Miss Call Payload (iPhone check):', JSON.stringify(req.body, null, 2));
     
     const callerNumberRaw = getCallerNumberFromPayload(req.body);
     const calledNumberRaw = getCalledNumberFromPayload(req.body);
     
     if (!callerNumberRaw) {
-      console.log('❌ Caller number not found in payload');
-      return res.status(400).json({ success: false, error: 'Caller number not found' });
+      console.log('❌ iPhone: Caller number not found!');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Caller number not found',
+        message: 'Please check /debug-payload endpoint to see what iPhone is sending'
+      });
     }
     
     const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
     if (!whatsappNumber) {
-      console.log('❌ Invalid caller number after normalization:', callerNumberRaw);
+      console.log('❌ iPhone: Invalid caller number after normalization:', callerNumberRaw);
       return res.status(400).json({ success: false, error: 'Invalid caller number' });
     }
     
     const branch = getBranchByCalledNumber(calledNumberRaw);
-    console.log(`📞 Caller: ${callerNumberRaw} | WhatsApp: ${whatsappNumber} | Branch: ${branch.name}`);
+    console.log(`📞 iPhone Caller: ${callerNumberRaw} | WhatsApp: ${whatsappNumber} | Branch: ${branch.name}`);
     
     if (shouldSkipDuplicateMissCall(whatsappNumber, calledNumberRaw)) {
-      console.log(`⚠️ Duplicate missed call skipped for ${whatsappNumber}`);
+      console.log(`⚠️ iPhone: Duplicate missed call skipped for ${whatsappNumber}`);
       return res.json({ success: true, skipped: true });
     }
     
@@ -332,40 +335,48 @@ app.post('/tata-misscall', async (req, res) => {
     });
     
     await sendWatiTemplateMessage(whatsappNumber, branch.name);
-    console.log(`✅ WhatsApp template sent to ${whatsappNumber} for branch ${branch.name}`);
+    console.log(`✅ iPhone: WhatsApp template sent to ${whatsappNumber} for branch ${branch.name}`);
     
     return res.json({ success: true, whatsappNumber, branch: branch.name });
     
   } catch (error) {
-    console.error('❌ /tata-misscall error:', error.response?.data || error.message);
+    console.error('❌ iPhone Error:', error.response?.data || error.message);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
 // ============================================
-// DEBUG ENDPOINT - Test iPhone payload
+// IPHONE DEBUG ENDPOINT - यहाँ से पकड़ में आएगा
 // ============================================
-app.post('/debug-payload', (req, res) => {
-  console.log('🔍 DEBUG - Full Payload:', JSON.stringify(req.body, null, 2));
+app.post('/iphone-debug', (req, res) => {
+  console.log('📱 IPHONE DEBUG - Full Payload:', JSON.stringify(req.body, null, 2));
   
-  // Find all fields containing numbers
-  const numbers = [];
-  Object.keys(req.body).forEach(key => {
+  const result = {
+    message: 'iPhone payload received',
+    fields: {},
+    possibleNumbers: []
+  };
+  
+  // Check EVERY field
+  for (let key in req.body) {
     const value = req.body[key];
+    result.fields[key] = value;
+    
     if (value && typeof value === 'string') {
-      const matches = value.match(/\d{10,}/g);
-      if (matches) {
-        numbers.push({ key, value, extracted: matches[0] });
+      const digits = value.replace(/\D/g, '');
+      if (digits.length >= 10) {
+        result.possibleNumbers.push({
+          field: key,
+          original: value,
+          digits: digits,
+          normalized: '91' + digits.slice(-10)
+        });
       }
     }
-  });
+  }
   
-  res.json({
-    message: 'Payload received',
-    fields: Object.keys(req.body),
-    possibleNumbers: numbers,
-    fullPayload: req.body
-  });
+  console.log('📱 iPhone Analysis:', JSON.stringify(result, null, 2));
+  res.json(result);
 });
 
 app.post('/wati-webhook', async (req, res) => {
@@ -463,12 +474,12 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>Production Ready Version 3.0 - iPhone Fixed</p>
+    <p>iPhone Special Version</p>
     <ul>
       <li>POST /tata-misscall - Tata Tele webhook</li>
       <li>POST /wati-webhook - WATI webhook</li>
       <li>POST /ocr-prescription - OCR endpoint</li>
-      <li>POST /debug-payload - Debug iPhone payload</li>
+      <li><b>POST /iphone-debug - iPhone Debug (use this first!)</b></li>
       <li>GET /test-template?number=91XXXX&branch=Satellite - Test template</li>
       <li>GET /test-ocr?image=URL - Test OCR</li>
       <li>GET /health - Health check</li>
@@ -479,7 +490,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Keep-alive URL: ${SELF_URL}/health`);
-  console.log(`📍 iPhone Debug: POST /debug-payload`);
+  console.log(`📍 iPhone Debug: POST /iphone-debug`);
   console.log('='.repeat(60));
 });
