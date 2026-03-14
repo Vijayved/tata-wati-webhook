@@ -37,6 +37,11 @@ const BRANCHES = {
   [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: {
     name: 'Vadaj',
     executive: normalizeWhatsAppNumber(process.env.VADAJ_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
+  },
+  // Test Number
+  [normalizeIndianNumber('917969690935')]: {
+    name: 'Test Branch',
+    executive: normalizeWhatsAppNumber('917880261858')
   }
 };
 
