@@ -83,12 +83,30 @@ function shouldSkipDuplicateMissCall(whatsappNumber, calledNumber) {
   return false;
 }
 
+// ============================================
+// ✅ FIXED: Tata Tele field names के साथ
+// ============================================
 function getCallerNumberFromPayload(body) {
-  return body.caller_number || body.from || body.msisdn || body.caller_id_number || body.mobile || body.customer_number || body.cli || '';
+  return body.caller_id_number ||      // नया field (screenshot में दिखा)
+         body.caller_number || 
+         body.from || 
+         body.msisdn || 
+         body.caller_id_number || 
+         body.mobile || 
+         body.customer_number ||
+         body.customer_no_with_prefix || // नया field
+         body.cli || 
+         '';
 }
 
 function getCalledNumberFromPayload(body) {
-  return body.called_number || body.to || body.destination || body.call_to_number || body.did || body.virtual_number || '';
+  return body.call_to_number ||        // नया field (screenshot में दिखा)
+         body.called_number || 
+         body.to || 
+         body.destination || 
+         body.did || 
+         body.virtual_number || 
+         '';
 }
 
 function getTextFromWatiPayload(body) {
