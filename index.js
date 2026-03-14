@@ -8,6 +8,9 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// ============================================
+// CONFIGURATION - Environment variables से
+// ============================================
 const PORT = process.env.PORT || 3000;
 const WATI_TOKEN = process.env.WATI_TOKEN;
 const WATI_BASE_URL = process.env.WATI_BASE_URL;
@@ -29,8 +32,11 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
   process.exit(1);
 }
 
-// Branch Configuration
+// ============================================
+// BRANCH CONFIGURATION - Virtual numbers mapping
+// ============================================
 const BRANCHES = {
+  // जो भी number यहाँ add करोगे, उस पर miss call आने पर branch detect होगी
   [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: {
     name: 'Satellite',
     executive: normalizeWhatsAppNumber(process.env.SATELLITE_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
@@ -47,67 +53,61 @@ const BRANCHES = {
     name: 'Vadaj',
     executive: normalizeWhatsAppNumber(process.env.VADAJ_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
   },
-  // Test Number
+  // Test Number - यहाँ हर वो नंबर add करो जिसे test करना है
   [normalizeIndianNumber('917969690935')]: {
     name: 'Test Branch',
     executive: normalizeWhatsAppNumber('917880261858')
   }
 };
 
-const recentMissCalls = new Map();
-const userContext = new Map();
+// ============================================
+// IN-MEMORY STORAGE
+// ============================================
+const recentMissCalls = new Map();  // Duplicate prevention के लिए
+const userContext = new Map();      // User session के लिए
 
 // ============================================
-// IPHONE SPECIAL: किसी भी format को handle करेगा
+// HELPER FUNCTIONS - Number normalization
 // ============================================
 function normalizeIndianNumber(number) {
   if (!number) return '';
   
-  console.log('📱 iPhone Normalizing:', number);
+  console.log('📱 Normalizing number:', number);
   
-  // Remove ALL non-digit characters
+  // Remove all non-digits
   let digits = String(number).replace(/\D/g, '');
-  console.log('Step 1 - Only digits:', digits);
   
-  // अगर कुछ नहीं बचा तो return
-  if (!digits) return '';
-  
-  // Remove leading 00 (international format)
+  // Remove leading 00 if present
   if (digits.startsWith('00')) {
     digits = digits.slice(2);
-    console.log('Step 2 - After removing 00:', digits);
   }
   
-  // अगर 91 से start हो और length 12 हो
-  if (digits.startsWith('91') && digits.length === 12) {
-    console.log('✅ Valid Indian number:', digits);
-    return digits;
+  // Handle different lengths
+  if (digits.length === 10) {
+    // 10-digit local number
+    return '91' + digits;
+  } else if (digits.length === 11 && digits.startsWith('0')) {
+    // 11-digit starting with 0
+    return '91' + digits.slice(1);
+  } else if (digits.length === 12) {
+    // 12-digit - check if already has 91
+    if (digits.startsWith('91')) {
+      return digits;
+    } else {
+      return '91' + digits.slice(-10);
+    }
+  } else if (digits.length > 12) {
+    // Take last 12 digits
+    return digits.slice(-12);
   }
   
-  // अगल 91 से start हो और length 12 से ज्यादा हो
-  if (digits.startsWith('91') && digits.length > 12) {
-    digits = digits.slice(0, 12);
-    console.log('Step 3 - Trimmed to 12 digits:', digits);
-    return digits;
-  }
-  
-  // अगर 91 से नहीं start होता
-  if (digits.length >= 10) {
-    // Last 10 digits लो
-    const last10 = digits.slice(-10);
-    digits = '91' + last10;
-    console.log('Step 4 - Took last 10 digits and added 91:', digits);
-    return digits;
-  }
-  
-  console.log('❌ Could not normalize:', number);
   return '';
 }
 
 function normalizeWhatsAppNumber(number) {
   const normalized = normalizeIndianNumber(number);
   if (!normalized) return '';
-  // WhatsApp number should be 91 + last 10 digits
+  // WhatsApp number = 91 + last 10 digits
   return '91' + normalized.slice(-10);
 }
 
@@ -131,95 +131,60 @@ function shouldSkipDuplicateMissCall(whatsappNumber, calledNumber) {
 }
 
 // ============================================
-// IPHONE SPECIAL: हर possible field से number ढूंढो
+// PAYLOAD EXTRACTION - Tata Tele fields
 // ============================================
 function getCallerNumberFromPayload(body) {
-  console.log('🔍 iPhone: Searching for caller number...');
-  console.log('🔍 Full Payload:', JSON.stringify(body, null, 2));
+  console.log('🔍 Extracting caller number...');
   
-  // ALL possible fields where caller number might hide
+  // All possible fields where caller number might appear
   const possibleFields = [
     'caller_id_number', 'caller_number', 'from', 'msisdn', 'mobile',
     'customer_number', 'customer_no_with_prefix', 'cli', 'caller',
-    'phone', 'source', 'destination_number', 'ani', 'calling_party',
-    'calling_number', 'callerid', 'callerId', 'caller_id',
-    'calleridnumber', 'callerid_number', 'source_number',
-    'originating_number', 'originating', 'source_did',
-    'caller_number_raw', 'caller_number_formatted'
+    'phone', 'source', 'ani', 'calling_party', 'calling_number'
   ];
   
-  // First check all known fields
   for (let field of possibleFields) {
     if (body[field]) {
-      console.log(`✅ iPhone: Found in field '${field}':`, body[field]);
+      console.log(`✅ Found in field '${field}':`, body[field]);
       return String(body[field]);
     }
   }
   
-  // If not found, search through EVERY field in the payload
-  console.log('🔍 iPhone: Scanning ALL fields for numbers...');
+  // If not found in specific fields, search all fields
   for (let key in body) {
     const value = body[key];
     if (value && typeof value === 'string') {
-      // Check if string contains at least 10 digits
       const digits = value.replace(/\D/g, '');
       if (digits.length >= 10) {
-        console.log(`✅ iPhone: Found number in field '${key}': ${value} (digits: ${digits})`);
+        console.log(`✅ Found in field '${key}': ${value}`);
         return value;
-      }
-    } else if (value && typeof value === 'number') {
-      // If value is number, convert to string
-      const strValue = String(value);
-      if (strValue.length >= 10) {
-        console.log(`✅ iPhone: Found number in field '${key}': ${strValue}`);
-        return strValue;
       }
     }
   }
   
-  // Special case: कहीं पूरा payload ही number तो नहीं?
-  try {
-    const stringified = JSON.stringify(body);
-    const matches = stringified.match(/\d{10,}/);
-    if (matches) {
-      console.log(`✅ iPhone: Found number in stringified payload: ${matches[0]}`);
-      return matches[0];
-    }
-  } catch (e) {}
-  
-  console.log('❌ iPhone: No caller number found anywhere!');
+  console.log('❌ No caller number found');
   return '';
 }
 
 function getCalledNumberFromPayload(body) {
-  console.log('🔍 iPhone: Extracting called number...');
-  
   const possibleFields = [
     'call_to_number', 'called_number', 'to', 'destination',
-    'did', 'virtual_number', 'called_party', 'called_id',
-    'calledid', 'calledid_number', 'destination_number',
-    'terminating_number', 'terminating'
+    'did', 'virtual_number', 'called_party'
   ];
   
   for (let field of possibleFields) {
     if (body[field]) {
-      console.log(`✅ iPhone: Found called number in field '${field}':`, body[field]);
+      console.log(`✅ Found called number in field '${field}':`, body[field]);
       return String(body[field]);
     }
   }
   
-  console.log('❌ iPhone: No called number found');
   return '';
 }
 
-function getTextFromWatiPayload(body) {
-  return body?.text || body?.message || body?.data?.text || body?.buttonText || body?.interactiveButtonReply?.title || '';
-}
-
-function getMediaUrlFromWatiPayload(body) {
-  return body?.imageUrl || body?.media?.url || body?.data?.imageUrl || body?.data?.media?.url || body?.url || '';
-}
-
+// ============================================
+// WATI API FUNCTIONS - Universal sending
+// ============================================
 async function callWatiApi(url, data) {
   try {
     const response = await axios.post(url, data, {
@@ -237,13 +202,62 @@ async function callWatiApi(url, data) {
 }
 
 async function sendWatiTemplateMessage(whatsappNumber, branchName) {
-  const payload = {
-    template_name: TEMPLATE_NAME,
-    broadcast_name: `misscall_${Date.now()}`,
-    parameters: [{ name: '1', value: branchName }]
-  };
-  const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
-  return await callWatiApi(url, payload);
+  try {
+    console.log(`📱 Sending template to ANY number: ${whatsappNumber} for branch ${branchName}`);
+    
+    const payload = {
+      template_name: TEMPLATE_NAME,
+      broadcast_name: `misscall_${Date.now()}`,
+      parameters: [
+        { 
+          name: '1', 
+          value: branchName 
+        }
+      ]
+    };
+    
+    const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
+    
+    const response = await callWatiApi(url, payload);
+    console.log(`✅ Template sent to ${whatsappNumber}`);
+    
+    // Store in context
+    userContext.set(whatsappNumber, {
+      branch: branchName,
+      lastMessage: new Date().toISOString(),
+      stage: 'welcome_sent'
+    });
+    
+    return response;
+    
+  } catch (error) {
+    console.error(`❌ Template failed for ${whatsappNumber}, trying session message...`);
+    
+    // Fallback: session message
+    try {
+      const sessionPayload = {
+        messageText: `Namaste! Aapne miss call kiya tha (${branchName} branch). Main aapki kya help kar sakta hoon?\n\n1. Book Test\n2. Upload Prescription\n3. Talk to Executive`,
+        messageType: 'TEXT'
+      };
+      
+      const sessionUrl = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${encodeURIComponent(whatsappNumber)}`;
+      
+      const sessionResponse = await axios.post(sessionUrl, sessionPayload, {
+        headers: {
+          Authorization: WATI_TOKEN,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      });
+      
+      console.log(`✅ Session message sent to ${whatsappNumber}`);
+      return sessionResponse.data;
+      
+    } catch (sessionError) {
+      console.error(`❌ Both template and session failed for ${whatsappNumber}`);
+      throw sessionError;
+    }
+  }
 }
 
 async function sendSessionTextMessage(whatsappNumber, messageText) {
@@ -256,6 +270,9 @@ async function sendExecutiveNotification(executiveNumber, messageText) {
   return await sendSessionTextMessage(executiveNumber, messageText);
 }
 
+// ============================================
+// OCR FUNCTIONS
+// ============================================
 async function extractWithOCRSpace(imageUrl) {
   try {
     const formData = new FormData();
@@ -295,99 +312,68 @@ function parsePrescriptionText(text) {
 }
 
 // ============================================
-// MAIN ENDPOINT - iPhone Special
+// MAIN ENDPOINT - Tata Tele Webhook
 // ============================================
 app.post('/tata-misscall', async (req, res) => {
   try {
-    console.log('📞 Tata Miss Call Payload (iPhone check):', JSON.stringify(req.body, null, 2));
+    console.log('📞 Tata Miss Call Payload:', JSON.stringify(req.body, null, 2));
     
+    // Extract numbers from payload
     const callerNumberRaw = getCallerNumberFromPayload(req.body);
     const calledNumberRaw = getCalledNumberFromPayload(req.body);
     
     if (!callerNumberRaw) {
-      console.log('❌ iPhone: Caller number not found!');
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Caller number not found',
-        message: 'Please check /debug-payload endpoint to see what iPhone is sending'
-      });
+      console.log('❌ No caller number found');
+      return res.status(400).json({ success: false, error: 'Caller number not found' });
     }
     
-    const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
-    if (!whatsappNumber) {
-      console.log('❌ iPhone: Invalid caller number after normalization:', callerNumberRaw);
-      return res.status(400).json({ success: false, error: 'Invalid caller number' });
+    // Normalize to WhatsApp format (91 + 10 digits)
+    let whatsappNumber = String(callerNumberRaw).replace(/\D/g, '');
+    if (whatsappNumber.length >= 10) {
+      whatsappNumber = '91' + whatsappNumber.slice(-10);
+    } else {
+      console.log('❌ Invalid number format:', callerNumberRaw);
+      return res.status(400).json({ success: false, error: 'Invalid number format' });
     }
     
+    // Get branch from called number
     const branch = getBranchByCalledNumber(calledNumberRaw);
-    console.log(`📞 iPhone Caller: ${callerNumberRaw} | WhatsApp: ${whatsappNumber} | Branch: ${branch.name}`);
     
+    console.log(`📞 Caller: ${callerNumberRaw} | WhatsApp: ${whatsappNumber} | Branch: ${branch.name}`);
+    
+    // Duplicate check - 10 minute window
     if (shouldSkipDuplicateMissCall(whatsappNumber, calledNumberRaw)) {
-      console.log(`⚠️ iPhone: Duplicate missed call skipped for ${whatsappNumber}`);
+      console.log(`⏳ Duplicate call skipped for ${whatsappNumber}`);
       return res.json({ success: true, skipped: true });
     }
     
-    userContext.set(whatsappNumber, { 
-      branch: branch.name, 
-      executive: branch.executive, 
-      stage: 'welcome_sent', 
-      updatedAt: new Date().toISOString() 
+    // SEND WHATSAPP - किसी भी number पर
+    await sendWatiTemplateMessage(whatsappNumber, branch.name);
+    
+    return res.json({ 
+      success: true, 
+      whatsappNumber, 
+      branch: branch.name 
     });
     
-    await sendWatiTemplateMessage(whatsappNumber, branch.name);
-    console.log(`✅ iPhone: WhatsApp template sent to ${whatsappNumber} for branch ${branch.name}`);
-    
-    return res.json({ success: true, whatsappNumber, branch: branch.name });
-    
   } catch (error) {
-    console.error('❌ iPhone Error:', error.response?.data || error.message);
+    console.error('❌ Error:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
 // ============================================
-// IPHONE DEBUG ENDPOINT - यहाँ से पकड़ में आएगा
+// WATI WEBHOOK - Handle user replies
 // ============================================
-app.post('/iphone-debug', (req, res) => {
-  console.log('📱 IPHONE DEBUG - Full Payload:', JSON.stringify(req.body, null, 2));
-  
-  const result = {
-    message: 'iPhone payload received',
-    fields: {},
-    possibleNumbers: []
-  };
-  
-  // Check EVERY field
-  for (let key in req.body) {
-    const value = req.body[key];
-    result.fields[key] = value;
-    
-    if (value && typeof value === 'string') {
-      const digits = value.replace(/\D/g, '');
-      if (digits.length >= 10) {
-        result.possibleNumbers.push({
-          field: key,
-          original: value,
-          digits: digits,
-          normalized: '91' + digits.slice(-10)
-        });
-      }
-    }
-  }
-  
-  console.log('📱 iPhone Analysis:', JSON.stringify(result, null, 2));
-  res.json(result);
-});
-
 app.post('/wati-webhook', async (req, res) => {
   try {
-    console.log('📨 WATI Webhook Payload:', JSON.stringify(req.body, null, 2));
+    console.log('📨 WATI Webhook:', JSON.stringify(req.body, null, 2));
+    
     const from = normalizeWhatsAppNumber(req.body.from || req.body.whatsappNumber || req.body.sender);
-    const text = String(getTextFromWatiPayload(req.body) || '').trim().toLowerCase();
-    const mediaUrl = getMediaUrlFromWatiPayload(req.body);
+    const text = String(req.body.text || req.body.message || '').trim().toLowerCase();
+    const mediaUrl = req.body.imageUrl || req.body.media?.url || '';
     
     if (!from) {
-      console.log('⚠️ No sender found in WATI webhook');
       return res.json({ received: true, ignored: true });
     }
     
@@ -395,59 +381,74 @@ app.post('/wati-webhook', async (req, res) => {
     const branch = context.branch || 'Main Branch';
     const executive = context.executive || normalizeWhatsAppNumber(process.env.DEFAULT_EXECUTIVE || '919825086011');
     
+    // Handle user replies
     if (text === '1') {
       await sendSessionTextMessage(from, `📅 *Book Test - ${branch} Branch*\nKripya apna naam, test ka naam, aur preferred date/time bhejiye.`);
       userContext.set(from, { ...context, stage: 'book_test_requested' });
+      
     } else if (text === '2') {
       await sendSessionTextMessage(from, `📸 *Upload Prescription - ${branch} Branch*\nKripya prescription ki clear photo bhejiye.`);
       userContext.set(from, { ...context, stage: 'awaiting_prescription' });
+      
     } else if (text === '3') {
       await sendSessionTextMessage(from, `👨‍💼 Aapko ${branch} branch ke executive se connect kiya ja raha hai.`);
       await sendExecutiveNotification(executive, `📞 *Executive Required*\nCustomer: ${from}\nBranch: ${branch}`);
       userContext.set(from, { ...context, stage: 'executive_requested' });
+      
     } else if (mediaUrl && context.stage === 'awaiting_prescription') {
       const extracted = await extractWithOCRSpace(mediaUrl);
-      await sendExecutiveNotification(executive, `📸 *Prescription Received*\n🏥 Branch: ${branch}\n📱 Customer: ${from}\n👤 Patient: ${extracted.patientName}\n👨‍⚕️ Doctor: ${extracted.doctorName}\n🔬 Tests: ${extracted.tests}\n\n🔗 Image: ${mediaUrl}`);
+      await sendExecutiveNotification(executive, 
+        `📸 *Prescription Received*\n🏥 Branch: ${branch}\n📱 Customer: ${from}\n👤 Patient: ${extracted.patientName}\n👨‍⚕️ Doctor: ${extracted.doctorName}\n🔬 Tests: ${extracted.tests}\n\n🔗 Image: ${mediaUrl}`
+      );
       await sendSessionTextMessage(from, '✅ Aapki prescription receive ho gayi hai.');
       userContext.set(from, { ...context, stage: 'prescription_uploaded' });
     }
     
     return res.json({ received: true });
+    
   } catch (error) {
-    console.error('❌ /wati-webhook error:', error.message);
+    console.error('❌ WATI webhook error:', error.message);
     return res.status(500).json({ received: false, error: error.message });
   }
 });
 
+// ============================================
+// OCR ENDPOINT
+// ============================================
 app.post('/ocr-prescription', async (req, res) => {
   try {
     const { imageUrl, whatsappNumber, branch, executive } = req.body;
+    
     if (!imageUrl || !whatsappNumber) {
-      return res.status(400).json({ success: false, error: 'imageUrl and whatsappNumber are required' });
+      return res.status(400).json({ success: false, error: 'imageUrl and whatsappNumber required' });
     }
     
     const extracted = await extractWithOCRSpace(imageUrl);
     const context = userContext.get(whatsappNumber) || {};
     const finalBranch = branch || context.branch || 'Not specified';
-    const finalExecutive = executive || context.executive || normalizeWhatsAppNumber(process.env.DEFAULT_EXECUTIVE || '919825086011');
+    const finalExecutive = executive || context.executive || normalizeWhatsAppNumber(process.env.DEFAULT_EXECUTIVE);
     
     const executiveMessage = `📸 *New Prescription Uploaded*\n━━━━━━━━━━━━━━━━━━\n🏥 *Branch:* ${finalBranch}\n👤 *Patient:* ${extracted.patientName}\n👨‍⚕️ *Doctor:* ${extracted.doctorName}\n🔬 *Tests:* ${extracted.tests}\n━━━━━━━━━━━━━━━━━━\n📝 *OCR Preview:*\n${extracted.rawText}\n\n🔗 Image: ${imageUrl}`;
     
     await sendExecutiveNotification(finalExecutive, executiveMessage);
-    await sendSessionTextMessage(whatsappNumber, '✅ Aapki prescription receive ho gayi hai. Hamari team check karke aapse contact karegi.');
+    await sendSessionTextMessage(whatsappNumber, '✅ Aapki prescription receive ho gayi hai.');
     
-    userContext.set(whatsappNumber, { ...context, branch: finalBranch, executive: finalExecutive, stage: 'prescription_uploaded', updatedAt: new Date().toISOString() });
+    userContext.set(whatsappNumber, { ...context, branch: finalBranch, executive: finalExecutive, stage: 'prescription_uploaded' });
     
     return res.json({ success: true, extracted });
+    
   } catch (error) {
-    console.error('❌ /ocr-prescription error:', error.response?.data || error.message);
+    console.error('❌ OCR error:', error.message);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
+// ============================================
+// TEST ENDPOINTS
+// ============================================
 app.get('/test-template', async (req, res) => {
   try {
-    const number = normalizeWhatsAppNumber(req.query.number || '919106959092');
+    const number = req.query.number || '919106959092';
     const branch = req.query.branch || 'Satellite';
     const result = await sendWatiTemplateMessage(number, branch);
     res.json({ success: true, result });
@@ -474,12 +475,11 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>iPhone Special Version</p>
+    <p>Universal WhatsApp Sending - किसी भी unique number पर message जाएगा!</p>
     <ul>
       <li>POST /tata-misscall - Tata Tele webhook</li>
       <li>POST /wati-webhook - WATI webhook</li>
       <li>POST /ocr-prescription - OCR endpoint</li>
-      <li><b>POST /iphone-debug - iPhone Debug (use this first!)</b></li>
       <li>GET /test-template?number=91XXXX&branch=Satellite - Test template</li>
       <li>GET /test-ocr?image=URL - Test OCR</li>
       <li>GET /health - Health check</li>
@@ -487,9 +487,13 @@ app.get('/', (req, res) => {
   `);
 });
 
+// ============================================
+// START SERVER
+// ============================================
 app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 iPhone Debug: POST /iphone-debug`);
+  console.log(`📍 Template: ${TEMPLATE_NAME}`);
+  console.log(`📍 Duplicate window: ${DEDUPE_WINDOW_MS/1000} seconds`);
   console.log('='.repeat(60));
 });
