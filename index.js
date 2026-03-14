@@ -1,302 +1,526 @@
+require('dotenv').config();
+
 const express = require('express');
 const axios = require('axios');
-const bodyParser = require('body-parser');
-const multer = require('multer');  // For file uploads
 const FormData = require('form-data');
 
 const app = express();
-app.use(bodyParser.json({ limit: '50mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// ============================================
-// CONFIGURATION
-// ============================================
-const WATI_TOKEN = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1bmlxdWVfbmFtZSI6Im1haWx0b2RyYW1pdEBnbWFpbC5jb20iLCJuYW1laWQiOiJtYWlsdG9kcmFtaXRAZ21haWwuY29tIiwiZW1haWwiOiJtYWlsdG9kcmFtaXRAZ21haWwuY29tIiwiYXV0aF90aW1lIjoiMDMvMTMvMjAyNiAwOTo0NToyMSIsInRlbmFudF9pZCI6IjExMTAiLCJkYl9uYW1lIjoibXQtcHJvZC1UZW5hbnRzIiwiaHR0cDovL3NjaGVtYXMubWljcm9zb2Z0LmNvbS93cy8yMDA4LzA2L2lkZW50aXR5L2NsYWltcy9yb2xlIjoiQURNSU5JU1RSQVRPUiIsImV4cCI6MjUzNDAyMzAwODAwLCJpc3MiOiJDbGFyZV9BSSIsImF1ZCI6IkNsYXJlX0FJIn0.BVwEFq7t4Z9QN3Y1CbXAdR6zgIHqPN83jFtmrNq_2lc';
-const WATI_BASE_URL = 'https://live-mt-server.wati.io/1110';
+const PORT = process.env.PORT || 3000;
+const WATI_TOKEN = process.env.WATI_TOKEN;
+const WATI_BASE_URL = process.env.WATI_BASE_URL;
+const OCR_SPACE_API_KEY = process.env.OCR_SPACE_API_KEY;
+const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
+const DEDUPE_WINDOW_MS = (parseInt(process.env.DEDUPE_WINDOW_SECONDS || '600', 10)) * 1000;
+const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome';
 
-// Google Vision API (OPTIONAL - Comment out if not using)
-// const vision = require('@google-cloud/vision');
-// const visionClient = new vision.ImageAnnotatorClient({
-//   keyFilename: './google-credentials.json'
-// });
+if (!WATI_TOKEN || !WATI_BASE_URL) {
+  console.error('❌ Missing WATI configuration in .env');
+  process.exit(1);
+}
 
-// Branch Mapping
 const BRANCHES = {
-  '9898989898': 'Satellite',
-  '9898989899': 'Naroda',
-  '9898989897': 'Usmanpura',
-  '9898989896': 'Vadaj'
+  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: {
+    name: 'Satellite',
+    executive: normalizeWhatsAppNumber(process.env.SATELLITE_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
+  },
+  [normalizeIndianNumber(process.env.NARODA_NUMBER || '9898989899')]: {
+    name: 'Naroda',
+    executive: normalizeWhatsAppNumber(process.env.NARODA_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
+  },
+  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: {
+    name: 'Usmanpura',
+    executive: normalizeWhatsAppNumber(process.env.USMANPURA_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
+  },
+  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: {
+    name: 'Vadaj',
+    executive: normalizeWhatsAppNumber(process.env.VADAJ_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
+  }
 };
 
-// ============================================
-// FUNCTION 1: SEND WATI MESSAGE WITH BRANCH INFO
-// ============================================
-async function sendWATIMessage(whatsappNumber, branch) {
-  const messageText = `Namaste! Aapne humein miss call kiya tha (${branch} branch). Main aapki kya help kar sakta hoon?
+const recentMissCalls = new Map();
+const userContext = new Map();
 
-1️⃣ Book Test
-2️⃣ Upload Prescription
-3️⃣ Talk to Executive
+function normalizeIndianNumber(number) {
+  if (!number) return '';
+  let digits = String(number).replace(/\D/g, '');
+  if (digits.startsWith('91') && digits.length > 10) {
+    digits = digits.slice(-10);
+  } else if (digits.length > 10) {
+    digits = digits.slice(-10);
+  }
+  return digits;
+}
 
-Reply karein: 1, 2, ya 3`;
+function normalizeWhatsAppNumber(number) {
+  const local = normalizeIndianNumber(number);
+  return local ? `${DEFAULT_COUNTRY_CODE}${local}` : '';
+}
 
+function getBranchByCalledNumber(calledNumber) {
+  const normalized = normalizeIndianNumber(calledNumber);
+  return BRANCHES[normalized] || {
+    name: 'Main Branch',
+    executive: normalizeWhatsAppNumber(process.env.DEFAULT_EXECUTIVE || '919825086011')
+  };
+}
+
+function shouldSkipDuplicateMissCall(whatsappNumber, calledNumber) {
+  const key = `${whatsappNumber}_${normalizeIndianNumber(calledNumber)}`;
+  const now = Date.now();
+  const lastHit = recentMissCalls.get(key);
+
+  if (lastHit && (now - lastHit) < DEDUPE_WINDOW_MS) {
+    return true;
+  }
+
+  recentMissCalls.set(key, now);
+  return false;
+}
+
+function getCallerNumberFromPayload(body) {
+  return (
+    body.caller_number ||
+    body.from ||
+    body.msisdn ||
+    body.caller_id_number ||
+    body.mobile ||
+    body.customer_number ||
+    body.cli ||
+    ''
+  );
+}
+
+function getCalledNumberFromPayload(body) {
+  return (
+    body.called_number ||
+    body.to ||
+    body.destination ||
+    body.call_to_number ||
+    body.did ||
+    body.virtual_number ||
+    ''
+  );
+}
+
+function getTextFromWatiPayload(body) {
+  return (
+    body?.text ||
+    body?.message ||
+    body?.data?.text ||
+    body?.buttonText ||
+    body?.interactiveButtonReply?.title ||
+    ''
+  );
+}
+
+function getMediaUrlFromWatiPayload(body) {
+  return (
+    body?.imageUrl ||
+    body?.media?.url ||
+    body?.data?.imageUrl ||
+    body?.data?.media?.url ||
+    body?.url ||
+    ''
+  );
+}
+
+async function callWatiApi(url, data) {
   try {
-    console.log(`📤 Sending to WATI: ${whatsappNumber} for branch ${branch}`);
-    
-    const response = await axios({
-      method: 'POST',
-      url: `${WATI_BASE_URL}/api/v1/sendSessionMessage/${whatsappNumber}`,
+    const response = await axios.post(url, data, {
       headers: {
-        'Authorization': WATI_TOKEN,
+        Authorization: `Bearer ${WATI_TOKEN}`,
         'Content-Type': 'application/json'
       },
-      data: {
-        messageText: messageText,
-        messageType: 'TEXT',
-        customParams: {  // ✅ Branch as custom parameter for WATI
-          branch: branch,
-          source: 'misscall'
-        }
-      },
-      timeout: 10000
+      timeout: 15000
     });
-    
-    console.log('✅ WATI Response:', response.data);
     return response.data;
-    
   } catch (error) {
-    console.error('❌ WATI API Error:', error.message);
+    console.error('❌ WATI API Error:', error.response?.data || error.message);
     throw error;
   }
 }
 
-// ============================================
-// FUNCTION 2: OCR WITH GOOGLE VISION (OPTION B)
-// ============================================
-async function extractWithGoogleVision(imageUrl) {
+/**
+ * NOTE:
+ * First outbound message after missed call should be a TEMPLATE message, not session message.
+ * WATI template API path/payload can differ by account/version.
+ * Confirm the exact endpoint from your WATI docs/dashboard and update this function if needed.
+ */
+async function sendWatiTemplateMessage(whatsappNumber, branchName) {
+  const payload = {
+    template_name: TEMPLATE_NAME,
+    broadcast_name: `misscall_${Date.now()}`,
+    parameters: [
+      {
+        name: '1',
+        value: branchName
+      }
+    ]
+  };
+
+  // IMPORTANT:
+  // This endpoint may differ in your WATI account version.
+  // If your account uses another template send endpoint, replace only this URL/payload.
+  const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
+
+  return await callWatiApi(url, payload);
+}
+
+async function sendSessionTextMessage(whatsappNumber, messageText) {
+  const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${encodeURIComponent(whatsappNumber)}`;
+  const payload = {
+    messageText,
+    messageType: 'TEXT'
+  };
+  return await callWatiApi(url, payload);
+}
+
+async function sendExecutiveNotification(executiveNumber, messageText) {
+  return await sendSessionTextMessage(executiveNumber, messageText);
+}
+
+async function extractWithOCRSpace(imageUrl) {
   try {
-    console.log('🔍 Running Google Vision OCR on:', imageUrl);
-    
-    // METHOD 1: If you have Google Vision setup
-    // const [result] = await visionClient.textDetection(imageUrl);
-    // const text = result.fullTextAnnotation.text;
-    
-    // METHOD 2: Using free OCR API (for testing)
     const formData = new FormData();
     formData.append('url', imageUrl);
-    formData.append('apikey', 'K81411447188957');  // Free OCR.space API key
+    formData.append('apikey', OCR_SPACE_API_KEY);
     formData.append('language', 'eng');
-    
-    const ocrResponse = await axios.post('https://api.ocr.space/parse/image', formData, {
-      headers: formData.getHeaders()
+
+    const response = await axios.post('https://api.ocr.space/parse/image', formData, {
+      headers: formData.getHeaders(),
+      timeout: 30000
     });
-    
-    if (ocrResponse.data.ParsedResults) {
-      const text = ocrResponse.data.ParsedResults[0].ParsedText;
-      return parsePrescriptionText(text);
-    }
-    
-    return {
-      patientName: 'Not found',
-      doctorName: 'Not found',
-      tests: 'Not found'
-    };
-    
+
+    const parsedText = response.data?.ParsedResults?.[0]?.ParsedText || '';
+    return parsePrescriptionText(parsedText);
   } catch (error) {
-    console.error('❌ OCR Error:', error);
+    console.error('❌ OCR Error:', error.response?.data || error.message);
     return {
       patientName: 'OCR Failed',
       doctorName: 'OCR Failed',
       tests: 'OCR Failed',
+      rawText: '',
       error: error.message
     };
   }
 }
 
-// ============================================
-// FUNCTION 3: PARSE OCR TEXT
-// ============================================
 function parsePrescriptionText(text) {
-  console.log('📝 OCR Text:', text);
-  
-  // Simple regex patterns (you can improve these)
-  const patientMatch = text.match(/Patient(?:\s*Name)?[:\s]+([A-Za-z\s]+)/i) || 
-                       text.match(/Name[:\s]+([A-Za-z\s]+)/i) ||
-                       text.match(/([A-Z][a-z]+\s+[A-Z][a-z]+)/); // Simple name pattern
-  
-  const doctorMatch = text.match(/Dr\.?\s*([A-Za-z\s]+)/i) ||
-                      text.match(/Doctor[:\s]+([A-Za-z\s]+)/i);
-  
-  // Common test names
-  const testKeywords = ['blood', 'x-ray', 'xray', 'ultrasound', 'cbc', 'thyroid', 
-                        'lipid', 'liver', 'kidney', 'urine', 'stool', 'ecg', 'mri', 'ct scan'];
-  
+  const cleanText = String(text || '').trim();
+
+  const patientMatch =
+    cleanText.match(/Patient(?:\s*Name)?[:\s]+([A-Za-z\s]+)/i) ||
+    cleanText.match(/Name[:\s]+([A-Za-z\s]+)/i) ||
+    cleanText.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/);
+
+  const doctorMatch =
+    cleanText.match(/Dr\.?\s*([A-Za-z\s]+)/i) ||
+    cleanText.match(/Doctor[:\s]+([A-Za-z\s]+)/i);
+
+  const testKeywords = [
+    'blood',
+    'x-ray',
+    'xray',
+    'ultrasound',
+    'cbc',
+    'thyroid',
+    'lipid',
+    'liver',
+    'kidney',
+    'urine',
+    'stool',
+    'ecg',
+    'mri',
+    'ct scan',
+    'ct',
+    'vitamin',
+    'sugar'
+  ];
+
   const foundTests = [];
-  testKeywords.forEach(keyword => {
-    if (text.toLowerCase().includes(keyword)) {
+  const lower = cleanText.toLowerCase();
+
+  for (const keyword of testKeywords) {
+    if (lower.includes(keyword)) {
       foundTests.push(keyword.toUpperCase());
     }
-  });
-  
+  }
+
   return {
     patientName: patientMatch ? patientMatch[1].trim() : 'Not found',
     doctorName: doctorMatch ? doctorMatch[1].trim() : 'Not found',
-    tests: foundTests.length ? foundTests.join(', ') : 'Not found',
-    rawText: text.substring(0, 200) + '...' // Preview
+    tests: foundTests.length ? [...new Set(foundTests)].join(', ') : 'Not found',
+    rawText: cleanText ? cleanText.slice(0, 500) : 'No OCR text found'
   };
 }
 
-// ============================================
-// ENDPOINT 1: TATA TELE WEBHOOK
-// ============================================
 app.post('/tata-misscall', async (req, res) => {
-  console.log('📞 Miss Call Received:', JSON.stringify(req.body, null, 2));
-  
-  const callerNumber = req.body.caller_number || req.body.from || req.body.msisdn || req.body.caller_id_number;
-  const calledNumber = req.body.called_number || req.body.to || req.body.destination || req.body.call_to_number;
-  
-  if (!callerNumber) {
-    return res.status(400).json({ error: 'Caller number not found' });
-  }
-  
-  let whatsappNumber = callerNumber.toString().replace(/\D/g, '');
-  if (!whatsappNumber.startsWith('91')) {
-    whatsappNumber = '91' + whatsappNumber;
-  }
-  
-  const branch = BRANCHES[calledNumber] || 'Main Branch';
-  console.log(`🏥 Branch: ${branch}, WhatsApp: ${whatsappNumber}`);
-  
   try {
-    await sendWATIMessage(whatsappNumber, branch);
-    res.json({ status: 'success', branch: branch });
+    console.log('📞 Tata Miss Call Payload:', JSON.stringify(req.body, null, 2));
+
+    const callerNumberRaw = getCallerNumberFromPayload(req.body);
+    const calledNumberRaw = getCalledNumberFromPayload(req.body);
+
+    if (!callerNumberRaw) {
+      return res.status(400).json({ success: false, error: 'Caller number not found in webhook payload' });
+    }
+
+    const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
+    const branch = getBranchByCalledNumber(calledNumberRaw);
+
+    if (!whatsappNumber) {
+      return res.status(400).json({ success: false, error: 'Invalid caller number after normalization' });
+    }
+
+    if (shouldSkipDuplicateMissCall(whatsappNumber, calledNumberRaw)) {
+      console.log(`⚠️ Duplicate missed call skipped for ${whatsappNumber}`);
+      return res.json({
+        success: true,
+        skipped: true,
+        reason: 'Duplicate missed call within dedupe window'
+      });
+    }
+
+    userContext.set(whatsappNumber, {
+      branch: branch.name,
+      executive: branch.executive,
+      stage: 'welcome_sent',
+      updatedAt: new Date().toISOString()
+    });
+
+    await sendWatiTemplateMessage(whatsappNumber, branch.name);
+
+    return res.json({
+      success: true,
+      whatsappNumber,
+      branch: branch.name
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('❌ /tata-misscall error:', error.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.response?.data || error.message
+    });
   }
 });
 
-// ============================================
-// ENDPOINT 2: OCR PROCESSING (Called by WATI)
-// ============================================
 app.post('/ocr-prescription', async (req, res) => {
-  console.log('📸 OCR Request Received');
-  
-  const { imageUrl, whatsappNumber, branch, watiChatId } = req.body;
-  
-  if (!imageUrl) {
-    return res.status(400).json({ error: 'Image URL required' });
-  }
-  
   try {
-    // Step 1: Run OCR
-    const extractedData = await extractWithGoogleVision(imageUrl);
-    
-    // Step 2: Send to Executive via WATI
+    const { imageUrl, whatsappNumber, branch, executive } = req.body;
+
+    if (!imageUrl || !whatsappNumber) {
+      return res.status(400).json({
+        success: false,
+        error: 'imageUrl and whatsappNumber are required'
+      });
+    }
+
+    const extracted = await extractWithOCRSpace(imageUrl);
+
+    const context = userContext.get(whatsappNumber) || {};
+    const finalBranch = branch || context.branch || 'Not specified';
+    const finalExecutive = executive || context.executive || normalizeWhatsAppNumber(process.env.DEFAULT_EXECUTIVE || '919825086011');
+
     const executiveMessage = `📸 *New Prescription Uploaded*
 ━━━━━━━━━━━━━━━━━━
-🏥 *Branch:* ${branch || 'Not specified'}
-👤 *Patient:* ${extractedData.patientName}
-👨‍⚕️ *Doctor:* ${extractedData.doctorName}
-🔬 *Tests:* ${extractedData.tests}
+🏥 *Branch:* ${finalBranch}
+👤 *Patient:* ${extracted.patientName}
+👨‍⚕️ *Doctor:* ${extracted.doctorName}
+🔬 *Tests:* ${extracted.tests}
 ━━━━━━━━━━━━━━━━━━
-💬 *Raw OCR Preview:*
-${extractedData.rawText}
+📝 *OCR Preview:*
+${extracted.rawText}
 
 🔗 Image: ${imageUrl}`;
 
-    // Send to WATI (to executive's chat)
-    await axios({
-      method: 'POST',
-      url: `${WATI_BASE_URL}/api/v1/sendSessionMessage/919825086011`, // Executive number
-      headers: { 'Authorization': WATI_TOKEN },
-      data: {
-        messageText: executiveMessage,
-        messageType: 'TEXT'
-      }
+    await sendExecutiveNotification(finalExecutive, executiveMessage);
+
+    await sendSessionTextMessage(
+      whatsappNumber,
+      '✅ Aapki prescription receive ho gayi hai. Hamari team check karke aapse contact karegi.'
+    );
+
+    userContext.set(whatsappNumber, {
+      ...context,
+      branch: finalBranch,
+      executive: finalExecutive,
+      stage: 'prescription_uploaded',
+      updatedAt: new Date().toISOString()
     });
-    
-    // Also send to original patient chat (confirmation)
-    await axios({
-      method: 'POST',
-      url: `${WATI_BASE_URL}/api/v1/sendSessionMessage/${whatsappNumber}`,
-      headers: { 'Authorization': WATI_TOKEN },
-      data: {
-        messageText: `✅ Aapki prescription receive ho gayi. Hamari team check karke aapse contact karegi.`,
-        messageType: 'TEXT'
-      }
+
+    return res.json({
+      success: true,
+      extracted
     });
-    
-    res.json({ 
-      success: true, 
-      extracted: extractedData,
-      notified: true
-    });
-    
   } catch (error) {
-    console.error('❌ OCR Endpoint Error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ /ocr-prescription error:', error.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.response?.data || error.message
+    });
   }
 });
 
-// ============================================
-// ENDPOINT 3: WATI Webhook (For receiving messages)
-// ============================================
 app.post('/wati-webhook', async (req, res) => {
-  console.log('📨 WATI Webhook:', JSON.stringify(req.body, null, 2));
-  
-  // WATI se message aaya - can be used for logging or custom logic
-  const { text, from, customParams } = req.body;
-  
-  // Log for debugging
-  console.log(`Message from ${from}: ${text}`);
-  console.log('Custom Params:', customParams);
-  
-  res.json({ received: true });
-});
-
-// ============================================
-// TEST ENDPOINTS
-// ============================================
-app.get('/test-ocr', async (req, res) => {
-  const testImage = req.query.image || 'https://i.imgur.com/sample-prescription.jpg';
-  const result = await extractWithGoogleVision(testImage);
-  res.json(result);
-});
-
-app.get('/test-wati', async (req, res) => {
-  const testNumber = req.query.number || '919106959092';
-  const branch = req.query.branch || 'Satellite';
   try {
-    await sendWATIMessage(testNumber, branch);
-    res.send(`✅ Test message sent to ${testNumber} for branch ${branch}`);
+    console.log('📨 WATI Webhook Payload:', JSON.stringify(req.body, null, 2));
+
+    const from = normalizeWhatsAppNumber(req.body.from || req.body.whatsappNumber || req.body.sender);
+    const text = String(getTextFromWatiPayload(req.body) || '').trim();
+    const mediaUrl = getMediaUrlFromWatiPayload(req.body);
+
+    if (!from) {
+      return res.json({ received: true, ignored: true, reason: 'No sender found' });
+    }
+
+    const context = userContext.get(from) || {};
+    const branch = context.branch || 'Main Branch';
+    const executive = context.executive || normalizeWhatsAppNumber(process.env.DEFAULT_EXECUTIVE || '919825086011');
+
+    if (text === '1') {
+      await sendSessionTextMessage(
+        from,
+        `📅 *Book Test - ${branch} Branch*\nKripya apna naam, test ka naam, aur preferred date/time bhejiye. Hamari team aapse contact karegi.`
+      );
+
+      userContext.set(from, {
+        ...context,
+        stage: 'book_test_requested',
+        updatedAt: new Date().toISOString()
+      });
+    } else if (text === '2') {
+      await sendSessionTextMessage(
+        from,
+        `📸 *Upload Prescription - ${branch} Branch*\nKripya prescription ki clear photo bhejiye.`
+      );
+
+      userContext.set(from, {
+        ...context,
+        stage: 'awaiting_prescription',
+        updatedAt: new Date().toISOString()
+      });
+    } else if (text === '3') {
+      await sendSessionTextMessage(
+        from,
+        `👨‍💼 Aapko ${branch} branch ke executive se connect kiya ja raha hai.`
+      );
+
+      await sendExecutiveNotification(
+        executive,
+        `📞 *Executive Assistance Required*\nCustomer: ${from}\nBranch: ${branch}\nReason: Talk to Executive`
+      );
+
+      userContext.set(from, {
+        ...context,
+        stage: 'executive_requested',
+        updatedAt: new Date().toISOString()
+      });
+    } else if (mediaUrl && context.stage === 'awaiting_prescription') {
+      const extracted = await extractWithOCRSpace(mediaUrl);
+
+      await sendExecutiveNotification(
+        executive,
+        `📸 *Prescription Received*
+🏥 Branch: ${branch}
+📱 Customer: ${from}
+👤 Patient: ${extracted.patientName}
+👨‍⚕️ Doctor: ${extracted.doctorName}
+🔬 Tests: ${extracted.tests}
+
+📝 OCR Preview:
+${extracted.rawText}
+
+🔗 Image: ${mediaUrl}`
+      );
+
+      await sendSessionTextMessage(
+        from,
+        '✅ Aapki prescription receive ho gayi hai. Hamari team aapse jald contact karegi.'
+      );
+
+      userContext.set(from, {
+        ...context,
+        stage: 'prescription_uploaded',
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    return res.json({ received: true });
   } catch (error) {
-    res.send(`❌ Error: ${error.message}`);
+    console.error('❌ /wati-webhook error:', error.response?.data || error.message);
+    return res.status(500).json({
+      received: false,
+      error: error.response?.data || error.message
+    });
   }
+});
+
+app.get('/test-wati-session', async (req, res) => {
+  try {
+    const number = normalizeWhatsAppNumber(req.query.number || '919106959092');
+    await sendSessionTextMessage(number, '✅ Test session message');
+    res.json({ success: true, number });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.response?.data || error.message });
+  }
+});
+
+app.get('/test-template', async (req, res) => {
+  try {
+    const number = normalizeWhatsAppNumber(req.query.number || '919106959092');
+    const branch = req.query.branch || 'Satellite';
+    const result = await sendWatiTemplateMessage(number, branch);
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.response?.data || error.message });
+  }
+});
+
+app.get('/test-ocr', async (req, res) => {
+  try {
+    const imageUrl = req.query.image;
+    if (!imageUrl) {
+      return res.status(400).json({ success: false, error: 'image query parameter required' });
+    }
+    const result = await extractWithOCRSpace(imageUrl);
+    return res.json({ success: true, result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    status: 'ok',
+    uptime: process.uptime()
+  });
 });
 
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>Available endpoints:</p>
     <ul>
-      <li><b>POST /tata-misscall</b> - Tata Tele webhook</li>
-      <li><b>POST /ocr-prescription</b> - OCR endpoint for WATI</li>
-      <li><b>POST /wati-webhook</b> - WATI webhook</li>
-      <li><b>GET /test-ocr?image=URL</b> - Test OCR</li>
-      <li><b>GET /test-wati?number=91XXXX&branch=Satellite</b> - Test WATI</li>
+      <li>POST /tata-misscall</li>
+      <li>POST /wati-webhook</li>
+      <li>POST /ocr-prescription</li>
+      <li>GET /test-template?number=91XXXXXXXXXX&branch=Satellite</li>
+      <li>GET /test-wati-session?number=91XXXXXXXXXX</li>
+      <li>GET /test-ocr?image=IMAGE_URL</li>
+      <li>GET /health</li>
     </ul>
   `);
 });
 
-// ============================================
-// SERVER START
-// ============================================
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Tata Tele Webhook: POST /tata-misscall`);
-  console.log(`📍 OCR Endpoint: POST /ocr-prescription`);
-  console.log(`📍 WATI Webhook: POST /wati-webhook`);
+  console.log(`📍 Base URL ready`);
+  console.log(`📍 POST /tata-misscall`);
+  console.log(`📍 POST /wati-webhook`);
+  console.log(`📍 POST /ocr-prescription`);
   console.log('='.repeat(60));
 });
