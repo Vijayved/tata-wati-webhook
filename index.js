@@ -1,15 +1,15 @@
 require('dotenv').config();
-
 const express = require('express');
 const axios = require('axios');
 const FormData = require('form-data');
+const cron = require('node-cron');
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ============================================
-// CONFIGURATION - Environment variables से
+// CONFIGURATION
 // ============================================
 const PORT = process.env.PORT || 3000;
 const WATI_TOKEN = process.env.WATI_TOKEN;
@@ -33,89 +33,77 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
 }
 
 // ============================================
-// BRANCH CONFIGURATION - Virtual numbers mapping
+// EXECUTIVE NUMBERS MAPPING
+// ============================================
+const EXECUTIVES = {
+  'Satellite Team': process.env.SATELLITE_EXECUTIVE || '919825086011',
+  'Naroda Team': process.env.NARODA_EXECUTIVE || '919825086012',
+  'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '919825086013',
+  'Vadaj Team': process.env.VADAJ_EXECUTIVE || '919825086014',
+  'Manager': '919825086099'  // Manager का नंबर डालो
+};
+
+// ============================================
+// BRANCH CONFIGURATION
 // ============================================
 const BRANCHES = {
-  // जो भी number यहाँ add करोगे, उस पर miss call आने पर branch detect होगी
   [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: {
     name: 'Satellite',
-    executive: normalizeWhatsAppNumber(process.env.SATELLITE_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
+    executive: EXECUTIVES['Satellite Team']
   },
   [normalizeIndianNumber(process.env.NARODA_NUMBER || '9898989899')]: {
     name: 'Naroda',
-    executive: normalizeWhatsAppNumber(process.env.NARODA_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
+    executive: EXECUTIVES['Naroda Team']
   },
   [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: {
     name: 'Usmanpura',
-    executive: normalizeWhatsAppNumber(process.env.USMANPURA_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
+    executive: EXECUTIVES['Usmanpura Team']
   },
   [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: {
     name: 'Vadaj',
-    executive: normalizeWhatsAppNumber(process.env.VADAJ_EXECUTIVE || process.env.DEFAULT_EXECUTIVE || '919825086011')
+    executive: EXECUTIVES['Vadaj Team']
   },
-  // Test Number - यहाँ हर वो नंबर add करो जिसे test करना है
   [normalizeIndianNumber('917969690935')]: {
     name: 'Test Branch',
-    executive: normalizeWhatsAppNumber('917880261858')
+    executive: '917880261858'
   }
 };
 
 // ============================================
 // IN-MEMORY STORAGE
 // ============================================
-const recentMissCalls = new Map();  // Duplicate prevention के लिए
-const userContext = new Map();      // User session के लिए
+const recentMissCalls = new Map();
+const userContext = new Map();
+const patientDB = new Map();        // Executive system के लिए
+const followupDB = new Map();       // Follow-up dates के लिए
 
 // ============================================
-// HELPER FUNCTIONS - Number normalization
+// HELPER FUNCTIONS
 // ============================================
 function normalizeIndianNumber(number) {
   if (!number) return '';
-  
-  console.log('📱 Normalizing number:', number);
-  
-  // Remove all non-digits
   let digits = String(number).replace(/\D/g, '');
-  
-  // Remove leading 00 if present
-  if (digits.startsWith('00')) {
-    digits = digits.slice(2);
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.length === 10) return '91' + digits;
+  if (digits.length === 11 && digits.startsWith('0')) return '91' + digits.slice(1);
+  if (digits.length === 12) {
+    if (digits.startsWith('91')) return digits;
+    return '91' + digits.slice(-10);
   }
-  
-  // Handle different lengths
-  if (digits.length === 10) {
-    // 10-digit local number
-    return '91' + digits;
-  } else if (digits.length === 11 && digits.startsWith('0')) {
-    // 11-digit starting with 0
-    return '91' + digits.slice(1);
-  } else if (digits.length === 12) {
-    // 12-digit - check if already has 91
-    if (digits.startsWith('91')) {
-      return digits;
-    } else {
-      return '91' + digits.slice(-10);
-    }
-  } else if (digits.length > 12) {
-    // Take last 12 digits
-    return digits.slice(-12);
-  }
-  
+  if (digits.length > 12) return digits.slice(-12);
   return '';
 }
 
 function normalizeWhatsAppNumber(number) {
   const normalized = normalizeIndianNumber(number);
-  if (!normalized) return '';
-  // WhatsApp number = 91 + last 10 digits
-  return '91' + normalized.slice(-10);
+  return normalized ? '91' + normalized.slice(-10) : '';
 }
 
 function getBranchByCalledNumber(calledNumber) {
   const normalized = normalizeIndianNumber(calledNumber);
   return BRANCHES[normalized] || {
     name: 'Main Branch',
-    executive: normalizeWhatsAppNumber(process.env.DEFAULT_EXECUTIVE || '919825086011')
+    executive: process.env.DEFAULT_EXECUTIVE || '919825086011'
   };
 }
 
@@ -123,67 +111,24 @@ function shouldSkipDuplicateMissCall(whatsappNumber, calledNumber) {
   const key = `${whatsappNumber}_${normalizeIndianNumber(calledNumber)}`;
   const now = Date.now();
   const lastHit = recentMissCalls.get(key);
-  if (lastHit && (now - lastHit) < DEDUPE_WINDOW_MS) {
-    return true;
-  }
+  if (lastHit && (now - lastHit) < DEDUPE_WINDOW_MS) return true;
   recentMissCalls.set(key, now);
   return false;
 }
 
-// ============================================
-// PAYLOAD EXTRACTION - Tata Tele fields
-// ============================================
 function getCallerNumberFromPayload(body) {
-  console.log('🔍 Extracting caller number...');
-  
-  // All possible fields where caller number might appear
-  const possibleFields = [
-    'caller_id_number', 'caller_number', 'from', 'msisdn', 'mobile',
-    'customer_number', 'customer_no_with_prefix', 'cli', 'caller',
-    'phone', 'source', 'ani', 'calling_party', 'calling_number'
-  ];
-  
-  for (let field of possibleFields) {
-    if (body[field]) {
-      console.log(`✅ Found in field '${field}':`, body[field]);
-      return String(body[field]);
-    }
-  }
-  
-  // If not found in specific fields, search all fields
-  for (let key in body) {
-    const value = body[key];
-    if (value && typeof value === 'string') {
-      const digits = value.replace(/\D/g, '');
-      if (digits.length >= 10) {
-        console.log(`✅ Found in field '${key}': ${value}`);
-        return value;
-      }
-    }
-  }
-  
-  console.log('❌ No caller number found');
-  return '';
+  return body.caller_id_number || body.caller_number || body.from || 
+         body.msisdn || body.mobile || body.customer_number ||
+         body.customer_no_with_prefix || body.cli || '';
 }
 
 function getCalledNumberFromPayload(body) {
-  const possibleFields = [
-    'call_to_number', 'called_number', 'to', 'destination',
-    'did', 'virtual_number', 'called_party'
-  ];
-  
-  for (let field of possibleFields) {
-    if (body[field]) {
-      console.log(`✅ Found called number in field '${field}':`, body[field]);
-      return String(body[field]);
-    }
-  }
-  
-  return '';
+  return body.call_to_number || body.called_number || body.to || 
+         body.destination || body.did || body.virtual_number || '';
 }
 
 // ============================================
-// WATI API FUNCTIONS - Universal sending
+// WATI API FUNCTIONS
 // ============================================
 async function callWatiApi(url, data) {
   try {
@@ -202,62 +147,13 @@ async function callWatiApi(url, data) {
 }
 
 async function sendWatiTemplateMessage(whatsappNumber, branchName) {
-  try {
-    console.log(`📱 Sending template to ANY number: ${whatsappNumber} for branch ${branchName}`);
-    
-    const payload = {
-      template_name: TEMPLATE_NAME,
-      broadcast_name: `misscall_${Date.now()}`,
-      parameters: [
-        { 
-          name: '1', 
-          value: branchName 
-        }
-      ]
-    };
-    
-    const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
-    
-    const response = await callWatiApi(url, payload);
-    console.log(`✅ Template sent to ${whatsappNumber}`);
-    
-    // Store in context
-    userContext.set(whatsappNumber, {
-      branch: branchName,
-      lastMessage: new Date().toISOString(),
-      stage: 'welcome_sent'
-    });
-    
-    return response;
-    
-  } catch (error) {
-    console.error(`❌ Template failed for ${whatsappNumber}, trying session message...`);
-    
-    // Fallback: session message
-    try {
-      const sessionPayload = {
-        messageText: `Namaste! Aapne miss call kiya tha (${branchName} branch). Main aapki kya help kar sakta hoon?\n\n1. Book Test\n2. Upload Prescription\n3. Talk to Executive`,
-        messageType: 'TEXT'
-      };
-      
-      const sessionUrl = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${encodeURIComponent(whatsappNumber)}`;
-      
-      const sessionResponse = await axios.post(sessionUrl, sessionPayload, {
-        headers: {
-          Authorization: WATI_TOKEN,
-          'Content-Type': 'application/json'
-        },
-        timeout: 15000
-      });
-      
-      console.log(`✅ Session message sent to ${whatsappNumber}`);
-      return sessionResponse.data;
-      
-    } catch (sessionError) {
-      console.error(`❌ Both template and session failed for ${whatsappNumber}`);
-      throw sessionError;
-    }
-  }
+  const payload = {
+    template_name: TEMPLATE_NAME,
+    broadcast_name: `misscall_${Date.now()}`,
+    parameters: [{ name: '1', value: branchName }]
+  };
+  const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
+  return await callWatiApi(url, payload);
 }
 
 async function sendSessionTextMessage(whatsappNumber, messageText) {
@@ -269,6 +165,207 @@ async function sendSessionTextMessage(whatsappNumber, messageText) {
 async function sendExecutiveNotification(executiveNumber, messageText) {
   return await sendSessionTextMessage(executiveNumber, messageText);
 }
+
+// ============================================
+// EXECUTIVE SYSTEM ENDPOINTS
+// ============================================
+
+// WATI Webhook for chat assignments
+app.post('/webhook/chat-assigned', async (req, res) => {
+  try {
+    console.log('📨 Executive Webhook:', JSON.stringify(req.body, null, 2));
+    
+    const { chatId, assignedTeam, contact, messages } = req.body;
+    
+    // Check if chat is assigned to any team
+    if (!assignedTeam || assignedTeam === '') {
+      console.log('⏭️ Skipping - Chat not assigned');
+      return res.json({ ignored: true });
+    }
+    
+    // Get executive number
+    const executiveNumber = EXECUTIVES[assignedTeam];
+    if (!executiveNumber) {
+      console.log(`⚠️ No executive for team: ${assignedTeam}`);
+      return res.json({ ignored: true });
+    }
+    
+    // Extract patient details
+    const patientData = {
+      patientName: contact?.name || 'Patient',
+      patientNumber: contact?.waId || 'Unknown',
+      testNames: 'Test booked',
+      branch: assignedTeam.replace(' Team', ''),
+      time: new Date().toLocaleString(),
+      chatId
+    };
+    
+    // Store in database
+    patientDB.set(chatId, {
+      ...patientData,
+      executiveNumber,
+      team: assignedTeam,
+      status: 'pending',
+      createdAt: new Date()
+    });
+    
+    // Send message to executive
+    const message = `
+📋 *New Patient Request*
+━━━━━━━━━━━━━━━━━━
+👤 Patient: ${patientData.patientName}
+🔬 Tests: ${patientData.testNames}
+🏥 Branch: ${patientData.branch}
+📅 Time: ${patientData.time}
+📞 Patient No: ${patientData.patientNumber}
+━━━━━━━━━━━━━━━━━━
+
+🔗 Connect: ${SELF_URL}/connect-chat/${chatId}
+✅ Convert: ${SELF_URL}/exec-action?action=convert&chat=${chatId}
+⏳ Waiting: ${SELF_URL}/exec-action?action=waiting&chat=${chatId}
+❌ Not Convert: ${SELF_URL}/exec-action?action=notconvert&chat=${chatId}
+    `;
+    
+    await sendExecutiveNotification(executiveNumber, message);
+    console.log(`✅ Notification sent to ${executiveNumber} for chat ${chatId}`);
+    
+    res.json({ success: true });
+    
+  } catch (error) {
+    console.error('❌ Webhook error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Connect button handler
+app.get('/connect-chat/:chatId', (req, res) => {
+  const { chatId } = req.params;
+  // Redirect to WATI app deep link
+  res.redirect(`https://app.wati.io/chat/${chatId}`);
+});
+
+// Executive action handler
+app.get('/exec-action', async (req, res) => {
+  const { action, chat } = req.query;
+  
+  const patient = patientDB.get(chat);
+  if (!patient) {
+    return res.send('❌ Patient not found');
+  }
+  
+  let responseMessage = '';
+  
+  switch(action) {
+    case 'convert':
+      patient.status = 'converted';
+      patientDB.set(chat, patient);
+      responseMessage = '✅ Patient marked as converted';
+      await sendExecutiveNotification(patient.executiveNumber,
+        `✅ Patient ${patient.patientName} converted successfully!`);
+      break;
+      
+    case 'waiting':
+      patient.status = 'waiting';
+      patientDB.set(chat, patient);
+      responseMessage = '⏳ Please reply with follow-up date (DD/MM/YYYY)';
+      await sendExecutiveNotification(patient.executiveNumber,
+        `⏳ Patient ${patient.patientName} is waiting. Please send follow-up date.`);
+      break;
+      
+    case 'notconvert':
+      patient.status = 'not_converted';
+      patientDB.set(chat, patient);
+      responseMessage = '❌ Escalated to manager';
+      await sendExecutiveNotification(EXECUTIVES['Manager'],
+        `📤 *Escalation Alert*\nPatient: ${patient.patientName}\nExecutive: ${patient.executiveNumber}\nBranch: ${patient.branch}`);
+      await sendExecutiveNotification(patient.executiveNumber,
+        `❌ Patient ${patient.patientName} escalated to manager.`);
+      break;
+  }
+  
+  res.send(responseMessage);
+});
+
+// Follow-up date handler
+app.post('/webhook/followup', async (req, res) => {
+  const { chatId, followupDate } = req.body;
+  
+  const patient = patientDB.get(chatId);
+  if (patient) {
+    patient.followupDate = followupDate;
+    patient.status = 'waiting';
+    patientDB.set(chatId, patient);
+    
+    const dateKey = followupDate.split('/').reverse().join('-'); // Convert to YYYY-MM-DD
+    const existing = followupDB.get(dateKey) || [];
+    followupDB.set(dateKey, [...existing, chatId]);
+  }
+  
+  res.json({ success: true });
+});
+
+// Daily follow-up reminder (9 AM)
+cron.schedule('0 9 * * *', async () => {
+  console.log('⏰ Running follow-up reminder...');
+  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  
+  const chatIds = followupDB.get(today) || [];
+  
+  for (const chatId of chatIds) {
+    const patient = patientDB.get(chatId);
+    if (patient) {
+      await sendExecutiveNotification(patient.executiveNumber,
+        `⏰ *Follow-up Reminder*\nPatient: ${patient.patientName}\nBranch: ${patient.branch}`);
+    }
+  }
+});
+
+// Daily manager report (10 PM)
+cron.schedule('0 22 * * *', async () => {
+  console.log('📊 Generating daily report...');
+  
+  let report = `📊 *Daily Report - ${new Date().toLocaleDateString()}*\n━━━━━━━━━━━━━━━━━━\n\n`;
+  
+  let total = 0, converted = 0, waiting = 0, notConverted = 0;
+  const branchStats = {};
+  
+  for (let [chatId, patient] of patientDB) {
+    const createdDate = patient.createdAt.toISOString().split('T')[0];
+    const today = new Date().toISOString().split('T')[0];
+    
+    if (createdDate !== today) continue; // Only today's patients
+    
+    total++;
+    
+    branchStats[patient.branch] = branchStats[patient.branch] || 
+      { total:0, converted:0, waiting:0, notConverted:0 };
+    branchStats[patient.branch].total++;
+    
+    if (patient.status === 'converted') {
+      converted++;
+      branchStats[patient.branch].converted++;
+    } else if (patient.status === 'waiting') {
+      waiting++;
+      branchStats[patient.branch].waiting++;
+    } else if (patient.status === 'not_converted') {
+      notConverted++;
+      branchStats[patient.branch].notConverted++;
+    }
+  }
+  
+  report += `📞 Total Patients: ${total}\n`;
+  report += `✅ Converted: ${converted}\n`;
+  report += `⏳ Waiting: ${waiting}\n`;
+  report += `❌ Not Converted: ${notConverted}\n\n`;
+  report += `🏥 Branch-wise:\n`;
+  
+  for (let branch in branchStats) {
+    let b = branchStats[branch];
+    report += `${branch}: ${b.total} (✅${b.converted} ⏳${b.waiting} ❌${b.notConverted})\n`;
+  }
+  
+  await sendExecutiveNotification(EXECUTIVES['Manager'], report);
+});
 
 // ============================================
 // OCR FUNCTIONS
@@ -287,74 +384,60 @@ async function extractWithOCRSpace(imageUrl) {
     return parsePrescriptionText(parsedText);
   } catch (error) {
     console.error('❌ OCR Error:', error.response?.data || error.message);
-    return { patientName: 'OCR Failed', doctorName: 'OCR Failed', tests: 'OCR Failed', rawText: '', error: error.message };
+    return { patientName: 'OCR Failed', doctorName: 'OCR Failed', tests: 'OCR Failed', rawText: '' };
   }
 }
 
 function parsePrescriptionText(text) {
   const cleanText = String(text || '').trim();
-  const patientMatch = cleanText.match(/Patient(?:\s*Name)?[:\s]+([A-Za-z\s]+)/i) || cleanText.match(/Name[:\s]+([A-Za-z\s]+)/i) || cleanText.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/);
-  const doctorMatch = cleanText.match(/Dr\.?\s*([A-Za-z\s]+)/i) || cleanText.match(/Doctor[:\s]+([A-Za-z\s]+)/i);
-  const testKeywords = ['blood', 'x-ray', 'xray', 'ultrasound', 'cbc', 'thyroid', 'lipid', 'liver', 'kidney', 'urine', 'stool', 'ecg', 'mri', 'ct scan', 'ct', 'vitamin', 'sugar'];
+  const patientMatch = cleanText.match(/Patient(?:\s*Name)?[:\s]+([A-Za-z\s]+)/i) || 
+                       cleanText.match(/Name[:\s]+([A-Za-z\s]+)/i);
+  const doctorMatch = cleanText.match(/Dr\.?\s*([A-Za-z\s]+)/i);
+  const testKeywords = ['blood', 'x-ray', 'xray', 'ultrasound', 'cbc', 'thyroid'];
   const foundTests = [];
   const lower = cleanText.toLowerCase();
   for (const keyword of testKeywords) {
-    if (lower.includes(keyword)) {
-      foundTests.push(keyword.toUpperCase());
-    }
+    if (lower.includes(keyword)) foundTests.push(keyword.toUpperCase());
   }
   return {
     patientName: patientMatch ? patientMatch[1].trim() : 'Not found',
     doctorName: doctorMatch ? doctorMatch[1].trim() : 'Not found',
     tests: foundTests.length ? [...new Set(foundTests)].join(', ') : 'Not found',
-    rawText: cleanText ? cleanText.slice(0, 500) : 'No OCR text found'
+    rawText: cleanText.slice(0, 500)
   };
 }
 
 // ============================================
-// MAIN ENDPOINT - Tata Tele Webhook
+// MAIN ENDPOINTS
 // ============================================
 app.post('/tata-misscall', async (req, res) => {
   try {
     console.log('📞 Tata Miss Call Payload:', JSON.stringify(req.body, null, 2));
     
-    // Extract numbers from payload
     const callerNumberRaw = getCallerNumberFromPayload(req.body);
     const calledNumberRaw = getCalledNumberFromPayload(req.body);
     
     if (!callerNumberRaw) {
-      console.log('❌ No caller number found');
       return res.status(400).json({ success: false, error: 'Caller number not found' });
     }
     
-    // Normalize to WhatsApp format (91 + 10 digits)
     let whatsappNumber = String(callerNumberRaw).replace(/\D/g, '');
-    if (whatsappNumber.length >= 10) {
-      whatsappNumber = '91' + whatsappNumber.slice(-10);
-    } else {
-      console.log('❌ Invalid number format:', callerNumberRaw);
+    whatsappNumber = whatsappNumber.length >= 10 ? '91' + whatsappNumber.slice(-10) : '';
+    
+    if (!whatsappNumber) {
       return res.status(400).json({ success: false, error: 'Invalid number format' });
     }
     
-    // Get branch from called number
     const branch = getBranchByCalledNumber(calledNumberRaw);
     
-    console.log(`📞 Caller: ${callerNumberRaw} | WhatsApp: ${whatsappNumber} | Branch: ${branch.name}`);
-    
-    // Duplicate check - 10 minute window
     if (shouldSkipDuplicateMissCall(whatsappNumber, calledNumberRaw)) {
       console.log(`⏳ Duplicate call skipped for ${whatsappNumber}`);
       return res.json({ success: true, skipped: true });
     }
     
-    // SEND WHATSAPP - किसी भी number पर
     await sendWatiTemplateMessage(whatsappNumber, branch.name);
     
-    return res.json({ 
-      success: true, 
-      whatsappNumber, 
-      branch: branch.name 
-    });
+    return res.json({ success: true, whatsappNumber, branch: branch.name });
     
   } catch (error) {
     console.error('❌ Error:', error);
@@ -362,9 +445,6 @@ app.post('/tata-misscall', async (req, res) => {
   }
 });
 
-// ============================================
-// WATI WEBHOOK - Handle user replies
-// ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
     console.log('📨 WATI Webhook:', JSON.stringify(req.body, null, 2));
@@ -373,33 +453,25 @@ app.post('/wati-webhook', async (req, res) => {
     const text = String(req.body.text || req.body.message || '').trim().toLowerCase();
     const mediaUrl = req.body.imageUrl || req.body.media?.url || '';
     
-    if (!from) {
-      return res.json({ received: true, ignored: true });
-    }
+    if (!from) return res.json({ received: true, ignored: true });
     
     const context = userContext.get(from) || {};
     const branch = context.branch || 'Main Branch';
-    const executive = context.executive || normalizeWhatsAppNumber(process.env.DEFAULT_EXECUTIVE || '919825086011');
+    const executive = context.executive || process.env.DEFAULT_EXECUTIVE;
     
-    // Handle user replies
     if (text === '1') {
       await sendSessionTextMessage(from, `📅 *Book Test - ${branch} Branch*\nKripya apna naam, test ka naam, aur preferred date/time bhejiye.`);
       userContext.set(from, { ...context, stage: 'book_test_requested' });
-      
     } else if (text === '2') {
       await sendSessionTextMessage(from, `📸 *Upload Prescription - ${branch} Branch*\nKripya prescription ki clear photo bhejiye.`);
       userContext.set(from, { ...context, stage: 'awaiting_prescription' });
-      
     } else if (text === '3') {
       await sendSessionTextMessage(from, `👨‍💼 Aapko ${branch} branch ke executive se connect kiya ja raha hai.`);
-      await sendExecutiveNotification(executive, `📞 *Executive Required*\nCustomer: ${from}\nBranch: ${branch}`);
       userContext.set(from, { ...context, stage: 'executive_requested' });
-      
     } else if (mediaUrl && context.stage === 'awaiting_prescription') {
       const extracted = await extractWithOCRSpace(mediaUrl);
       await sendExecutiveNotification(executive, 
-        `📸 *Prescription Received*\n🏥 Branch: ${branch}\n📱 Customer: ${from}\n👤 Patient: ${extracted.patientName}\n👨‍⚕️ Doctor: ${extracted.doctorName}\n🔬 Tests: ${extracted.tests}\n\n🔗 Image: ${mediaUrl}`
-      );
+        `📸 *Prescription Received*\n🏥 Branch: ${branch}\n📱 Customer: ${from}\n👤 Patient: ${extracted.patientName}\n👨‍⚕️ Doctor: ${extracted.doctorName}\n🔬 Tests: ${extracted.tests}\n\n🔗 Image: ${mediaUrl}`);
       await sendSessionTextMessage(from, '✅ Aapki prescription receive ho gayi hai.');
       userContext.set(from, { ...context, stage: 'prescription_uploaded' });
     }
@@ -412,9 +484,6 @@ app.post('/wati-webhook', async (req, res) => {
   }
 });
 
-// ============================================
-// OCR ENDPOINT
-// ============================================
 app.post('/ocr-prescription', async (req, res) => {
   try {
     const { imageUrl, whatsappNumber, branch, executive } = req.body;
@@ -426,7 +495,7 @@ app.post('/ocr-prescription', async (req, res) => {
     const extracted = await extractWithOCRSpace(imageUrl);
     const context = userContext.get(whatsappNumber) || {};
     const finalBranch = branch || context.branch || 'Not specified';
-    const finalExecutive = executive || context.executive || normalizeWhatsAppNumber(process.env.DEFAULT_EXECUTIVE);
+    const finalExecutive = executive || context.executive || process.env.DEFAULT_EXECUTIVE;
     
     const executiveMessage = `📸 *New Prescription Uploaded*\n━━━━━━━━━━━━━━━━━━\n🏥 *Branch:* ${finalBranch}\n👤 *Patient:* ${extracted.patientName}\n👨‍⚕️ *Doctor:* ${extracted.doctorName}\n🔬 *Tests:* ${extracted.tests}\n━━━━━━━━━━━━━━━━━━\n📝 *OCR Preview:*\n${extracted.rawText}\n\n🔗 Image: ${imageUrl}`;
     
@@ -475,13 +544,15 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>Universal WhatsApp Sending - किसी भी unique number पर message जाएगा!</p>
+    <p>Executive Notification System Active</p>
     <ul>
       <li>POST /tata-misscall - Tata Tele webhook</li>
       <li>POST /wati-webhook - WATI webhook</li>
       <li>POST /ocr-prescription - OCR endpoint</li>
-      <li>GET /test-template?number=91XXXX&branch=Satellite - Test template</li>
-      <li>GET /test-ocr?image=URL - Test OCR</li>
+      <li>POST /webhook/chat-assigned - Executive webhook</li>
+      <li>GET /connect-chat/:chatId - Connect to patient</li>
+      <li>GET /exec-action - Executive actions</li>
+      <li>POST /webhook/followup - Follow-up date</li>
       <li>GET /health - Health check</li>
     </ul>
   `);
@@ -494,6 +565,6 @@ app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📍 Template: ${TEMPLATE_NAME}`);
-  console.log(`📍 Duplicate window: ${DEDUPE_WINDOW_MS/1000} seconds`);
+  console.log(`📍 Executive webhook: POST /webhook/chat-assigned`);
   console.log('='.repeat(60));
 });
