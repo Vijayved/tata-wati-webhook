@@ -3,6 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const FormData = require('form-data');
 const cron = require('node-cron');
+const OpenAI = require('openai');
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -14,10 +15,13 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 const PORT = process.env.PORT || 3000;
 const WATI_TOKEN = process.env.WATI_TOKEN;
 const WATI_BASE_URL = process.env.WATI_BASE_URL;
-const OCR_SPACE_API_KEY = process.env.OCR_SPACE_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
 const DEDUPE_WINDOW_MS = (parseInt(process.env.DEDUPE_WINDOW_SECONDS || '600', 10)) * 1000;
-const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome';
+const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
+
+// OpenAI Initialization
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // Keep-alive for Render free tier
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || 'https://tata-wati-webhook.onrender.com';
@@ -40,7 +44,7 @@ const EXECUTIVES = {
   'Naroda Team': process.env.NARODA_EXECUTIVE || '919825086012',
   'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '919825086013',
   'Vadaj Team': process.env.VADAJ_EXECUTIVE || '919825086014',
-  'Manager': '919825086099'  // Manager का नंबर डालो
+  'Manager': process.env.MANAGER_NUMBER || '919825086099'
 };
 
 // ============================================
@@ -74,8 +78,9 @@ const BRANCHES = {
 // ============================================
 const recentMissCalls = new Map();
 const userContext = new Map();
-const patientDB = new Map();        // Executive system के लिए
-const followupDB = new Map();       // Follow-up dates के लिए
+const patientDB = new Map();
+const followupDB = new Map();
+const processedImages = new Set();
 
 // ============================================
 // HELPER FUNCTIONS
@@ -167,69 +172,137 @@ async function sendExecutiveNotification(executiveNumber, messageText) {
 }
 
 // ============================================
-// EXECUTIVE SYSTEM ENDPOINTS
+// OPENAI OCR FUNCTION
 // ============================================
-
-// WATI Webhook for chat assignments
-app.post('/webhook/chat-assigned', async (req, res) => {
+async function extractWithOpenAI(imageUrl) {
   try {
-    console.log('📨 Executive Webhook:', JSON.stringify(req.body, null, 2));
+    console.log('🔍 Calling OpenAI Vision API...');
     
-    const { chatId, assignedTeam, contact, messages } = req.body;
-    
-    // Check if chat is assigned to any team
-    if (!assignedTeam || assignedTeam === '') {
-      console.log('⏭️ Skipping - Chat not assigned');
-      return res.json({ ignored: true });
-    }
-    
-    // Get executive number
-    const executiveNumber = EXECUTIVES[assignedTeam];
-    if (!executiveNumber) {
-      console.log(`⚠️ No executive for team: ${assignedTeam}`);
-      return res.json({ ignored: true });
-    }
-    
-    // Extract patient details
-    const patientData = {
-      patientName: contact?.name || 'Patient',
-      patientNumber: contact?.waId || 'Unknown',
-      testNames: 'Test booked',
-      branch: assignedTeam.replace(' Team', ''),
-      time: new Date().toLocaleString(),
-      chatId
-    };
-    
-    // Store in database
-    patientDB.set(chatId, {
-      ...patientData,
-      executiveNumber,
-      team: assignedTeam,
-      status: 'pending',
-      createdAt: new Date()
+    const response = await openai.chat.completions.create({
+      model: "gpt-4-vision-preview",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `Extract the following information from this medical prescription:
+                - Patient Name
+                - Doctor Name
+                - List of medical tests prescribed
+                
+                Return the response in JSON format with keys: patientName, doctorName, tests (as array)`
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: imageUrl
+              }
+            }
+          ]
+        }
+      ],
+      max_tokens: 500
     });
     
-    // Send message to executive
-    const message = `
-📋 *New Patient Request*
-━━━━━━━━━━━━━━━━━━
-👤 Patient: ${patientData.patientName}
-🔬 Tests: ${patientData.testNames}
-🏥 Branch: ${patientData.branch}
-📅 Time: ${patientData.time}
-📞 Patient No: ${patientData.patientNumber}
-━━━━━━━━━━━━━━━━━━
+    const content = response.choices[0].message.content;
+    
+    // Parse JSON from response
+    try {
+      const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/) || 
+                       content.match(/```\n([\s\S]*?)\n```/) ||
+                       [null, content];
+      
+      const jsonStr = jsonMatch[1] || content;
+      const parsed = JSON.parse(jsonStr);
+      
+      return {
+        patientName: parsed.patientName || 'Not found',
+        doctorName: parsed.doctorName || 'Not found',
+        tests: Array.isArray(parsed.tests) ? parsed.tests.join(', ') : parsed.tests || 'Not found',
+        rawText: content
+      };
+    } catch (parseError) {
+      console.error('Failed to parse OpenAI response:', content);
+      return {
+        patientName: 'Parsing failed',
+        doctorName: 'Parsing failed',
+        tests: 'Parsing failed',
+        rawText: content
+      };
+    }
+    
+  } catch (error) {
+    console.error('❌ OpenAI API Error:', error.message);
+    return {
+      patientName: 'OCR Failed',
+      doctorName: 'OCR Failed',
+      tests: 'OCR Failed',
+      rawText: '',
+      error: error.message
+    };
+  }
+}
 
+// ============================================
+// WEBHOOK – New Prescription from WATI
+// ============================================
+app.post('/webhook/new-prescription', async (req, res) => {
+  try {
+    const { chatId, patientName, branch, imageUrl, executiveNumber } = req.body;
+    
+    console.log(`📸 New prescription from ${patientName} (${branch})`);
+    
+    // Store in DB
+    patientDB.set(chatId, {
+      patientName,
+      branch,
+      imageUrl,
+      executiveNumber,
+      status: 'pending',
+      timestamp: new Date().toISOString(),
+      chatId
+    });
+    
+    // Trigger immediate OCR (async)
+    res.json({ success: true, message: 'Prescription received' });
+    
+    // Run OCR in background
+    setTimeout(async () => {
+      console.log(`🔍 Processing OCR for chat ${chatId}`);
+      
+      const extracted = await extractWithOpenAI(imageUrl);
+      
+      // Update patient record
+      const patient = patientDB.get(chatId);
+      if (patient) {
+        patient.extracted = extracted;
+        patient.status = 'processed';
+        patientDB.set(chatId, patient);
+        
+        // Send to executive
+        const message = `
+📸 *New Prescription Received*
+━━━━━━━━━━━━━━━━━━
+👤 Patient: ${extracted.patientName}
+🔬 Tests: ${extracted.tests}
+👨‍⚕️ Doctor: ${extracted.doctorName}
+🏥 Branch: ${patient.branch}
+📅 Time: ${patient.timestamp}
+━━━━━━━━━━━━━━━━━━
+📝 *OCR Preview:*
+${extracted.rawText.substring(0, 300)}...
+━━━━━━━━━━━━━━━━━━
 🔗 Connect: ${SELF_URL}/connect-chat/${chatId}
 ✅ Convert: ${SELF_URL}/exec-action?action=convert&chat=${chatId}
 ⏳ Waiting: ${SELF_URL}/exec-action?action=waiting&chat=${chatId}
 ❌ Not Convert: ${SELF_URL}/exec-action?action=notconvert&chat=${chatId}
-    `;
-    
-    await sendExecutiveNotification(executiveNumber, message);
-    console.log(`✅ Notification sent to ${executiveNumber} for chat ${chatId}`);
-    
-    res.json({ success: true });
+        `;
+        
+        await sendExecutiveNotification(patient.executiveNumber, message);
+        processedImages.add(chatId);
+      }
+    }, 1000);
     
   } catch (error) {
     console.error('❌ Webhook error:', error);
@@ -237,10 +310,13 @@ app.post('/webhook/chat-assigned', async (req, res) => {
   }
 });
 
+// ============================================
+// EXECUTIVE SYSTEM ENDPOINTS
+// ============================================
+
 // Connect button handler
 app.get('/connect-chat/:chatId', (req, res) => {
   const { chatId } = req.params;
-  // Redirect to WATI app deep link
   res.redirect(`https://app.wati.io/chat/${chatId}`);
 });
 
@@ -253,13 +329,10 @@ app.get('/exec-action', async (req, res) => {
     return res.send('❌ Patient not found');
   }
   
-  let responseMessage = '';
-  
   switch(action) {
     case 'convert':
       patient.status = 'converted';
       patientDB.set(chat, patient);
-      responseMessage = '✅ Patient marked as converted';
       await sendExecutiveNotification(patient.executiveNumber,
         `✅ Patient ${patient.patientName} converted successfully!`);
       break;
@@ -267,23 +340,21 @@ app.get('/exec-action', async (req, res) => {
     case 'waiting':
       patient.status = 'waiting';
       patientDB.set(chat, patient);
-      responseMessage = '⏳ Please reply with follow-up date (DD/MM/YYYY)';
       await sendExecutiveNotification(patient.executiveNumber,
-        `⏳ Patient ${patient.patientName} is waiting. Please send follow-up date.`);
+        `⏳ Please send follow-up date (DD/MM/YYYY) for ${patient.patientName}`);
       break;
       
     case 'notconvert':
       patient.status = 'not_converted';
       patientDB.set(chat, patient);
-      responseMessage = '❌ Escalated to manager';
       await sendExecutiveNotification(EXECUTIVES['Manager'],
-        `📤 *Escalation Alert*\nPatient: ${patient.patientName}\nExecutive: ${patient.executiveNumber}\nBranch: ${patient.branch}`);
+        `📤 *Escalation Alert*\nPatient: ${patient.patientName}\nBranch: ${patient.branch}\nExecutive: ${patient.executiveNumber}`);
       await sendExecutiveNotification(patient.executiveNumber,
         `❌ Patient ${patient.patientName} escalated to manager.`);
       break;
   }
   
-  res.send(responseMessage);
+  res.send('✅ Action recorded!');
 });
 
 // Follow-up date handler
@@ -296,7 +367,7 @@ app.post('/webhook/followup', async (req, res) => {
     patient.status = 'waiting';
     patientDB.set(chatId, patient);
     
-    const dateKey = followupDate.split('/').reverse().join('-'); // Convert to YYYY-MM-DD
+    const dateKey = followupDate.split('/').reverse().join('-');
     const existing = followupDB.get(dateKey) || [];
     followupDB.set(dateKey, [...existing, chatId]);
   }
@@ -307,7 +378,7 @@ app.post('/webhook/followup', async (req, res) => {
 // Daily follow-up reminder (9 AM)
 cron.schedule('0 9 * * *', async () => {
   console.log('⏰ Running follow-up reminder...');
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const today = new Date().toISOString().split('T')[0];
   
   const chatIds = followupDB.get(today) || [];
   
@@ -330,10 +401,10 @@ cron.schedule('0 22 * * *', async () => {
   const branchStats = {};
   
   for (let [chatId, patient] of patientDB) {
-    const createdDate = patient.createdAt.toISOString().split('T')[0];
+    const createdDate = patient.timestamp?.split('T')[0] || '';
     const today = new Date().toISOString().split('T')[0];
     
-    if (createdDate !== today) continue; // Only today's patients
+    if (createdDate !== today) continue;
     
     total++;
     
@@ -366,46 +437,6 @@ cron.schedule('0 22 * * *', async () => {
   
   await sendExecutiveNotification(EXECUTIVES['Manager'], report);
 });
-
-// ============================================
-// OCR FUNCTIONS
-// ============================================
-async function extractWithOCRSpace(imageUrl) {
-  try {
-    const formData = new FormData();
-    formData.append('url', imageUrl);
-    formData.append('apikey', OCR_SPACE_API_KEY);
-    formData.append('language', 'eng');
-    const response = await axios.post('https://api.ocr.space/parse/image', formData, {
-      headers: formData.getHeaders(),
-      timeout: 30000
-    });
-    const parsedText = response.data?.ParsedResults?.[0]?.ParsedText || '';
-    return parsePrescriptionText(parsedText);
-  } catch (error) {
-    console.error('❌ OCR Error:', error.response?.data || error.message);
-    return { patientName: 'OCR Failed', doctorName: 'OCR Failed', tests: 'OCR Failed', rawText: '' };
-  }
-}
-
-function parsePrescriptionText(text) {
-  const cleanText = String(text || '').trim();
-  const patientMatch = cleanText.match(/Patient(?:\s*Name)?[:\s]+([A-Za-z\s]+)/i) || 
-                       cleanText.match(/Name[:\s]+([A-Za-z\s]+)/i);
-  const doctorMatch = cleanText.match(/Dr\.?\s*([A-Za-z\s]+)/i);
-  const testKeywords = ['blood', 'x-ray', 'xray', 'ultrasound', 'cbc', 'thyroid'];
-  const foundTests = [];
-  const lower = cleanText.toLowerCase();
-  for (const keyword of testKeywords) {
-    if (lower.includes(keyword)) foundTests.push(keyword.toUpperCase());
-  }
-  return {
-    patientName: patientMatch ? patientMatch[1].trim() : 'Not found',
-    doctorName: doctorMatch ? doctorMatch[1].trim() : 'Not found',
-    tests: foundTests.length ? [...new Set(foundTests)].join(', ') : 'Not found',
-    rawText: cleanText.slice(0, 500)
-  };
-}
 
 // ============================================
 // MAIN ENDPOINTS
@@ -445,111 +476,28 @@ app.post('/tata-misscall', async (req, res) => {
   }
 });
 
-app.post('/wati-webhook', async (req, res) => {
-  try {
-    console.log('📨 WATI Webhook:', JSON.stringify(req.body, null, 2));
-    
-    const from = normalizeWhatsAppNumber(req.body.from || req.body.whatsappNumber || req.body.sender);
-    const text = String(req.body.text || req.body.message || '').trim().toLowerCase();
-    const mediaUrl = req.body.imageUrl || req.body.media?.url || '';
-    
-    if (!from) return res.json({ received: true, ignored: true });
-    
-    const context = userContext.get(from) || {};
-    const branch = context.branch || 'Main Branch';
-    const executive = context.executive || process.env.DEFAULT_EXECUTIVE;
-    
-    if (text === '1') {
-      await sendSessionTextMessage(from, `📅 *Book Test - ${branch} Branch*\nKripya apna naam, test ka naam, aur preferred date/time bhejiye.`);
-      userContext.set(from, { ...context, stage: 'book_test_requested' });
-    } else if (text === '2') {
-      await sendSessionTextMessage(from, `📸 *Upload Prescription - ${branch} Branch*\nKripya prescription ki clear photo bhejiye.`);
-      userContext.set(from, { ...context, stage: 'awaiting_prescription' });
-    } else if (text === '3') {
-      await sendSessionTextMessage(from, `👨‍💼 Aapko ${branch} branch ke executive se connect kiya ja raha hai.`);
-      userContext.set(from, { ...context, stage: 'executive_requested' });
-    } else if (mediaUrl && context.stage === 'awaiting_prescription') {
-      const extracted = await extractWithOCRSpace(mediaUrl);
-      await sendExecutiveNotification(executive, 
-        `📸 *Prescription Received*\n🏥 Branch: ${branch}\n📱 Customer: ${from}\n👤 Patient: ${extracted.patientName}\n👨‍⚕️ Doctor: ${extracted.doctorName}\n🔬 Tests: ${extracted.tests}\n\n🔗 Image: ${mediaUrl}`);
-      await sendSessionTextMessage(from, '✅ Aapki prescription receive ho gayi hai.');
-      userContext.set(from, { ...context, stage: 'prescription_uploaded' });
-    }
-    
-    return res.json({ received: true });
-    
-  } catch (error) {
-    console.error('❌ WATI webhook error:', error.message);
-    return res.status(500).json({ received: false, error: error.message });
-  }
-});
-
-app.post('/ocr-prescription', async (req, res) => {
-  try {
-    const { imageUrl, whatsappNumber, branch, executive } = req.body;
-    
-    if (!imageUrl || !whatsappNumber) {
-      return res.status(400).json({ success: false, error: 'imageUrl and whatsappNumber required' });
-    }
-    
-    const extracted = await extractWithOCRSpace(imageUrl);
-    const context = userContext.get(whatsappNumber) || {};
-    const finalBranch = branch || context.branch || 'Not specified';
-    const finalExecutive = executive || context.executive || process.env.DEFAULT_EXECUTIVE;
-    
-    const executiveMessage = `📸 *New Prescription Uploaded*\n━━━━━━━━━━━━━━━━━━\n🏥 *Branch:* ${finalBranch}\n👤 *Patient:* ${extracted.patientName}\n👨‍⚕️ *Doctor:* ${extracted.doctorName}\n🔬 *Tests:* ${extracted.tests}\n━━━━━━━━━━━━━━━━━━\n📝 *OCR Preview:*\n${extracted.rawText}\n\n🔗 Image: ${imageUrl}`;
-    
-    await sendExecutiveNotification(finalExecutive, executiveMessage);
-    await sendSessionTextMessage(whatsappNumber, '✅ Aapki prescription receive ho gayi hai.');
-    
-    userContext.set(whatsappNumber, { ...context, branch: finalBranch, executive: finalExecutive, stage: 'prescription_uploaded' });
-    
-    return res.json({ success: true, extracted });
-    
-  } catch (error) {
-    console.error('❌ OCR error:', error.message);
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
-
 // ============================================
-// TEST ENDPOINTS
+// HEALTH CHECK
 // ============================================
-app.get('/test-template', async (req, res) => {
-  try {
-    const number = req.query.number || '919106959092';
-    const branch = req.query.branch || 'Satellite';
-    const result = await sendWatiTemplateMessage(number, branch);
-    res.json({ success: true, result });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.get('/test-ocr', async (req, res) => {
-  try {
-    const imageUrl = req.query.image;
-    if (!imageUrl) return res.status(400).json({ error: 'image URL required' });
-    const result = await extractWithOCRSpace(imageUrl);
-    res.json({ success: true, result });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
 app.get('/health', (req, res) => {
-  res.json({ success: true, status: 'ok', uptime: process.uptime() });
+  res.json({ 
+    success: true, 
+    status: 'ok', 
+    processed: processedImages.size,
+    patients: patientDB.size,
+    uptime: process.uptime() 
+  });
 });
 
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>Executive Notification System Active</p>
+    <p>OpenAI OCR + Executive System Active</p>
     <ul>
       <li>POST /tata-misscall - Tata Tele webhook</li>
       <li>POST /wati-webhook - WATI webhook</li>
       <li>POST /ocr-prescription - OCR endpoint</li>
-      <li>POST /webhook/chat-assigned - Executive webhook</li>
+      <li>POST /webhook/new-prescription - New prescription from WATI</li>
       <li>GET /connect-chat/:chatId - Connect to patient</li>
       <li>GET /exec-action - Executive actions</li>
       <li>POST /webhook/followup - Follow-up date</li>
@@ -565,6 +513,7 @@ app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📍 Template: ${TEMPLATE_NAME}`);
-  console.log(`📍 Executive webhook: POST /webhook/chat-assigned`);
+  console.log(`📍 OpenAI OCR: Active`);
+  console.log(`📍 Webhook: POST /webhook/new-prescription`);
   console.log('='.repeat(60));
 });
