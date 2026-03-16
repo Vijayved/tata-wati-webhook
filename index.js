@@ -55,7 +55,7 @@ const ALL_EXECUTIVE_NUMBERS = [
   process.env.VADAJ_EXECUTIVE || '919825086014',
   process.env.MANAGER_NUMBER || '919825086099',
   '919169959992' // Test number
-].filter(Boolean); // Remove empty values
+].filter(Boolean);
 
 // ============================================
 // BRANCH CONFIGURATION
@@ -426,17 +426,57 @@ async function extractWithOpenAI(imageUrl) {
 }
 
 // ============================================
+// ADD CONTACT ENDPOINT (NEW)
+// ============================================
+app.get('/add-contact/:number', async (req, res) => {
+  try {
+    const { number } = req.params;
+    
+    console.log(`📇 Adding contact ${number} to WATI...`);
+    
+    const response = await axios.post(
+      `${WATI_BASE_URL}/api/v1/addContact/${number}`,
+      { 
+        name: `Executive_${number}`,
+        customParams: [
+          { name: "source", value: "render_server" },
+          { name: "role", value: "executive" }
+        ]
+      },
+      {
+        headers: { 
+          Authorization: `${WATI_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    res.json({ 
+      success: true, 
+      message: `✅ Contact ${number} added to WATI`,
+      response: response.data 
+    });
+    
+  } catch (error) {
+    console.error('❌ Add contact error:', error.response?.data || error.message);
+    res.status(500).json({ 
+      error: error.response?.data || error.message 
+    });
+  }
+});
+
+// ============================================
 // EXECUTIVE DIRECT MESSAGE SYSTEM
 // ============================================
 
-// 1. Open Session for Executive
+// Open Session for Executive
 app.get('/open-session/:number', async (req, res) => {
   try {
     const { number } = req.params;
     
     console.log(`🔄 Opening session for ${number}...`);
     
-    await axios.post(
+    const response = await axios.post(
       `${WATI_BASE_URL}/api/v1/sendSessionMessage/${number}?messageText=🔧%20Session%20Open%20Test%20Message`,
       {},
       {
@@ -444,7 +484,7 @@ app.get('/open-session/:number', async (req, res) => {
       }
     );
     
-    res.json({ success: true, message: `✅ Session opened for ${number}` });
+    res.json({ success: true, message: `✅ Session opened for ${number}`, response: response.data });
     
   } catch (error) {
     console.error('❌ Open session error:', error.response?.data || error.message);
@@ -452,7 +492,7 @@ app.get('/open-session/:number', async (req, res) => {
   }
 });
 
-// 2. Direct Message to Executive
+// Direct Message to Executive
 app.get('/direct-message', async (req, res) => {
   try {
     const { to, message } = req.query;
@@ -485,7 +525,7 @@ app.get('/direct-message', async (req, res) => {
   }
 });
 
-// 3. Keep All Executive Sessions Alive (हर 20 घंटे में)
+// Keep All Executive Sessions Alive (हर 20 घंटे में)
 cron.schedule('0 */20 * * *', async () => {
   console.log('🔄 Keeping executive sessions alive...');
   
@@ -500,7 +540,6 @@ cron.schedule('0 */20 * * *', async () => {
       );
       console.log(`✅ Session alive for ${num}`);
       
-      // Delay to avoid rate limiting
       await new Promise(resolve => setTimeout(resolve, 2000));
     } catch (error) {
       console.error(`❌ Failed for ${num}:`, error.message);
@@ -864,13 +903,14 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>OpenAI OCR + Executive System Active (Auto-Fetch Mode + Direct Messaging)</p>
+    <p>OpenAI OCR + Executive System Active (Auto-Fetch Mode + Direct Messaging + Contact Management)</p>
     <ul>
       <li>✅ Auto-fetches from WATI every 2 minutes</li>
       <li>✅ Manual Entry & Upload both supported</li>
       <li>✅ No webhook nodes required in WATI</li>
       <li>✅ Executive notifications with Connect button</li>
       <li>✅ Direct messaging to executives</li>
+      <li>✅ Add contacts to WATI: /add-contact/919169959992</li>
       <li>✅ Auto session keeper (every 20 hours)</li>
       <li>✅ Follow-up reminders (9 AM)</li>
       <li>✅ Manager daily report (10 PM)</li>
@@ -889,8 +929,7 @@ app.listen(PORT, () => {
   console.log(`📍 OpenAI OCR: Active with GPT-4o`);
   console.log(`📍 Auto-Fetch Mode: Every 2 minutes`);
   console.log(`📍 Direct Messaging: ✅ Available`);
+  console.log(`📍 Add Contact: /add-contact/:number`);
   console.log(`📍 Session Keeper: Every 20 hours`);
-  console.log(`📍 Manual Entry: ✅ Supported`);
-  console.log(`📍 Upload Entry: ✅ Supported`);
   console.log('='.repeat(60));
 });
