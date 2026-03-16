@@ -10,7 +10,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ============================================
-// CONFIGURATION
+// CONFIGURATION - Environment variables से
 // ============================================
 const PORT = process.env.PORT || 3000;
 const WATI_TOKEN = process.env.WATI_TOKEN;
@@ -48,7 +48,7 @@ const EXECUTIVES = {
 };
 
 // ============================================
-// BRANCH CONFIGURATION
+// BRANCH CONFIGURATION - Virtual numbers mapping
 // ============================================
 const BRANCHES = {
   [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: {
@@ -83,7 +83,7 @@ const followupDB = new Map();
 const processedImages = new Set();
 
 // ============================================
-// HELPER FUNCTIONS
+// HELPER FUNCTIONS - Number normalization
 // ============================================
 function normalizeIndianNumber(number) {
   if (!number) return '';
@@ -172,7 +172,7 @@ async function sendExecutiveNotification(executiveNumber, messageText) {
 }
 
 // ============================================
-// OPENAI OCR FUNCTION
+// OPENAI OCR FUNCTION - GPT-4 Vision
 // ============================================
 async function extractWithOpenAI(imageUrl) {
   try {
@@ -245,7 +245,7 @@ async function extractWithOpenAI(imageUrl) {
 }
 
 // ============================================
-// WEBHOOK – New Prescription from WATI
+// WEBHOOK - New Prescription from WATI
 // ============================================
 app.post('/webhook/new-prescription', async (req, res) => {
   try {
@@ -476,9 +476,98 @@ app.post('/tata-misscall', async (req, res) => {
   }
 });
 
+app.post('/wati-webhook', async (req, res) => {
+  try {
+    console.log('📨 WATI Webhook:', JSON.stringify(req.body, null, 2));
+    
+    const from = normalizeWhatsAppNumber(req.body.from || req.body.whatsappNumber || req.body.sender);
+    const text = String(req.body.text || req.body.message || '').trim().toLowerCase();
+    const mediaUrl = req.body.imageUrl || req.body.media?.url || '';
+    
+    if (!from) return res.json({ received: true, ignored: true });
+    
+    const context = userContext.get(from) || {};
+    const branch = context.branch || 'Main Branch';
+    const executive = context.executive || process.env.DEFAULT_EXECUTIVE;
+    
+    if (text === '1') {
+      await sendSessionTextMessage(from, `📅 *Book Test - ${branch} Branch*\nKripya apna naam, test ka naam, aur preferred date/time bhejiye.`);
+      userContext.set(from, { ...context, stage: 'book_test_requested' });
+    } else if (text === '2') {
+      await sendSessionTextMessage(from, `📸 *Upload Prescription - ${branch} Branch*\nKripya prescription ki clear photo bhejiye.`);
+      userContext.set(from, { ...context, stage: 'awaiting_prescription' });
+    } else if (text === '3') {
+      await sendSessionTextMessage(from, `👨‍💼 Aapko ${branch} branch ke executive se connect kiya ja raha hai.`);
+      userContext.set(from, { ...context, stage: 'executive_requested' });
+    } else if (mediaUrl && context.stage === 'awaiting_prescription') {
+      const extracted = await extractWithOpenAI(mediaUrl);
+      await sendExecutiveNotification(executive, 
+        `📸 *Prescription Received*\n🏥 Branch: ${branch}\n📱 Customer: ${from}\n👤 Patient: ${extracted.patientName}\n👨‍⚕️ Doctor: ${extracted.doctorName}\n🔬 Tests: ${extracted.tests}\n\n🔗 Image: ${mediaUrl}`);
+      await sendSessionTextMessage(from, '✅ Aapki prescription receive ho gayi hai.');
+      userContext.set(from, { ...context, stage: 'prescription_uploaded' });
+    }
+    
+    return res.json({ received: true });
+    
+  } catch (error) {
+    console.error('❌ WATI webhook error:', error.message);
+    return res.status(500).json({ received: false, error: error.message });
+  }
+});
+
+app.post('/ocr-prescription', async (req, res) => {
+  try {
+    const { imageUrl, whatsappNumber, branch, executive } = req.body;
+    
+    if (!imageUrl || !whatsappNumber) {
+      return res.status(400).json({ success: false, error: 'imageUrl and whatsappNumber required' });
+    }
+    
+    const extracted = await extractWithOpenAI(imageUrl);
+    const context = userContext.get(whatsappNumber) || {};
+    const finalBranch = branch || context.branch || 'Not specified';
+    const finalExecutive = executive || context.executive || process.env.DEFAULT_EXECUTIVE;
+    
+    const executiveMessage = `📸 *New Prescription Uploaded*\n━━━━━━━━━━━━━━━━━━\n🏥 *Branch:* ${finalBranch}\n👤 *Patient:* ${extracted.patientName}\n👨‍⚕️ *Doctor:* ${extracted.doctorName}\n🔬 *Tests:* ${extracted.tests}\n━━━━━━━━━━━━━━━━━━\n📝 *OCR Preview:*\n${extracted.rawText}\n\n🔗 Image: ${imageUrl}`;
+    
+    await sendExecutiveNotification(finalExecutive, executiveMessage);
+    await sendSessionTextMessage(whatsappNumber, '✅ Aapki prescription receive ho gayi hai.');
+    
+    userContext.set(whatsappNumber, { ...context, branch: finalBranch, executive: finalExecutive, stage: 'prescription_uploaded' });
+    
+    return res.json({ success: true, extracted });
+    
+  } catch (error) {
+    console.error('❌ OCR error:', error.message);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ============================================
-// HEALTH CHECK
+// TEST ENDPOINTS
 // ============================================
+app.get('/test-template', async (req, res) => {
+  try {
+    const number = req.query.number || '919106959092';
+    const branch = req.query.branch || 'Satellite';
+    const result = await sendWatiTemplateMessage(number, branch);
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/test-ocr', async (req, res) => {
+  try {
+    const imageUrl = req.query.image;
+    if (!imageUrl) return res.status(400).json({ error: 'image URL required' });
+    const result = await extractWithOpenAI(imageUrl);
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.get('/health', (req, res) => {
   res.json({ 
     success: true, 
