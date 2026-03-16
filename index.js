@@ -172,14 +172,14 @@ async function sendExecutiveNotification(executiveNumber, messageText) {
 }
 
 // ============================================
-// OPENAI OCR FUNCTION - GPT-4 Vision
+// OPENAI OCR FUNCTION - GPT-4o (Updated Model)
 // ============================================
 async function extractWithOpenAI(imageUrl) {
   try {
-    console.log('🔍 Calling OpenAI Vision API...');
+    console.log('🔍 Calling OpenAI Vision API with GPT-4o...');
     
     const response = await openai.chat.completions.create({
-      model: "gpt-4-vision-preview",
+      model: "gpt-4o",  // ✅ Updated model
       messages: [
         {
           role: "user",
@@ -581,7 +581,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>OpenAI OCR + Executive System Active</p>
+    <p>OpenAI OCR + Executive System Active (GPT-4o)</p>
     <ul>
       <li>POST /tata-misscall - Tata Tele webhook</li>
       <li>POST /wati-webhook - WATI webhook</li>
@@ -602,7 +602,7 @@ app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📍 Template: ${TEMPLATE_NAME}`);
-  console.log(`📍 OpenAI OCR: Active`);
+  console.log(`📍 OpenAI OCR: Active with GPT-4o`);
   console.log(`📍 Webhook: POST /webhook/new-prescription`);
   console.log('='.repeat(60));
 });
