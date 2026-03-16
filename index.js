@@ -81,7 +81,7 @@ const userContext = new Map();
 const patientDB = new Map();
 const followupDB = new Map();
 const processedImages = new Set();
-const processedChats = new Set(); // NEW: Track processed chats
+const processedChats = new Set();
 
 // ============================================
 // HELPER FUNCTIONS
@@ -173,13 +173,10 @@ async function sendExecutiveNotification(executiveNumber, messageText) {
 }
 
 // ============================================
-// NEW: WATI API FETCH FUNCTIONS
+// WATI API FETCH FUNCTIONS
 // ============================================
-
-// Fetch recent chats from WATI
 async function fetchRecentChats() {
   try {
-    // Get messages from last 10 minutes
     const from = new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
     const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
     
@@ -196,7 +193,6 @@ async function fetchRecentChats() {
   }
 }
 
-// Get contact details by WhatsApp number
 async function getContactDetails(whatsappNumber) {
   try {
     const url = `${WATI_BASE_URL}/api/v1/getContacts?pageSize=1&name=${whatsappNumber}`;
@@ -210,7 +206,6 @@ async function getContactDetails(whatsappNumber) {
   }
 }
 
-// Get media from WATI
 async function getMediaFromWATI(fileName) {
   try {
     const url = `${WATI_BASE_URL}/api/v1/getMedia?fileName=${fileName}`;
@@ -226,10 +221,8 @@ async function getMediaFromWATI(fileName) {
 }
 
 // ============================================
-// NEW: PROCESS FUNCTIONS
+// PROCESS FUNCTIONS
 // ============================================
-
-// Process manual entry
 async function processManualEntry(chatId, patientName, testNames, branch) {
   console.log(`📝 Processing manual entry for ${patientName}`);
   
@@ -251,7 +244,6 @@ async function processManualEntry(chatId, patientName, testNames, branch) {
   
   await sendExecutiveNotification(executiveNumber, message);
   
-  // Store in DB
   patientDB.set(chatId, {
     patientName,
     testNames,
@@ -264,13 +256,11 @@ async function processManualEntry(chatId, patientName, testNames, branch) {
   });
 }
 
-// Process image upload
 async function processImageUpload(chatId, patientName, branch, imageUrl) {
   console.log(`📸 Processing image upload for ${patientName}`);
   
   const executiveNumber = getExecutiveNumber(branch);
   
-  // Run OCR
   const extracted = await extractWithOpenAI(imageUrl);
   
   const message = `
@@ -293,7 +283,6 @@ ${extracted.rawText.substring(0, 300)}...
   
   await sendExecutiveNotification(executiveNumber, message);
   
-  // Store in DB
   patientDB.set(chatId, {
     patientName,
     branch,
@@ -309,36 +298,30 @@ ${extracted.rawText.substring(0, 300)}...
   processedImages.add(chatId);
 }
 
-// Get executive number from branch
 function getExecutiveNumber(branch) {
   const teamName = `${branch} Team`;
   return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '919825086011';
 }
 
 // ============================================
-// NEW: BACKGROUND CRON JOB (हर 2 मिनट में)
+// BACKGROUND CRON JOB (हर 2 मिनट में)
 // ============================================
 cron.schedule('*/2 * * * *', async () => {
   console.log('🔍 [' + new Date().toLocaleTimeString() + '] Checking WATI for new chats...');
   
   try {
-    // Fetch recent chats
     const chats = await fetchRecentChats();
     
     for (const chat of chats) {
-      // Skip if already processed
       if (processedChats.has(chat.id)) continue;
       
-      // Get contact details
       const contact = await getContactDetails(chat.whatsappNumber);
       if (!contact) continue;
       
       const patientName = contact.customAttributes?.patient_name || 'Patient';
       const branch = contact.customAttributes?.branch_name || 'Main Branch';
       
-      // Check if it's a manual entry or upload
       if (chat.lastMessage?.type === 'text') {
-        // Look for manual entry keywords
         const text = chat.lastMessage.text?.toLowerCase() || '';
         if (text.includes('manual entry') || text.includes('test name')) {
           const testNames = extractTestNames(chat.messages);
@@ -347,7 +330,6 @@ cron.schedule('*/2 * * * *', async () => {
         }
       }
       else if (chat.lastMessage?.type === 'image') {
-        // Image upload detected
         const imageUrl = chat.lastMessage.mediaUrl;
         if (imageUrl) {
           await processImageUpload(chat.id, patientName, branch, imageUrl);
@@ -360,11 +342,9 @@ cron.schedule('*/2 * * * *', async () => {
   }
 });
 
-// Helper to extract test names from chat messages
 function extractTestNames(messages) {
   if (!messages || !messages.length) return 'Not specified';
   
-  // Look for test names in the last few messages
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg.type === 'text' && msg.text && 
@@ -450,7 +430,98 @@ async function extractWithOpenAI(imageUrl) {
 }
 
 // ============================================
-// WEBHOOK ENDPOINTS (Optional - अगर कभी Premium लो)
+// DIRECT TEST ENDPOINTS
+// ============================================
+
+// Test Manual Entry
+app.get('/test-manual', async (req, res) => {
+  try {
+    const { patient, test, branch, exec } = req.query;
+    
+    if (!patient || !test || !branch || !exec) {
+      return res.status(400).json({ 
+        error: 'Missing parameters. Use: /test-manual?patient=Name&test=TestName&branch=Branch&exec=919169959992' 
+      });
+    }
+    
+    const chatId = `test-${Date.now()}`;
+    
+    const message = `
+📋 *New Manual Test Entry (TEST)*
+━━━━━━━━━━━━━━━━━━
+👤 Patient: ${patient}
+🔬 Tests: ${test}
+🏥 Branch: ${branch}
+📅 Time: ${new Date().toLocaleString()}
+━━━━━━━━━━━━━━━━━━
+🔗 Connect: ${SELF_URL}/connect-chat/${chatId}
+✅ Convert: ${SELF_URL}/exec-action?action=convert&chat=${chatId}
+⏳ Waiting: ${SELF_URL}/exec-action?action=waiting&chat=${chatId}
+❌ Not Convert: ${SELF_URL}/exec-action?action=notconvert&chat=${chatId}
+    `;
+    
+    await sendExecutiveNotification(exec, message);
+    
+    res.json({ 
+      success: true, 
+      message: `Test manual entry sent to ${exec}`,
+      chatId 
+    });
+    
+  } catch (error) {
+    console.error('❌ Test error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Test Upload Entry
+app.get('/test-upload', async (req, res) => {
+  try {
+    const { patient, branch, exec } = req.query;
+    
+    if (!patient || !branch || !exec) {
+      return res.status(400).json({ 
+        error: 'Missing parameters. Use: /test-upload?patient=Name&branch=Branch&exec=919169959992' 
+      });
+    }
+    
+    const chatId = `test-${Date.now()}`;
+    
+    const message = `
+📸 *New Prescription Uploaded (TEST)*
+━━━━━━━━━━━━━━━━━━
+👤 Patient: ${patient}
+🔬 Tests: MRI Brain, CT Scan (demo data)
+👨‍⚕️ Doctor: Dr. Sharma
+🏥 Branch: ${branch}
+📅 Time: ${new Date().toLocaleString()}
+━━━━━━━━━━━━━━━━━━
+📝 *OCR Preview:*
+MRI Brain with contrast...
+CT Scan whole abdomen...
+━━━━━━━━━━━━━━━━━━
+🔗 Connect: ${SELF_URL}/connect-chat/${chatId}
+✅ Convert: ${SELF_URL}/exec-action?action=convert&chat=${chatId}
+⏳ Waiting: ${SELF_URL}/exec-action?action=waiting&chat=${chatId}
+❌ Not Convert: ${SELF_URL}/exec-action?action=notconvert&chat=${chatId}
+    `;
+    
+    await sendExecutiveNotification(exec, message);
+    
+    res.json({ 
+      success: true, 
+      message: `Test upload entry sent to ${exec}`,
+      chatId 
+    });
+    
+  } catch (error) {
+    console.error('❌ Test error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// WEBHOOK ENDPOINTS
 // ============================================
 app.post('/webhook/new-prescription', async (req, res) => {
   try {
@@ -516,7 +587,6 @@ app.get('/exec-action', async (req, res) => {
   res.send('✅ Action recorded!');
 });
 
-// Follow-up date handler
 app.post('/webhook/followup', async (req, res) => {
   const { chatId, followupDate } = req.body;
   
@@ -749,6 +819,7 @@ app.get('/', (req, res) => {
       <li>✅ Executive notifications with Connect button</li>
       <li>✅ Follow-up reminders (9 AM)</li>
       <li>✅ Manager daily report (10 PM)</li>
+      <li>✅ Direct test endpoints: /test-manual and /test-upload</li>
     </ul>
     <p><a href="/health">Health Check</a></p>
   `);
@@ -765,5 +836,6 @@ app.listen(PORT, () => {
   console.log(`📍 Auto-Fetch Mode: Every 2 minutes`);
   console.log(`📍 Manual Entry: ✅ Supported`);
   console.log(`📍 Upload Entry: ✅ Supported`);
+  console.log(`📍 Test Endpoints: /test-manual and /test-upload`);
   console.log('='.repeat(60));
 });
