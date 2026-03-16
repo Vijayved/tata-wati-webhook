@@ -10,15 +10,17 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ============================================
-// CONFIGURATION
+// META CLOUD API CONFIGURATION
 // ============================================
 const PORT = process.env.PORT || 3000;
-const WATI_TOKEN = process.env.WATI_TOKEN;
-const WATI_BASE_URL = process.env.WATI_BASE_URL;
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || 'uic_webhook_2026';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
 const DEDUPE_WINDOW_MS = (parseInt(process.env.DEDUPE_WINDOW_SECONDS || '600', 10)) * 1000;
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
+const META_API_URL = `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}`;
 
 // OpenAI
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -31,8 +33,8 @@ if (SELF_URL) {
   }, 14 * 60 * 1000);
 }
 
-if (!WATI_TOKEN || !WATI_BASE_URL) {
-  console.error('❌ Missing WATI configuration in .env');
+if (!META_ACCESS_TOKEN || !PHONE_NUMBER_ID) {
+  console.error('❌ Missing Meta Cloud API configuration in .env');
   process.exit(1);
 }
 
@@ -46,16 +48,6 @@ const EXECUTIVES = {
   'Vadaj Team': process.env.VADAJ_EXECUTIVE || '919825086014',
   'Manager': process.env.MANAGER_NUMBER || '919825086099'
 };
-
-// List of all executive numbers for session keeping
-const ALL_EXECUTIVE_NUMBERS = [
-  process.env.SATELLITE_EXECUTIVE || '919825086011',
-  process.env.NARODA_EXECUTIVE || '919825086012',
-  process.env.USMANPURA_EXECUTIVE || '919825086013',
-  process.env.VADAJ_EXECUTIVE || '919825086014',
-  process.env.MANAGER_NUMBER || '919825086099',
-  '919169959992' // Test number
-].filter(Boolean);
 
 // ============================================
 // BRANCH CONFIGURATION
@@ -144,214 +136,189 @@ function getCalledNumberFromPayload(body) {
 }
 
 // ============================================
-// WATI API FUNCTIONS
+// META CLOUD API FUNCTIONS
 // ============================================
-async function callWatiApi(url, data) {
+
+// Send template message
+async function sendMetaTemplateMessage(whatsappNumber, branchName) {
   try {
-    const response = await axios.post(url, data, {
-      headers: {
-        Authorization: `${WATI_TOKEN}`,
-        'Content-Type': 'application/json'
+    console.log(`📱 Sending template to ${whatsappNumber} for branch ${branchName}`);
+    
+    const response = await axios.post(
+      `${META_API_URL}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to: whatsappNumber,
+        type: "template",
+        template: {
+          name: TEMPLATE_NAME,
+          language: {
+            code: "en_US"
+          },
+          components: [
+            {
+              type: "body",
+              parameters: [
+                {
+                  type: "text",
+                  text: branchName
+                }
+              ]
+            }
+          ]
+        }
       },
-      timeout: 15000
-    });
+      {
+        headers: {
+          'Authorization': `Bearer ${META_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
     return response.data;
   } catch (error) {
-    console.error('❌ WATI API Error:', error.response?.data || error.message);
+    console.error('❌ Meta API Error:', error.response?.data || error.message);
     throw error;
   }
 }
 
-async function sendWatiTemplateMessage(whatsappNumber, branchName) {
-  const payload = {
-    template_name: TEMPLATE_NAME,
-    broadcast_name: `misscall_${Date.now()}`,
-    parameters: [{ name: '1', value: branchName }]
-  };
-  const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
-  return await callWatiApi(url, payload);
+// Send text message
+async function sendMetaTextMessage(whatsappNumber, messageText) {
+  try {
+    console.log(`📤 Sending text to ${whatsappNumber}`);
+    
+    const response = await axios.post(
+      `${META_API_URL}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to: whatsappNumber,
+        type: "text",
+        text: {
+          body: messageText
+        }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${META_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    return response.data;
+  } catch (error) {
+    console.error('❌ Meta API Error:', error.response?.data || error.message);
+    throw error;
+  }
 }
 
-async function sendSessionTextMessage(whatsappNumber, messageText) {
-  const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${encodeURIComponent(whatsappNumber)}`;
-  const payload = { messageText, messageType: 'TEXT' };
-  return await callWatiApi(url, payload);
-}
-
+// Send to executive
 async function sendExecutiveNotification(executiveNumber, messageText) {
-  return await sendSessionTextMessage(executiveNumber, messageText);
+  return await sendMetaTextMessage(executiveNumber, messageText);
+}
+
+// Send patient template
+async function sendPatientTemplate(whatsappNumber, branchName) {
+  return await sendMetaTemplateMessage(whatsappNumber, branchName);
 }
 
 // ============================================
-// WATI API FETCH FUNCTIONS
+// META WEBHOOK - GET (Verification)
 // ============================================
-async function fetchRecentChats() {
-  try {
-    const from = new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
-    const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
-    
-    const url = `${WATI_BASE_URL}/api/v1/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
-    
-    const response = await axios.get(url, {
-      headers: { Authorization: `${WATI_TOKEN}` }
-    });
-    
-    return response.data || [];
-  } catch (error) {
-    console.error('❌ Error fetching chats:', error.message);
-    return [];
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  
+  if (mode && token) {
+    if (mode === 'subscribe' && token === WEBHOOK_VERIFY_TOKEN) {
+      console.log('✅ Webhook verified');
+      res.status(200).send(challenge);
+    } else {
+      res.sendStatus(403);
+    }
+  } else {
+    res.sendStatus(400);
   }
-}
+});
 
-async function getContactDetails(whatsappNumber) {
+// ============================================
+// META WEBHOOK - POST (Incoming messages)
+// ============================================
+app.post('/webhook', async (req, res) => {
   try {
-    const url = `${WATI_BASE_URL}/api/v1/getContacts?pageSize=1&name=${whatsappNumber}`;
-    const response = await axios.get(url, {
-      headers: { Authorization: `${WATI_TOKEN}` }
-    });
-    return response.data?.[0] || null;
-  } catch (error) {
-    console.error('❌ Error fetching contact:', error.message);
-    return null;
-  }
-}
-
-// ============================================
-// PROCESS FUNCTIONS
-// ============================================
-async function processManualEntry(chatId, patientName, testNames, branch) {
-  console.log(`📝 Processing manual entry for ${patientName}`);
-  
-  const executiveNumber = getExecutiveNumber(branch);
-  
-  const message = `
-📋 *New Manual Test Entry*
-━━━━━━━━━━━━━━━━━━
-👤 Patient: ${patientName}
-🔬 Tests: ${testNames}
-🏥 Branch: ${branch}
-📅 Time: ${new Date().toLocaleString()}
-━━━━━━━━━━━━━━━━━━
-🔗 Connect: ${SELF_URL}/connect-chat/${chatId}
-✅ Convert: ${SELF_URL}/exec-action?action=convert&chat=${chatId}
-⏳ Waiting: ${SELF_URL}/exec-action?action=waiting&chat=${chatId}
-❌ Not Convert: ${SELF_URL}/exec-action?action=notconvert&chat=${chatId}
-  `;
-  
-  await sendExecutiveNotification(executiveNumber, message);
-  
-  patientDB.set(chatId, {
-    patientName,
-    testNames,
-    branch,
-    executiveNumber,
-    entryType: 'manual',
-    status: 'pending',
-    timestamp: new Date().toISOString(),
-    chatId
-  });
-}
-
-async function processImageUpload(chatId, patientName, branch, imageUrl) {
-  console.log(`📸 Processing image upload for ${patientName}`);
-  
-  const executiveNumber = getExecutiveNumber(branch);
-  
-  const extracted = await extractWithOpenAI(imageUrl);
-  
-  const message = `
+    console.log('📨 Meta Webhook:', JSON.stringify(req.body, null, 2));
+    
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+    
+    if (!value) {
+      return res.sendStatus(200);
+    }
+    
+    const messages = value.messages;
+    const contacts = value.contacts;
+    
+    if (!messages || !contacts) {
+      return res.sendStatus(200);
+    }
+    
+    const message = messages[0];
+    const contact = contacts[0];
+    const from = message.from;
+    const patientName = contact.profile?.name || 'Patient';
+    
+    if (message.type === 'text') {
+      const text = message.text.body.toLowerCase();
+      
+      if (text === '1') {
+        await sendMetaTextMessage(from, `📅 *Book Test*\nKripya apna naam bataiye:`);
+      } else if (text === '2') {
+        await sendMetaTextMessage(from, `📸 *Upload Prescription*\nKripya prescription ki photo bhejiye.`);
+      } else if (text === '3') {
+        await sendMetaTextMessage(from, `👨‍💼 Aapko executive se connect kiya ja raha hai.`);
+      }
+    }
+    else if (message.type === 'image' || message.type === 'document') {
+      const mediaId = message.image?.id || message.document?.id;
+      
+      if (mediaId) {
+        const mediaResponse = await axios.get(
+          `https://graph.facebook.com/v18.0/${mediaId}`,
+          {
+            headers: { 'Authorization': `Bearer ${META_ACCESS_TOKEN}` }
+          }
+        );
+        
+        const imageUrl = mediaResponse.data.url;
+        const extracted = await extractWithOpenAI(imageUrl);
+        const executiveNumber = getExecutiveNumber('Main Branch');
+        
+        const execMessage = `
 📸 *New Prescription Received*
 ━━━━━━━━━━━━━━━━━━
-👤 Patient: ${extracted.patientName}
+👤 Patient: ${patientName}
 🔬 Tests: ${extracted.tests}
 👨‍⚕️ Doctor: ${extracted.doctorName}
-🏥 Branch: ${branch}
 📅 Time: ${new Date().toLocaleString()}
 ━━━━━━━━━━━━━━━━━━
 📝 *OCR Preview:*
 ${extracted.rawText.substring(0, 300)}...
-━━━━━━━━━━━━━━━━━━
-🔗 Connect: ${SELF_URL}/connect-chat/${chatId}
-✅ Convert: ${SELF_URL}/exec-action?action=convert&chat=${chatId}
-⏳ Waiting: ${SELF_URL}/exec-action?action=waiting&chat=${chatId}
-❌ Not Convert: ${SELF_URL}/exec-action?action=notconvert&chat=${chatId}
-  `;
-  
-  await sendExecutiveNotification(executiveNumber, message);
-  
-  patientDB.set(chatId, {
-    patientName,
-    branch,
-    imageUrl,
-    extracted,
-    executiveNumber,
-    entryType: 'upload',
-    status: 'processed',
-    timestamp: new Date().toISOString(),
-    chatId
-  });
-  
-  processedImages.add(chatId);
-}
-
-function getExecutiveNumber(branch) {
-  const teamName = `${branch} Team`;
-  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '919825086011';
-}
-
-// ============================================
-// BACKGROUND CRON JOB (हर 2 मिनट में)
-// ============================================
-cron.schedule('*/2 * * * *', async () => {
-  console.log('🔍 [' + new Date().toLocaleTimeString() + '] Checking WATI for new chats...');
-  
-  try {
-    const chats = await fetchRecentChats();
-    
-    for (const chat of chats) {
-      if (processedChats.has(chat.id)) continue;
-      
-      const contact = await getContactDetails(chat.whatsappNumber);
-      if (!contact) continue;
-      
-      const patientName = contact.customAttributes?.patient_name || 'Patient';
-      const branch = contact.customAttributes?.branch_name || 'Main Branch';
-      
-      if (chat.lastMessage?.type === 'text') {
-        const text = chat.lastMessage.text?.toLowerCase() || '';
-        if (text.includes('manual entry') || text.includes('test name')) {
-          const testNames = extractTestNames(chat.messages);
-          await processManualEntry(chat.id, patientName, testNames, branch);
-          processedChats.add(chat.id);
-        }
-      }
-      else if (chat.lastMessage?.type === 'image') {
-        const imageUrl = chat.lastMessage.mediaUrl;
-        if (imageUrl) {
-          await processImageUpload(chat.id, patientName, branch, imageUrl);
-          processedChats.add(chat.id);
-        }
+        `;
+        
+        await sendExecutiveNotification(executiveNumber, execMessage);
       }
     }
+    
+    res.sendStatus(200);
+    
   } catch (error) {
-    console.error('❌ Error in cron job:', error.message);
+    console.error('❌ Webhook error:', error.message);
+    res.sendStatus(200);
   }
 });
-
-function extractTestNames(messages) {
-  if (!messages || !messages.length) return 'Not specified';
-  
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.type === 'text' && msg.text && 
-        !msg.text.toLowerCase().includes('please') && 
-        !msg.text.toLowerCase().includes('enter') &&
-        msg.text.length < 100) {
-      return msg.text;
-    }
-  }
-  return 'Not specified';
-}
 
 // ============================================
 // OPENAI OCR FUNCTION
@@ -426,341 +393,7 @@ async function extractWithOpenAI(imageUrl) {
 }
 
 // ============================================
-// ADD CONTACT ENDPOINT (NEW)
-// ============================================
-app.get('/add-contact/:number', async (req, res) => {
-  try {
-    const { number } = req.params;
-    
-    console.log(`📇 Adding contact ${number} to WATI...`);
-    
-    const response = await axios.post(
-      `${WATI_BASE_URL}/api/v1/addContact/${number}`,
-      { 
-        name: `Executive_${number}`,
-        customParams: [
-          { name: "source", value: "render_server" },
-          { name: "role", value: "executive" }
-        ]
-      },
-      {
-        headers: { 
-          Authorization: `${WATI_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    
-    res.json({ 
-      success: true, 
-      message: `✅ Contact ${number} added to WATI`,
-      response: response.data 
-    });
-    
-  } catch (error) {
-    console.error('❌ Add contact error:', error.response?.data || error.message);
-    res.status(500).json({ 
-      error: error.response?.data || error.message 
-    });
-  }
-});
-
-// ============================================
-// EXECUTIVE DIRECT MESSAGE SYSTEM
-// ============================================
-
-// Open Session for Executive
-app.get('/open-session/:number', async (req, res) => {
-  try {
-    const { number } = req.params;
-    
-    console.log(`🔄 Opening session for ${number}...`);
-    
-    const response = await axios.post(
-      `${WATI_BASE_URL}/api/v1/sendSessionMessage/${number}?messageText=🔧%20Session%20Open%20Test%20Message`,
-      {},
-      {
-        headers: { Authorization: `${WATI_TOKEN}` }
-      }
-    );
-    
-    res.json({ success: true, message: `✅ Session opened for ${number}`, response: response.data });
-    
-  } catch (error) {
-    console.error('❌ Open session error:', error.response?.data || error.message);
-    res.status(500).json({ error: error.response?.data || error.message });
-  }
-});
-
-// Direct Message to Executive
-app.get('/direct-message', async (req, res) => {
-  try {
-    const { to, message } = req.query;
-    
-    if (!to || !message) {
-      return res.status(400).json({ 
-        error: 'Missing parameters. Use: /direct-message?to=919169959992&message=Hello' 
-      });
-    }
-    
-    console.log(`📤 Direct message to ${to}: ${message.substring(0, 50)}...`);
-    
-    const response = await axios.post(
-      `${WATI_BASE_URL}/api/v1/sendSessionMessage/${to}?messageText=${encodeURIComponent(message)}`,
-      {},
-      {
-        headers: { Authorization: `${WATI_TOKEN}` }
-      }
-    );
-    
-    res.json({ 
-      success: true, 
-      message: `✅ Message sent to ${to}`,
-      response: response.data 
-    });
-    
-  } catch (error) {
-    console.error('❌ Direct message error:', error.response?.data || error.message);
-    res.status(500).json({ error: error.response?.data || error.message });
-  }
-});
-
-// Keep All Executive Sessions Alive (हर 20 घंटे में)
-cron.schedule('0 */20 * * *', async () => {
-  console.log('🔄 Keeping executive sessions alive...');
-  
-  for (const num of ALL_EXECUTIVE_NUMBERS) {
-    try {
-      await axios.post(
-        `${WATI_BASE_URL}/api/v1/sendSessionMessage/${num}?messageText=🔧%20System%20Ping%20Test%20Message`,
-        {},
-        {
-          headers: { Authorization: `${WATI_TOKEN}` }
-        }
-      );
-      console.log(`✅ Session alive for ${num}`);
-      
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    } catch (error) {
-      console.error(`❌ Failed for ${num}:`, error.message);
-    }
-  }
-});
-
-// ============================================
-// TEST ENDPOINTS
-// ============================================
-app.get('/test-manual', async (req, res) => {
-  try {
-    const { patient, test, branch, exec } = req.query;
-    
-    if (!patient || !test || !branch || !exec) {
-      return res.status(400).json({ 
-        error: 'Missing parameters. Use: /test-manual?patient=Name&test=TestName&branch=Branch&exec=919169959992' 
-      });
-    }
-    
-    const chatId = `test-${Date.now()}`;
-    
-    const message = `
-📋 *New Manual Test Entry (TEST)*
-━━━━━━━━━━━━━━━━━━
-👤 Patient: ${patient}
-🔬 Tests: ${test}
-🏥 Branch: ${branch}
-📅 Time: ${new Date().toLocaleString()}
-━━━━━━━━━━━━━━━━━━
-🔗 Connect: ${SELF_URL}/connect-chat/${chatId}
-✅ Convert: ${SELF_URL}/exec-action?action=convert&chat=${chatId}
-⏳ Waiting: ${SELF_URL}/exec-action?action=waiting&chat=${chatId}
-❌ Not Convert: ${SELF_URL}/exec-action?action=notconvert&chat=${chatId}
-    `;
-    
-    await sendExecutiveNotification(exec, message);
-    
-    res.json({ 
-      success: true, 
-      message: `Test manual entry sent to ${exec}`,
-      chatId 
-    });
-    
-  } catch (error) {
-    console.error('❌ Test error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/test-upload', async (req, res) => {
-  try {
-    const { patient, branch, exec } = req.query;
-    
-    if (!patient || !branch || !exec) {
-      return res.status(400).json({ 
-        error: 'Missing parameters. Use: /test-upload?patient=Name&branch=Branch&exec=919169959992' 
-      });
-    }
-    
-    const chatId = `test-${Date.now()}`;
-    
-    const message = `
-📸 *New Prescription Uploaded (TEST)*
-━━━━━━━━━━━━━━━━━━
-👤 Patient: ${patient}
-🔬 Tests: MRI Brain, CT Scan (demo data)
-👨‍⚕️ Doctor: Dr. Sharma
-🏥 Branch: ${branch}
-📅 Time: ${new Date().toLocaleString()}
-━━━━━━━━━━━━━━━━━━
-📝 *OCR Preview:*
-MRI Brain with contrast...
-CT Scan whole abdomen...
-━━━━━━━━━━━━━━━━━━
-🔗 Connect: ${SELF_URL}/connect-chat/${chatId}
-✅ Convert: ${SELF_URL}/exec-action?action=convert&chat=${chatId}
-⏳ Waiting: ${SELF_URL}/exec-action?action=waiting&chat=${chatId}
-❌ Not Convert: ${SELF_URL}/exec-action?action=notconvert&chat=${chatId}
-    `;
-    
-    await sendExecutiveNotification(exec, message);
-    
-    res.json({ 
-      success: true, 
-      message: `Test upload entry sent to ${exec}`,
-      chatId 
-    });
-    
-  } catch (error) {
-    console.error('❌ Test error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
-// EXECUTIVE SYSTEM ENDPOINTS
-// ============================================
-app.get('/connect-chat/:chatId', (req, res) => {
-  const { chatId } = req.params;
-  res.redirect(`https://app.wati.io/chat/${chatId}`);
-});
-
-app.get('/exec-action', async (req, res) => {
-  const { action, chat } = req.query;
-  
-  const patient = patientDB.get(chat);
-  if (!patient) {
-    return res.send('❌ Patient not found');
-  }
-  
-  switch(action) {
-    case 'convert':
-      patient.status = 'converted';
-      patientDB.set(chat, patient);
-      await sendExecutiveNotification(patient.executiveNumber,
-        `✅ Patient ${patient.patientName} converted successfully!`);
-      break;
-      
-    case 'waiting':
-      patient.status = 'waiting';
-      patientDB.set(chat, patient);
-      await sendExecutiveNotification(patient.executiveNumber,
-        `⏳ Please send follow-up date (DD/MM/YYYY) for ${patient.patientName}`);
-      break;
-      
-    case 'notconvert':
-      patient.status = 'not_converted';
-      patientDB.set(chat, patient);
-      await sendExecutiveNotification(EXECUTIVES['Manager'],
-        `📤 *Escalation Alert*\nPatient: ${patient.patientName}\nBranch: ${patient.branch}\nExecutive: ${patient.executiveNumber}`);
-      await sendExecutiveNotification(patient.executiveNumber,
-        `❌ Patient ${patient.patientName} escalated to manager.`);
-      break;
-  }
-  
-  res.send('✅ Action recorded!');
-});
-
-app.post('/webhook/followup', async (req, res) => {
-  const { chatId, followupDate } = req.body;
-  
-  const patient = patientDB.get(chatId);
-  if (patient) {
-    patient.followupDate = followupDate;
-    patient.status = 'waiting';
-    patientDB.set(chatId, patient);
-    
-    const dateKey = followupDate.split('/').reverse().join('-');
-    const existing = followupDB.get(dateKey) || [];
-    followupDB.set(dateKey, [...existing, chatId]);
-  }
-  
-  res.json({ success: true });
-});
-
-// Daily follow-up reminder (9 AM)
-cron.schedule('0 9 * * *', async () => {
-  console.log('⏰ Running follow-up reminder...');
-  const today = new Date().toISOString().split('T')[0];
-  
-  const chatIds = followupDB.get(today) || [];
-  
-  for (const chatId of chatIds) {
-    const patient = patientDB.get(chatId);
-    if (patient) {
-      await sendExecutiveNotification(patient.executiveNumber,
-        `⏰ *Follow-up Reminder*\nPatient: ${patient.patientName}\nBranch: ${patient.branch}`);
-    }
-  }
-});
-
-// Daily manager report (10 PM)
-cron.schedule('0 22 * * *', async () => {
-  console.log('📊 Generating daily report...');
-  
-  let report = `📊 *Daily Report - ${new Date().toLocaleDateString()}*\n━━━━━━━━━━━━━━━━━━\n\n`;
-  
-  let total = 0, converted = 0, waiting = 0, notConverted = 0;
-  const branchStats = {};
-  
-  for (let [chatId, patient] of patientDB) {
-    const createdDate = patient.timestamp?.split('T')[0] || '';
-    const today = new Date().toISOString().split('T')[0];
-    
-    if (createdDate !== today) continue;
-    
-    total++;
-    
-    branchStats[patient.branch] = branchStats[patient.branch] || 
-      { total:0, converted:0, waiting:0, notConverted:0 };
-    branchStats[patient.branch].total++;
-    
-    if (patient.status === 'converted') {
-      converted++;
-      branchStats[patient.branch].converted++;
-    } else if (patient.status === 'waiting') {
-      waiting++;
-      branchStats[patient.branch].waiting++;
-    } else if (patient.status === 'not_converted') {
-      notConverted++;
-      branchStats[patient.branch].notConverted++;
-    }
-  }
-  
-  report += `📞 Total Patients: ${total}\n`;
-  report += `✅ Converted: ${converted}\n`;
-  report += `⏳ Waiting: ${waiting}\n`;
-  report += `❌ Not Converted: ${notConverted}\n\n`;
-  report += `🏥 Branch-wise:\n`;
-  
-  for (let branch in branchStats) {
-    let b = branchStats[branch];
-    report += `${branch}: ${b.total} (✅${b.converted} ⏳${b.waiting} ❌${b.notConverted})\n`;
-  }
-  
-  await sendExecutiveNotification(EXECUTIVES['Manager'], report);
-});
-
-// ============================================
-// MAIN ENDPOINTS
+// TATA TELE MISS CALL WEBHOOK
 // ============================================
 app.post('/tata-misscall', async (req, res) => {
   try {
@@ -787,7 +420,7 @@ app.post('/tata-misscall', async (req, res) => {
       return res.json({ success: true, skipped: true });
     }
     
-    await sendWatiTemplateMessage(whatsappNumber, branch.name);
+    await sendMetaTemplateMessage(whatsappNumber, branch.name);
     
     return res.json({ success: true, whatsappNumber, branch: branch.name });
     
@@ -797,84 +430,67 @@ app.post('/tata-misscall', async (req, res) => {
   }
 });
 
-app.post('/wati-webhook', async (req, res) => {
+// ============================================
+// DIRECT MESSAGE TEST ENDPOINT
+// ============================================
+app.get('/direct-message', async (req, res) => {
   try {
-    console.log('📨 WATI Webhook:', JSON.stringify(req.body, null, 2));
+    const { to, message } = req.query;
     
-    const from = normalizeWhatsAppNumber(req.body.from || req.body.whatsappNumber || req.body.sender);
-    const text = String(req.body.text || req.body.message || '').trim().toLowerCase();
-    const mediaUrl = req.body.imageUrl || req.body.media?.url || '';
-    
-    if (!from) return res.json({ received: true, ignored: true });
-    
-    const context = userContext.get(from) || {};
-    const branch = context.branch || 'Main Branch';
-    const executive = context.executive || process.env.DEFAULT_EXECUTIVE;
-    
-    if (text === '1') {
-      await sendSessionTextMessage(from, `📅 *Book Test - ${branch} Branch*\nKripya apna naam, test ka naam, aur preferred date/time bhejiye.`);
-      userContext.set(from, { ...context, stage: 'book_test_requested' });
-    } else if (text === '2') {
-      await sendSessionTextMessage(from, `📸 *Upload Prescription - ${branch} Branch*\nKripya prescription ki clear photo bhejiye.`);
-      userContext.set(from, { ...context, stage: 'awaiting_prescription' });
-    } else if (text === '3') {
-      await sendSessionTextMessage(from, `👨‍💼 Aapko ${branch} branch ke executive se connect kiya ja raha hai.`);
-      userContext.set(from, { ...context, stage: 'executive_requested' });
-    } else if (mediaUrl && context.stage === 'awaiting_prescription') {
-      const extracted = await extractWithOpenAI(mediaUrl);
-      await sendExecutiveNotification(executive, 
-        `📸 *Prescription Received*\n🏥 Branch: ${branch}\n📱 Customer: ${from}\n👤 Patient: ${extracted.patientName}\n👨‍⚕️ Doctor: ${extracted.doctorName}\n🔬 Tests: ${extracted.tests}\n\n🔗 Image: ${mediaUrl}`);
-      await sendSessionTextMessage(from, '✅ Aapki prescription receive ho gayi hai.');
-      userContext.set(from, { ...context, stage: 'prescription_uploaded' });
+    if (!to || !message) {
+      return res.status(400).json({ 
+        error: 'Missing parameters. Use: /direct-message?to=919169959992&message=Hello' 
+      });
     }
     
-    return res.json({ received: true });
+    console.log(`📤 Direct message to ${to}`);
+    
+    const response = await sendMetaTextMessage(to, message);
+    
+    res.json({ 
+      success: true, 
+      message: `✅ Message sent to ${to}`,
+      response 
+    });
     
   } catch (error) {
-    console.error('❌ WATI webhook error:', error.message);
-    return res.status(500).json({ received: false, error: error.message });
-  }
-});
-
-app.post('/ocr-prescription', async (req, res) => {
-  try {
-    const { imageUrl, whatsappNumber, branch, executive } = req.body;
-    
-    if (!imageUrl || !whatsappNumber) {
-      return res.status(400).json({ success: false, error: 'imageUrl and whatsappNumber required' });
-    }
-    
-    const extracted = await extractWithOpenAI(imageUrl);
-    const context = userContext.get(whatsappNumber) || {};
-    const finalBranch = branch || context.branch || 'Not specified';
-    const finalExecutive = executive || context.executive || process.env.DEFAULT_EXECUTIVE;
-    
-    const executiveMessage = `📸 *New Prescription Uploaded*\n━━━━━━━━━━━━━━━━━━\n🏥 *Branch:* ${finalBranch}\n👤 *Patient:* ${extracted.patientName}\n👨‍⚕️ *Doctor:* ${extracted.doctorName}\n🔬 *Tests:* ${extracted.tests}\n━━━━━━━━━━━━━━━━━━\n📝 *OCR Preview:*\n${extracted.rawText}\n\n🔗 Image: ${imageUrl}`;
-    
-    await sendExecutiveNotification(finalExecutive, executiveMessage);
-    await sendSessionTextMessage(whatsappNumber, '✅ Aapki prescription receive ho gayi hai.');
-    
-    userContext.set(whatsappNumber, { ...context, branch: finalBranch, executive: finalExecutive, stage: 'prescription_uploaded' });
-    
-    return res.json({ success: true, extracted });
-    
-  } catch (error) {
-    console.error('❌ OCR error:', error.message);
-    return res.status(500).json({ success: false, error: error.message });
+    console.error('❌ Direct message error:', error.response?.data || error.message);
+    res.status(500).json({ error: error.response?.data || error.message });
   }
 });
 
 // ============================================
 // TEST ENDPOINTS
 // ============================================
-app.get('/test-template', async (req, res) => {
+app.get('/test-manual', async (req, res) => {
   try {
-    const number = req.query.number || '919106959092';
-    const branch = req.query.branch || 'Satellite';
-    const result = await sendWatiTemplateMessage(number, branch);
-    res.json({ success: true, result });
+    const { patient, test, branch, exec } = req.query;
+    
+    if (!patient || !test || !branch || !exec) {
+      return res.status(400).json({ 
+        error: 'Missing parameters. Use: /test-manual?patient=Name&test=TestName&branch=Branch&exec=919169959992' 
+      });
+    }
+    
+    const message = `
+📋 *New Manual Test Entry (TEST)*
+━━━━━━━━━━━━━━━━━━
+👤 Patient: ${patient}
+🔬 Tests: ${test}
+🏥 Branch: ${branch}
+📅 Time: ${new Date().toLocaleString()}
+    `;
+    
+    await sendExecutiveNotification(exec, message);
+    
+    res.json({ 
+      success: true, 
+      message: `Test manual entry sent to ${exec}`
+    });
+    
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    console.error('❌ Test error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -893,29 +509,22 @@ app.get('/health', (req, res) => {
   res.json({ 
     success: true, 
     status: 'ok', 
-    processed: processedImages.size,
     patients: patientDB.size,
-    processedChats: processedChats.size,
     uptime: process.uptime() 
   });
 });
 
 app.get('/', (req, res) => {
   res.send(`
-    <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>OpenAI OCR + Executive System Active (Auto-Fetch Mode + Direct Messaging + Contact Management)</p>
+    <h1>🚀 Tata-Meta Webhook Server</h1>
+    <p>Meta Cloud API + OpenAI OCR Active</p>
     <ul>
-      <li>✅ Auto-fetches from WATI every 2 minutes</li>
-      <li>✅ Manual Entry & Upload both supported</li>
-      <li>✅ No webhook nodes required in WATI</li>
-      <li>✅ Executive notifications with Connect button</li>
-      <li>✅ Direct messaging to executives</li>
-      <li>✅ Add contacts to WATI: /add-contact/919169959992</li>
-      <li>✅ Auto session keeper (every 20 hours)</li>
-      <li>✅ Follow-up reminders (9 AM)</li>
-      <li>✅ Manager daily report (10 PM)</li>
+      <li>✅ Webhook URL: /webhook</li>
+      <li>✅ Verify Token: ${WEBHOOK_VERIFY_TOKEN}</li>
+      <li>✅ POST /tata-misscall - Tata Tele webhook</li>
+      <li>✅ GET /direct-message - Send test message</li>
+      <li>✅ GET /health - Health check</li>
     </ul>
-    <p><a href="/health">Health Check</a></p>
   `);
 });
 
@@ -925,11 +534,9 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Template: ${TEMPLATE_NAME}`);
+  console.log(`📍 Meta Cloud API: Active`);
+  console.log(`📍 Webhook URL: https://tata-wati-webhook.onrender.com/webhook`);
+  console.log(`📍 Verify Token: ${WEBHOOK_VERIFY_TOKEN}`);
   console.log(`📍 OpenAI OCR: Active with GPT-4o`);
-  console.log(`📍 Auto-Fetch Mode: Every 2 minutes`);
-  console.log(`📍 Direct Messaging: ✅ Available`);
-  console.log(`📍 Add Contact: /add-contact/:number`);
-  console.log(`📍 Session Keeper: Every 20 hours`);
   console.log('='.repeat(60));
 });
