@@ -47,6 +47,16 @@ const EXECUTIVES = {
   'Manager': process.env.MANAGER_NUMBER || '919825086099'
 };
 
+// List of all executive numbers for session keeping
+const ALL_EXECUTIVE_NUMBERS = [
+  process.env.SATELLITE_EXECUTIVE || '919825086011',
+  process.env.NARODA_EXECUTIVE || '919825086012',
+  process.env.USMANPURA_EXECUTIVE || '919825086013',
+  process.env.VADAJ_EXECUTIVE || '919825086014',
+  process.env.MANAGER_NUMBER || '919825086099',
+  '919169959992' // Test number
+].filter(Boolean); // Remove empty values
+
 // ============================================
 // BRANCH CONFIGURATION
 // ============================================
@@ -202,20 +212,6 @@ async function getContactDetails(whatsappNumber) {
     return response.data?.[0] || null;
   } catch (error) {
     console.error('❌ Error fetching contact:', error.message);
-    return null;
-  }
-}
-
-async function getMediaFromWATI(fileName) {
-  try {
-    const url = `${WATI_BASE_URL}/api/v1/getMedia?fileName=${fileName}`;
-    const response = await axios.get(url, {
-      headers: { Authorization: `${WATI_TOKEN}` },
-      responseType: 'arraybuffer'
-    });
-    return response.data;
-  } catch (error) {
-    console.error('❌ Error fetching media:', error.message);
     return null;
   }
 }
@@ -430,10 +426,91 @@ async function extractWithOpenAI(imageUrl) {
 }
 
 // ============================================
-// DIRECT TEST ENDPOINTS
+// EXECUTIVE DIRECT MESSAGE SYSTEM
 // ============================================
 
-// Test Manual Entry
+// 1. Open Session for Executive
+app.get('/open-session/:number', async (req, res) => {
+  try {
+    const { number } = req.params;
+    
+    console.log(`🔄 Opening session for ${number}...`);
+    
+    await axios.post(
+      `${WATI_BASE_URL}/api/v1/sendSessionMessage/${number}?messageText=🔧%20Session%20Open%20Test%20Message`,
+      {},
+      {
+        headers: { Authorization: `${WATI_TOKEN}` }
+      }
+    );
+    
+    res.json({ success: true, message: `✅ Session opened for ${number}` });
+    
+  } catch (error) {
+    console.error('❌ Open session error:', error.response?.data || error.message);
+    res.status(500).json({ error: error.response?.data || error.message });
+  }
+});
+
+// 2. Direct Message to Executive
+app.get('/direct-message', async (req, res) => {
+  try {
+    const { to, message } = req.query;
+    
+    if (!to || !message) {
+      return res.status(400).json({ 
+        error: 'Missing parameters. Use: /direct-message?to=919169959992&message=Hello' 
+      });
+    }
+    
+    console.log(`📤 Direct message to ${to}: ${message.substring(0, 50)}...`);
+    
+    const response = await axios.post(
+      `${WATI_BASE_URL}/api/v1/sendSessionMessage/${to}?messageText=${encodeURIComponent(message)}`,
+      {},
+      {
+        headers: { Authorization: `${WATI_TOKEN}` }
+      }
+    );
+    
+    res.json({ 
+      success: true, 
+      message: `✅ Message sent to ${to}`,
+      response: response.data 
+    });
+    
+  } catch (error) {
+    console.error('❌ Direct message error:', error.response?.data || error.message);
+    res.status(500).json({ error: error.response?.data || error.message });
+  }
+});
+
+// 3. Keep All Executive Sessions Alive (हर 20 घंटे में)
+cron.schedule('0 */20 * * *', async () => {
+  console.log('🔄 Keeping executive sessions alive...');
+  
+  for (const num of ALL_EXECUTIVE_NUMBERS) {
+    try {
+      await axios.post(
+        `${WATI_BASE_URL}/api/v1/sendSessionMessage/${num}?messageText=🔧%20System%20Ping%20Test%20Message`,
+        {},
+        {
+          headers: { Authorization: `${WATI_TOKEN}` }
+        }
+      );
+      console.log(`✅ Session alive for ${num}`);
+      
+      // Delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    } catch (error) {
+      console.error(`❌ Failed for ${num}:`, error.message);
+    }
+  }
+});
+
+// ============================================
+// TEST ENDPOINTS
+// ============================================
 app.get('/test-manual', async (req, res) => {
   try {
     const { patient, test, branch, exec } = req.query;
@@ -474,7 +551,6 @@ app.get('/test-manual', async (req, res) => {
   }
 });
 
-// Test Upload Entry
 app.get('/test-upload', async (req, res) => {
   try {
     const { patient, branch, exec } = req.query;
@@ -516,29 +592,6 @@ CT Scan whole abdomen...
     
   } catch (error) {
     console.error('❌ Test error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
-// WEBHOOK ENDPOINTS
-// ============================================
-app.post('/webhook/new-prescription', async (req, res) => {
-  try {
-    const { chatId, patientName, branch, imageUrl, executiveNumber } = req.body;
-    console.log(`📸 Webhook: New prescription from ${patientName}`);
-    res.json({ success: true, message: 'Prescription received' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/webhook/manual-entry', async (req, res) => {
-  try {
-    const { chatId, patientName, testNames, branch, executiveNumber } = req.body;
-    console.log(`📝 Webhook: Manual entry from ${patientName}`);
-    res.json({ success: true, message: 'Manual entry received' });
-  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
@@ -811,15 +864,16 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>OpenAI OCR + Executive System Active (Auto-Fetch Mode)</p>
+    <p>OpenAI OCR + Executive System Active (Auto-Fetch Mode + Direct Messaging)</p>
     <ul>
       <li>✅ Auto-fetches from WATI every 2 minutes</li>
       <li>✅ Manual Entry & Upload both supported</li>
       <li>✅ No webhook nodes required in WATI</li>
       <li>✅ Executive notifications with Connect button</li>
+      <li>✅ Direct messaging to executives</li>
+      <li>✅ Auto session keeper (every 20 hours)</li>
       <li>✅ Follow-up reminders (9 AM)</li>
       <li>✅ Manager daily report (10 PM)</li>
-      <li>✅ Direct test endpoints: /test-manual and /test-upload</li>
     </ul>
     <p><a href="/health">Health Check</a></p>
   `);
@@ -834,8 +888,9 @@ app.listen(PORT, () => {
   console.log(`📍 Template: ${TEMPLATE_NAME}`);
   console.log(`📍 OpenAI OCR: Active with GPT-4o`);
   console.log(`📍 Auto-Fetch Mode: Every 2 minutes`);
+  console.log(`📍 Direct Messaging: ✅ Available`);
+  console.log(`📍 Session Keeper: Every 20 hours`);
   console.log(`📍 Manual Entry: ✅ Supported`);
   console.log(`📍 Upload Entry: ✅ Supported`);
-  console.log(`📍 Test Endpoints: /test-manual and /test-upload`);
   console.log('='.repeat(60));
 });
