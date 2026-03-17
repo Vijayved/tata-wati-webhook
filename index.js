@@ -929,6 +929,12 @@ app.get('/', (req, res) => {
 });
 
 // ============================================
+// ✅ DASHBOARD ROUTE
+// ============================================
+const dashboardRouter = require('./dashboard')(patientsCollection, processedCollection, PORT);
+app.use('/admin', dashboardRouter);
+
+// ============================================
 // ✅ START SERVER
 // ============================================
 app.listen(PORT, () => {
