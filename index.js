@@ -303,7 +303,9 @@ function getPriority(testNames) {
 // ✅ Get executive number by branch name
 function getExecutiveNumber(branchName) {
   const teamName = `${branchName} Team`;
-  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
+  const number = EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
+  console.log(`🔍 getExecutiveNumber for ${branchName} returns ${number}`);
+  return number;
 }
 
 // ✅ Safe JSON parse for OpenAI response
@@ -364,6 +366,7 @@ async function sendLeadNotification(
   sourceType, 
   chatId
 ) {
+  console.log(`📤 Preparing lead notification for executive ${executiveNumber}`);
   const safePatientName = patientName || "Unknown Patient";
   const safeTestNames = testNames || "Not specified";
   const safeSourceType = sourceType.replace(/[📝📸]/g, '').trim();
@@ -377,7 +380,16 @@ async function sendLeadNotification(
     { name: "6", value: `${SELF_URL}/connect-chat/${chatId}?token=${generateToken(chatId)}` }
   ];
   
-  return await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
+  console.log(`📦 Parameters:`, JSON.stringify(parameters));
+  
+  try {
+    const result = await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
+    console.log(`✅ Lead notification sent to ${executiveNumber}`);
+    return result;
+  } catch (error) {
+    console.error(`❌ sendLeadNotification error:`, error);
+    throw error;
+  }
 }
 
 // ============================================
@@ -645,7 +657,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ UPDATED WATI WEBHOOK - With branch selection handling
+// ✅ UPDATED WATI WEBHOOK - WITH COMPLETE BRANCH HANDLING
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -675,7 +687,9 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
-    // Branch names for selection
+    console.log(`📱 Processing for phone: ${patientPhone}`);
+    
+    // Branch names for selection (exact match with WATI buttons)
     const branchNames = ['Naroda', 'Usmanpura', 'Vadaj', 'Satellite', 'Test Branch'];
     
     if (msg.type === 'text' || msg.messageType === 'text') {
@@ -690,112 +704,191 @@ app.post('/wati-webhook', async (req, res) => {
     }
     else if (msg.buttonText || msg.button) {
       const action = msg.buttonText || msg.button;
-      console.log('🔘 Button clicked:', action);
+      console.log(`🔘 Button clicked: "${action}"`);
       
       // Check if it's a branch selection
       if (branchNames.includes(action)) {
-        console.log(`🔍 Looking for patient awaiting branch for ${patientPhone}`);
+        console.log(`🔍 Processing branch selection: ${action} for ${patientPhone}`);
         
-        // Find the patient awaiting branch
+        // Find the patient awaiting branch - IMPROVED QUERY
         const patient = await patientsCollection.findOne({
           patientPhone: patientPhone,
           status: 'awaiting_branch'
-        }, { sort: { createdAt: -1 } });
+        }, { 
+          sort: { createdAt: -1 },
+          limit: 1 
+        });
         
-        if (patient) {
-          console.log(`✅ Found patient:`, patient);
-          console.log(`✅ Branch selected: ${action} for patient ${patientPhone}`);
+        if (!patient) {
+          console.log(`❌ CRITICAL: No patient found with status 'awaiting_branch' for ${patientPhone}`);
+          console.log(`🔍 Checking if any patient exists for this phone...`);
           
-          // Get the correct executive for this branch
-          const executiveNumber = getExecutiveNumber(action);
-          console.log(`👤 Executive for ${action}:`, executiveNumber);
-          
-          // Update patient with selected branch and set status to pending
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            { 
-              $set: { 
-                branch: action,
-                status: 'pending',
-                updatedAt: new Date(),
-                executiveNumber: executiveNumber,
-                testNames: 'Branch selected - awaiting details'
-              } 
-            }
-          );
-          
-          // ✅ Send executive notification
-          const chatId = `${patientPhone}_${action}`;
-          try {
-            await sendLeadNotification(
-              executiveNumber,
-              patient.patientName || 'Miss Call Patient',
-              patientPhone,
-              action,
-              'Miss Call - Branch Selected',
-              '📞 Miss Call',
-              chatId
-            );
-            console.log(`✅ Executive notification sent to ${executiveNumber} for branch ${action}`);
-          } catch (execError) {
-            console.error('❌ Executive notification failed:', execError.message);
+          // Debug: Check if any patient exists for this phone
+          const anyPatient = await patientsCollection.findOne({ patientPhone: patientPhone });
+          if (anyPatient) {
+            console.log(`⚠️ Patient found but status is: ${anyPatient.status}`);
+          } else {
+            console.log(`⚠️ No patient at all found for ${patientPhone}`);
           }
-        } else {
-          console.log(`⚠️ No patient awaiting branch found for ${patientPhone}`);
+          
+          await markMessageProcessed(msgId);
+          return res.sendStatus(200);
         }
         
-        // Mark message as processed
+        console.log(`✅ Patient found:`, JSON.stringify(patient));
+        
+        // Get executive number for selected branch
+        const executiveNumber = getExecutiveNumber(action);
+        console.log(`👤 Executive number for ${action}: ${executiveNumber}`);
+        
+        if (!executiveNumber) {
+          console.log(`❌ No executive number found for branch ${action}`);
+          await markMessageProcessed(msgId);
+          return res.sendStatus(200);
+        }
+        
+        // Update patient with selected branch
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $set: { 
+              branch: action,
+              status: 'pending',
+              updatedAt: new Date(),
+              executiveNumber: executiveNumber,
+              testNames: 'Branch selected - awaiting details'
+            } 
+          }
+        );
+        console.log(`✅ Patient updated with branch ${action}`);
+        
+        // ✅ SEND EXECUTIVE NOTIFICATION - WITH FULL ERROR HANDLING
+        const chatId = `${patientPhone}_${action}`;
+        console.log(`📤 Attempting to send executive notification to ${executiveNumber}`);
+        
+        try {
+          const leadResult = await sendLeadNotification(
+            executiveNumber,
+            patient.patientName || 'Miss Call Patient',
+            patientPhone,
+            action,
+            'Miss Call - Branch Selected',
+            '📞 Miss Call',
+            chatId
+          );
+          console.log(`✅ EXECUTIVE NOTIFICATION SENT SUCCESSFULLY!`, leadResult);
+        } catch (execError) {
+          console.error(`❌ EXECUTIVE NOTIFICATION FAILED:`, execError.message);
+          
+          // Log detailed error
+          if (execError.response) {
+            console.error('WATI API Error Response:', {
+              status: execError.response.status,
+              data: execError.response.data,
+              headers: execError.response.headers
+            });
+          } else if (execError.request) {
+            console.error('WATI API No Response:', execError.request);
+          } else {
+            console.error('WATI API Setup Error:', execError.message);
+          }
+          
+          // Retry logic - try once more after 2 seconds
+          console.log(`🔄 Retrying executive notification in 2 seconds...`);
+          setTimeout(async () => {
+            try {
+              await sendLeadNotification(
+                executiveNumber,
+                patient.patientName || 'Miss Call Patient',
+                patientPhone,
+                action,
+                'Miss Call - Branch Selected (Retry)',
+                '📞 Miss Call',
+                chatId
+              );
+              console.log(`✅ Executive notification sent on retry!`);
+            } catch (retryError) {
+              console.error(`❌ Retry also failed:`, retryError.message);
+            }
+          }, 2000);
+        }
+        
         await markMessageProcessed(msgId);
         return res.sendStatus(200);
       }
       
       // Existing button handlers (Convert, Waiting, Not Convert)
       else if (action === '✅ Convert Done') {
-        const chatId = `${patientPhone}_Naroda`; // You might want to get actual branch
-        await patientsCollection.updateOne(
-          { chatId },
-          { $set: { status: 'converted', updatedAt: new Date() } }
-        );
+        // Find patient by phone
+        const patient = await patientsCollection.findOne({
+          patientPhone: patientPhone,
+          status: { $in: ['pending', 'waiting'] }
+        }, { sort: { createdAt: -1 } });
         
-        await sendWatiTemplateMessage(
-          patientPhone,
-          CONFIRMATION_TEMPLATE,
-          [{ name: "1", value: "✅ Patient marked as converted" }]
-        );
+        if (patient) {
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { status: 'converted', updatedAt: new Date() } }
+          );
+          
+          await sendWatiTemplateMessage(
+            patientPhone,
+            CONFIRMATION_TEMPLATE,
+            [{ name: "1", value: "✅ Patient marked as converted" }]
+          );
+        }
+        
+        await markMessageProcessed(msgId);
       }
       else if (action === '⏳ Waiting') {
-        const chatId = `${patientPhone}_Naroda`;
-        await sendWatiTemplateMessage(
-          patientPhone,
-          ASK_DATE_TEMPLATE,
-          [{ name: "1", value: "Please send follow-up date (DD/MM/YYYY)" }]
-        );
+        const patient = await patientsCollection.findOne({
+          patientPhone: patientPhone,
+          status: { $in: ['pending', 'converted'] }
+        }, { sort: { createdAt: -1 } });
         
-        await patientsCollection.updateOne(
-          { chatId },
-          { $set: { awaiting_followup: true } }
-        );
+        if (patient) {
+          await sendWatiTemplateMessage(
+            patientPhone,
+            ASK_DATE_TEMPLATE,
+            [{ name: "1", value: "Please send follow-up date (DD/MM/YYYY)" }]
+          );
+          
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { awaiting_followup: true } }
+          );
+        }
+        
+        await markMessageProcessed(msgId);
       }
       else if (action === '❌ Not Convert') {
-        const chatId = `${patientPhone}_Naroda`;
-        await patientsCollection.updateOne(
-          { chatId },
-          { $set: { status: 'not_converted', updatedAt: new Date() } }
-        );
+        const patient = await patientsCollection.findOne({
+          patientPhone: patientPhone,
+          status: { $in: ['pending', 'waiting'] }
+        }, { sort: { createdAt: -1 } });
         
-        await sendLeadNotification(
-          EXECUTIVES['Manager'],
-          'Escalation Alert',
-          EXECUTIVES['Manager'],
-          'ALL',
-          'Not Converted',
-          `escalation-${Date.now()}`,
-          chatId
-        );
+        if (patient) {
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { status: 'not_converted', updatedAt: new Date() } }
+          );
+          
+          await sendLeadNotification(
+            EXECUTIVES['Manager'],
+            'Escalation Alert',
+            EXECUTIVES['Manager'],
+            'ALL',
+            'Not Converted',
+            `escalation-${Date.now()}`,
+            patient.chatId
+          );
+        }
+        
+        await markMessageProcessed(msgId);
       }
-      
-      // Mark message as processed
-      await markMessageProcessed(msgId);
+      else {
+        await markMessageProcessed(msgId);
+      }
     }
     else if (msg.type === 'image' || msg.messageType === 'image') {
       const imageUrl = msg.mediaUrl || msg.url || msg.image?.url;
@@ -811,7 +904,7 @@ app.post('/wati-webhook', async (req, res) => {
     
     res.sendStatus(200);
   } catch (error) {
-    console.error('❌ Webhook error:', error.message);
+    console.error('❌ Webhook error:', error);
     res.sendStatus(200);
   }
 });
@@ -1185,6 +1278,61 @@ app.get('/test-exec', async (req, res) => {
   }
 });
 
+// ============================================
+// ✅ DIRECT EXECUTIVE TEMPLATE TEST (FIXED)
+// ============================================
+app.get('/test-executive-direct', async (req, res) => {
+  try {
+    const execNumber = req.query.exec || '919106959092';
+    const patientPhone = req.query.patient || '9876543210';
+    
+    console.log(`🧪 Direct test called with exec=${execNumber}, patient=${patientPhone}`);
+    
+    // Direct API call (bypassing sendLeadNotification)
+    const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${execNumber}`;
+    const payload = {
+      template_name: "lead_notification_v2",
+      broadcast_name: `lead_${Date.now()}`,
+      parameters: [
+        { name: "1", value: "Test Patient" },
+        { name: "2", value: patientPhone },
+        { name: "3", value: "Naroda" },
+        { name: "4", value: "MRI Brain, Blood Test" },
+        { name: "5", value: "Test" },
+        { name: "6", value: "https://example.com" }
+      ]
+    };
+    
+    console.log(`📤 Sending to WATI:`, JSON.stringify(payload));
+    
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Authorization': WATI_TOKEN,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000
+    });
+    
+    console.log(`✅ WATI response:`, response.data);
+    res.json({ 
+      success: true, 
+      message: `Template sent to ${execNumber}`,
+      response: response.data 
+    });
+    
+  } catch (error) {
+    console.error(`❌ Direct test failed:`, error.message);
+    if (error.response) {
+      console.error(`WATI error response:`, error.response.data);
+    }
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      details: error.response?.data || 'No response from WATI'
+    });
+  }
+});
+
 app.get('/test-misscall', async (req, res) => {
   const testPhone = req.query.phone || '9876543210';
   const testBranch = req.query.branch || 'Naroda';
@@ -1300,6 +1448,11 @@ app.get('/', (req, res) => {
         </div>
         
         <div class="endpoint">
+          <div><span class="code">GET</span> <a href="/test-executive-direct?exec=919106959092">/test-executive-direct?exec=919106959092</a></div>
+          <small>Direct executive template test</small>
+        </div>
+        
+        <div class="endpoint">
           <div><span class="code">GET</span> <a href="/api/misscall-stats">/api/misscall-stats</a></div>
           <small>Miss call statistics</small>
         </div>
@@ -1365,6 +1518,7 @@ async function startServer() {
       console.log(`📍 Tata Tele Webhook: /tata-misscall-whatsapp`);
       console.log(`📍 WATI Webhook: /wati-webhook`);
       console.log(`📍 Test Endpoint: /test-misscall`);
+      console.log(`📍 Direct Test: /test-executive-direct`);
       console.log(`📍 Cron: Fallback (5 min)`);
       console.log(`📍 MongoDB: Connected ✅`);
       console.log(`📍 Security: HMAC + API Key + WATI Auth`);
