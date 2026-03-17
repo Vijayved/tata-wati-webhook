@@ -10,7 +10,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ============================================
-// WATI CONFIGURATION
+// CONFIGURATION
 // ============================================
 const PORT = process.env.PORT || 3000;
 const WATI_TOKEN = process.env.WATI_TOKEN;
@@ -37,45 +37,26 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
 }
 
 // ============================================
-// EXECUTIVE NUMBERS MAPPING
+// EXECUTIVE NUMBERS MAPPING (ONLY NARODA FOR TESTING)
 // ============================================
 const EXECUTIVES = {
-  'Satellite Team': process.env.SATELLITE_EXECUTIVE || '919825086011',
-  'Naroda Team': process.env.NARODA_EXECUTIVE || '919825086012',
-  'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '919825086013',
-  'Vadaj Team': process.env.VADAJ_EXECUTIVE || '919825086014',
+  'Naroda Team': process.env.NARODA_EXECUTIVE || '917880261858',
   'Manager': process.env.MANAGER_NUMBER || '919825086099'
 };
 
 // List of all executive numbers for session keeping
 const ALL_EXECUTIVE_NUMBERS = [
-  process.env.SATELLITE_EXECUTIVE || '919825086011',
-  process.env.NARODA_EXECUTIVE || '919825086012',
-  process.env.USMANPURA_EXECUTIVE || '919825086013',
-  process.env.VADAJ_EXECUTIVE || '919825086014',
-  process.env.MANAGER_NUMBER || '919825086099',
-  '919169959992' // Test number
+  process.env.NARODA_EXECUTIVE || '917880261858',
+  process.env.MANAGER_NUMBER || '919825086099'
 ].filter(Boolean);
 
 // ============================================
-// BRANCH CONFIGURATION
+// BRANCH CONFIGURATION (ONLY NARODA FOR TESTING)
 // ============================================
 const BRANCHES = {
-  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: {
-    name: 'Satellite',
-    executive: EXECUTIVES['Satellite Team']
-  },
   [normalizeIndianNumber(process.env.NARODA_NUMBER || '9898989899')]: {
     name: 'Naroda',
     executive: EXECUTIVES['Naroda Team']
-  },
-  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: {
-    name: 'Usmanpura',
-    executive: EXECUTIVES['Usmanpura Team']
-  },
-  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: {
-    name: 'Vadaj',
-    executive: EXECUTIVES['Vadaj Team']
   },
   [normalizeIndianNumber('917969690935')]: {
     name: 'Test Branch',
@@ -119,7 +100,7 @@ function getBranchByCalledNumber(calledNumber) {
   const normalized = normalizeIndianNumber(calledNumber);
   return BRANCHES[normalized] || {
     name: 'Main Branch',
-    executive: process.env.DEFAULT_EXECUTIVE || '919825086011'
+    executive: process.env.DEFAULT_EXECUTIVE || '917880261858'
   };
 }
 
@@ -296,7 +277,7 @@ ${extracted.rawText.substring(0, 300)}...
 
 function getExecutiveNumber(branch) {
   const teamName = `${branch} Team`;
-  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '919825086011';
+  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
 }
 
 // ============================================
@@ -319,8 +300,10 @@ cron.schedule('*/2 * * * *', async () => {
       
       if (chat.lastMessage?.type === 'text') {
         const text = chat.lastMessage.text?.toLowerCase() || '';
-        if (text.includes('manual entry') || text.includes('test name')) {
-          const testNames = extractTestNames(chat.messages);
+        // Check for manual entry keywords
+        if (text.includes('manual') || text.includes('test name') || 
+            (chat.messages && chat.messages.some(m => m.text?.toLowerCase().includes('test')))) {
+          const testNames = extractTestNames(chat.messages) || 'Test entry';
           await processManualEntry(chat.id, patientName, testNames, branch);
           processedChats.add(chat.id);
         }
@@ -466,8 +449,51 @@ app.get('/add-contact/:number', async (req, res) => {
 });
 
 // ============================================
-// EXECUTIVE DIRECT MESSAGE SYSTEM
+// EXECUTIVE SYSTEM ENDPOINTS
 // ============================================
+
+// Connect button - redirect to WATI chat
+app.get('/connect-chat/:chatId', (req, res) => {
+  const { chatId } = req.params;
+  res.redirect(`https://app.wati.io/chat/${chatId}`);
+});
+
+// Executive action handler (Convert/Waiting/Not Convert)
+app.get('/exec-action', async (req, res) => {
+  const { action, chat } = req.query;
+  
+  const patient = patientDB.get(chat);
+  if (!patient) {
+    return res.send('❌ Patient not found');
+  }
+  
+  switch(action) {
+    case 'convert':
+      patient.status = 'converted';
+      patientDB.set(chat, patient);
+      await sendExecutiveNotification(patient.executiveNumber,
+        `✅ Patient ${patient.patientName} marked as CONVERTED`);
+      break;
+      
+    case 'waiting':
+      patient.status = 'waiting';
+      patientDB.set(chat, patient);
+      await sendExecutiveNotification(patient.executiveNumber,
+        `⏳ Please send follow-up date (DD/MM/YYYY) for ${patient.patientName}`);
+      break;
+      
+    case 'notconvert':
+      patient.status = 'not_converted';
+      patientDB.set(chat, patient);
+      await sendExecutiveNotification(EXECUTIVES['Manager'],
+        `📤 *Escalation*\nPatient: ${patient.patientName}\nBranch: ${patient.branch}\nExecutive: ${patient.executiveNumber}`);
+      await sendExecutiveNotification(patient.executiveNumber,
+        `❌ Patient ${patient.patientName} escalated to manager`);
+      break;
+  }
+  
+  res.send('✅ Action recorded!');
+});
 
 // Open Session for Executive
 app.get('/open-session/:number', async (req, res) => {
@@ -499,7 +525,7 @@ app.get('/direct-message', async (req, res) => {
     
     if (!to || !message) {
       return res.status(400).json({ 
-        error: 'Missing parameters. Use: /direct-message?to=919169959992&message=Hello' 
+        error: 'Missing parameters. Use: /direct-message?to=917880261858&message=Hello' 
       });
     }
     
@@ -556,7 +582,7 @@ app.get('/test-manual', async (req, res) => {
     
     if (!patient || !test || !branch || !exec) {
       return res.status(400).json({ 
-        error: 'Missing parameters. Use: /test-manual?patient=Name&test=TestName&branch=Branch&exec=919169959992' 
+        error: 'Missing parameters. Use: /test-manual?patient=Name&test=TestName&branch=Branch&exec=917880261858' 
       });
     }
     
@@ -596,7 +622,7 @@ app.get('/test-upload', async (req, res) => {
     
     if (!patient || !branch || !exec) {
       return res.status(400).json({ 
-        error: 'Missing parameters. Use: /test-upload?patient=Name&branch=Branch&exec=919169959992' 
+        error: 'Missing parameters. Use: /test-upload?patient=Name&branch=Branch&exec=917880261858' 
       });
     }
     
@@ -635,50 +661,7 @@ CT Scan whole abdomen...
   }
 });
 
-// ============================================
-// EXECUTIVE SYSTEM ENDPOINTS
-// ============================================
-app.get('/connect-chat/:chatId', (req, res) => {
-  const { chatId } = req.params;
-  res.redirect(`https://app.wati.io/chat/${chatId}`);
-});
-
-app.get('/exec-action', async (req, res) => {
-  const { action, chat } = req.query;
-  
-  const patient = patientDB.get(chat);
-  if (!patient) {
-    return res.send('❌ Patient not found');
-  }
-  
-  switch(action) {
-    case 'convert':
-      patient.status = 'converted';
-      patientDB.set(chat, patient);
-      await sendExecutiveNotification(patient.executiveNumber,
-        `✅ Patient ${patient.patientName} converted successfully!`);
-      break;
-      
-    case 'waiting':
-      patient.status = 'waiting';
-      patientDB.set(chat, patient);
-      await sendExecutiveNotification(patient.executiveNumber,
-        `⏳ Please send follow-up date (DD/MM/YYYY) for ${patient.patientName}`);
-      break;
-      
-    case 'notconvert':
-      patient.status = 'not_converted';
-      patientDB.set(chat, patient);
-      await sendExecutiveNotification(EXECUTIVES['Manager'],
-        `📤 *Escalation Alert*\nPatient: ${patient.patientName}\nBranch: ${patient.branch}\nExecutive: ${patient.executiveNumber}`);
-      await sendExecutiveNotification(patient.executiveNumber,
-        `❌ Patient ${patient.patientName} escalated to manager.`);
-      break;
-  }
-  
-  res.send('✅ Action recorded!');
-});
-
+// Follow-up date handler
 app.post('/webhook/followup', async (req, res) => {
   const { chatId, followupDate } = req.body;
   
@@ -809,7 +792,7 @@ app.post('/wati-webhook', async (req, res) => {
     
     const context = userContext.get(from) || {};
     const branch = context.branch || 'Main Branch';
-    const executive = context.executive || process.env.DEFAULT_EXECUTIVE;
+    const executive = context.executive || process.env.DEFAULT_EXECUTIVE || '917880261858';
     
     if (text === '1') {
       await sendSessionTextMessage(from, `📅 *Book Test - ${branch} Branch*\nKripya apna naam, test ka naam, aur preferred date/time bhejiye.`);
@@ -847,7 +830,7 @@ app.post('/ocr-prescription', async (req, res) => {
     const extracted = await extractWithOpenAI(imageUrl);
     const context = userContext.get(whatsappNumber) || {};
     const finalBranch = branch || context.branch || 'Not specified';
-    const finalExecutive = executive || context.executive || process.env.DEFAULT_EXECUTIVE;
+    const finalExecutive = executive || context.executive || process.env.DEFAULT_EXECUTIVE || '917880261858';
     
     const executiveMessage = `📸 *New Prescription Uploaded*\n━━━━━━━━━━━━━━━━━━\n🏥 *Branch:* ${finalBranch}\n👤 *Patient:* ${extracted.patientName}\n👨‍⚕️ *Doctor:* ${extracted.doctorName}\n🔬 *Tests:* ${extracted.tests}\n━━━━━━━━━━━━━━━━━━\n📝 *OCR Preview:*\n${extracted.rawText}\n\n🔗 Image: ${imageUrl}`;
     
@@ -870,7 +853,7 @@ app.post('/ocr-prescription', async (req, res) => {
 app.get('/test-template', async (req, res) => {
   try {
     const number = req.query.number || '919106959092';
-    const branch = req.query.branch || 'Satellite';
+    const branch = req.query.branch || 'Naroda';
     const result = await sendWatiTemplateMessage(number, branch);
     res.json({ success: true, result });
   } catch (error) {
@@ -903,14 +886,17 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>OpenAI OCR + Executive System Active</p>
+    <p>Executive Notification System Active (Testing Mode - Only Naroda)</p>
     <ul>
       <li>✅ POST /tata-misscall - Tata Tele webhook</li>
       <li>✅ POST /wati-webhook - WATI webhook</li>
       <li>✅ POST /ocr-prescription - OCR endpoint</li>
-      <li>✅ GET /test-manual - Test manual entry</li>
-      <li>✅ GET /direct-message - Direct message</li>
-      <li>✅ GET /health - Health check</li>
+      <li>✅ Auto-fetch every 2 minutes</li>
+      <li>✅ Manual Entry + Upload auto-detect</li>
+      <li>✅ OpenAI OCR for prescriptions</li>
+      <li>✅ Executive WhatsApp notifications to 917880261858</li>
+      <li>✅ Connect button + Convert/Waiting/Not Convert</li>
+      <li>✅ Manager escalation + Daily report</li>
     </ul>
   `);
 });
@@ -924,7 +910,7 @@ app.listen(PORT, () => {
   console.log(`📍 Template: ${TEMPLATE_NAME}`);
   console.log(`📍 OpenAI OCR: Active with GPT-4o`);
   console.log(`📍 Auto-Fetch Mode: Every 2 minutes`);
-  console.log(`📍 Direct Messaging: ✅ Available`);
+  console.log(`📍 Testing Executive: 917880261858`);
   console.log(`📍 Session Keeper: Every 20 hours`);
   console.log('='.repeat(60));
 });
