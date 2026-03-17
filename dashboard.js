@@ -22,8 +22,14 @@ module.exports = (patientsCollection, processedCollection, PORT) => {
       
       // HTML Template
       res.send(getDashboardHTML({
-        patientCount, processedCount, pendingCount, convertedCount,
-        waitingCount, notConvertedCount, recentPatients, PORT
+        patientCount, 
+        processedCount, 
+        pendingCount, 
+        convertedCount,
+        waitingCount, 
+        notConvertedCount, 
+        recentPatients, 
+        PORT
       }));
       
     } catch (error) {
@@ -35,9 +41,17 @@ module.exports = (patientsCollection, processedCollection, PORT) => {
   return router;
 };
 
+// ✅ getDashboardHTML function - यह missing था
 function getDashboardHTML(data) {
-  const { patientCount, pendingCount, convertedCount, waitingCount, 
-          notConvertedCount, recentPatients, PORT } = data;
+  const { 
+    patientCount, 
+    pendingCount, 
+    convertedCount, 
+    waitingCount, 
+    notConvertedCount, 
+    recentPatients, 
+    PORT 
+  } = data;
   
   return `
   <!DOCTYPE html>
