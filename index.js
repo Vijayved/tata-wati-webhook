@@ -5,6 +5,7 @@ const FormData = require('form-data');
 const cron = require('node-cron');
 const OpenAI = require('openai');
 const { MongoClient, ObjectId } = require('mongodb');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -18,10 +19,15 @@ const WATI_TOKEN = process.env.WATI_TOKEN;
 const WATI_BASE_URL = process.env.WATI_BASE_URL;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
+const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
+const HMAC_SECRET = process.env.HMAC_SECRET || 'your_hmac_secret_key';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
 const DEDUPE_WINDOW_MS = (parseInt(process.env.DEDUPE_WINDOW_SECONDS || '600', 10)) * 1000;
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2';
+const FOLLOWUP_TEMPLATE = process.env.FOLLOWUP_TEMPLATE || 'followup_template';
+const CONFIRMATION_TEMPLATE = process.env.CONFIRMATION_TEMPLATE || 'confirmation_template';
+const ASK_DATE_TEMPLATE = process.env.ASK_DATE_TEMPLATE || 'ask_date_template';
 
 // OpenAI
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -60,8 +66,10 @@ async function connectDB() {
     // Create indexes
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
     await patientsCollection.createIndex({ chatId: 1 }, { unique: true });
-    await patientsCollection.createIndex({ status: 1 });
-    await patientsCollection.createIndex({ timestamp: 1 });
+    await patientsCollection.createIndex({ patientPhone: 1, branch: 1, status: 1 });
+    await patientsCollection.createIndex({ followupDate: 1 });
+    await patientsCollection.createIndex({ createdAt: 1 });
+    await patientsCollection.createIndex({ lastNotificationSentAt: 1 });
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);
     process.exit(1);
@@ -92,23 +100,49 @@ const BRANCHES = {
 };
 
 // ============================================
-// IN-MEMORY STORAGE (Fallback)
+// ✅ IN-MEMORY STORAGE (Redis recommended for production)
 // ============================================
 const recentMissCalls = new Map();
-const userContext = new Map();
-const processedImages = new Set();
 
 // ============================================
-// ✅ RETRY MECHANISM
+// ✅ TOKEN GENERATION (HMAC)
 // ============================================
-async function retry(fn, retries = 3, delay = 1000) {
-  try {
-    return await fn();
-  } catch (error) {
-    if (retries === 0) throw error;
-    console.log(`⚠️ Retrying... ${retries} attempts left`);
-    await new Promise(r => setTimeout(r, delay));
-    return retry(fn, retries - 1, delay * 2);
+function generateToken(chatId) {
+  return crypto
+    .createHmac('sha256', HMAC_SECRET)
+    .update(chatId)
+    .digest('hex');
+}
+
+function verifyToken(chatId, token) {
+  const expectedToken = generateToken(chatId);
+  return token === expectedToken;
+}
+
+// ============================================
+// ✅ TIMEOUT HANDLER
+// ============================================
+function timeout(ms) {
+  return new Promise((_, reject) => 
+    setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
+  );
+}
+
+// ============================================
+// ✅ RETRY MECHANISM WITH TIMEOUT
+// ============================================
+async function retryWithTimeout(fn, timeoutMs = 5000, retries = 3, delay = 1000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await Promise.race([
+        fn(),
+        timeout(timeoutMs)
+      ]);
+    } catch (error) {
+      if (i === retries - 1) throw error;
+      console.log(`⚠️ Retry ${i + 1}/${retries} failed: ${error.message}`);
+      await new Promise(r => setTimeout(r, delay * Math.pow(2, i)));
+    }
   }
 }
 
@@ -117,6 +151,20 @@ async function retry(fn, retries = 3, delay = 1000) {
 // ============================================
 async function rateLimitDelay() {
   await new Promise(r => setTimeout(r, 300));
+}
+
+// ============================================
+// ✅ PARSE DATE FUNCTION
+// ============================================
+function parseDate(text) {
+  try {
+    const [d, m, y] = text.split('/');
+    const date = new Date(`${y}-${m}-${d}`);
+    if (isNaN(date.getTime())) return null;
+    return date;
+  } catch {
+    return null;
+  }
 }
 
 // ============================================
@@ -175,7 +223,7 @@ async function isMessageProcessed(messageId) {
   return !!processed;
 }
 
-// ✅ Mark message as processed
+// ✅ Mark message as processed (atomic)
 async function markMessageProcessed(messageId) {
   await processedCollection.insertOne({ messageId, processedAt: new Date() });
 }
@@ -190,6 +238,21 @@ function getPriority(testNames) {
     return 'medium';
   }
   return 'low';
+}
+
+// ✅ Safe JSON parse for OpenAI response
+function safeJSONParse(content) {
+  try {
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { patientName: 'Not found', tests: 'Not found' };
+    const parsed = JSON.parse(jsonMatch[0]);
+    return {
+      patientName: parsed.patientName || 'Not found',
+      tests: parsed.tests || 'Not found'
+    };
+  } catch {
+    return { patientName: 'Not found', tests: 'Not found' };
+  }
 }
 
 // ============================================
@@ -245,16 +308,284 @@ async function sendLeadNotification(
     { name: "3", value: branch },
     { name: "4", value: safeTestNames },
     { name: "5", value: safeSourceType },
-    { name: "6", value: `${SELF_URL}/connect-chat/${chatId}?token=${Buffer.from(chatId).toString('base64')}` }
+    { name: "6", value: `${SELF_URL}/connect-chat/${chatId}?token=${generateToken(chatId)}` }
   ];
   
   return await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
 }
 
 // ============================================
-// ✅ FETCH CHATS
+// ✅ ATOMIC LEAD CREATION (No Race Conditions)
 // ============================================
-async function fetchRecentChats() {
+async function createOrUpdateLead(chatId, patientName, patientPhone, branch, testNames, sourceType, executiveNumber, priority, imageUrl = null) {
+  const now = new Date();
+  
+  const result = await patientsCollection.updateOne(
+    { 
+      patientPhone, 
+      branch, 
+      status: { $in: ['pending', 'waiting'] } 
+    },
+    {
+      $setOnInsert: {
+        chatId,
+        patientName,
+        patientPhone,
+        branch,
+        testNames,
+        sourceType,
+        executiveNumber,
+        priority,
+        status: 'pending',
+        lastNotificationSentAt: null,
+        followupDate: null,
+        createdAt: now,
+        updatedAt: now
+      },
+      $set: imageUrl ? { imageUrl, updatedAt: now } : { updatedAt: now }
+    },
+    { upsert: true }
+  );
+  
+  return result.upsertedCount > 0; // true if new lead created
+}
+
+// ============================================
+// ✅ PROCESS MANUAL ENTRY
+// ============================================
+async function processManualEntry(messageId, patientName, testNames, branch, patientPhone) {
+  console.log(`\n📝 Processing manual entry`);
+  
+  const executiveNumber = getExecutiveNumber(branch);
+  const priority = getPriority(testNames);
+  const chatId = `${patientPhone}_${branch}`;
+  
+  // First mark as processed (to prevent duplicates on crash)
+  await markMessageProcessed(messageId);
+  
+  // Atomic upsert to prevent race conditions
+  const isNew = await createOrUpdateLead(
+    chatId, patientName, patientPhone, branch, testNames, 'Manual', 
+    executiveNumber, priority
+  );
+  
+  // Only send notification for new leads
+  if (isNew) {
+    await retryWithTimeout(() => sendLeadNotification(
+      executiveNumber, patientName, patientPhone, branch, testNames, "Manual", chatId
+    ), 5000, 3);
+  } else {
+    console.log(`ℹ️ Lead already exists, skipping notification`);
+  }
+}
+
+// ============================================
+// ✅ PROCESS IMAGE UPLOAD
+// ============================================
+async function processImageUpload(messageId, patientName, branch, imageUrl, patientPhone) {
+  console.log(`\n📸 Processing image upload`);
+  
+  const executiveNumber = getExecutiveNumber(branch);
+  const chatId = `${patientPhone}_${branch}`;
+  
+  // First mark as processed
+  await markMessageProcessed(messageId);
+  
+  // OCR with timeout
+  const extracted = await retryWithTimeout(() => extractWithOpenAI(imageUrl), 10000, 2);
+  console.log(`✅ OCR: ${extracted.patientName} - ${extracted.tests}`);
+  
+  const priority = getPriority(extracted.tests);
+  
+  // Atomic upsert
+  const isNew = await createOrUpdateLead(
+    chatId, patientName, patientPhone, branch, extracted.tests, 'Upload',
+    executiveNumber, priority, imageUrl
+  );
+  
+  if (isNew) {
+    await retryWithTimeout(() => sendLeadNotification(
+      executiveNumber, extracted.patientName, patientPhone, branch, extracted.tests, "Upload", chatId
+    ), 5000, 3);
+  }
+}
+
+function getExecutiveNumber(branch) {
+  const teamName = `${branch} Team`;
+  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
+}
+
+// ============================================
+// ✅ OPENAI OCR WITH TIMEOUT
+// ============================================
+async function extractWithOpenAI(imageUrl) {
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `Extract patient name and tests from this medical prescription. Return JSON with keys: patientName, tests`
+          },
+          {
+            type: "image_url",
+            image_url: { url: imageUrl }
+          }
+        ]
+      }
+    ],
+    max_tokens: 300
+  });
+  
+  const content = response.choices[0].message.content;
+  return safeJSONParse(content);
+}
+
+// ============================================
+// ✅ WEBHOOK ENDPOINT (MAIN ENTRY POINT)
+// ============================================
+app.post('/wati-webhook', async (req, res) => {
+  try {
+    // Security check
+    if (req.headers['authorization'] !== `Bearer ${WATI_TOKEN}`) {
+      console.log('⚠️ Unauthorized webhook attempt');
+      return res.sendStatus(403);
+    }
+    
+    console.log('📨 WATI Webhook:', JSON.stringify(req.body, null, 2));
+    
+    const msg = req.body;
+    const msgId = msg.id || msg.messageId || msg._id;
+    
+    if (!msgId) {
+      return res.sendStatus(200);
+    }
+    
+    // Check if already processed
+    if (await isMessageProcessed(msgId)) {
+      console.log(`⏭️ Message ${msgId} already processed`);
+      return res.sendStatus(200);
+    }
+    
+    const patientPhone = msg.whatsappNumber || msg.from || msg.waId;
+    if (!patientPhone) {
+      return res.sendStatus(200);
+    }
+    
+    const branch = 'Naroda'; // TODO: Get from contact attributes
+    
+    // Process based on message type
+    if (msg.type === 'text' || msg.messageType === 'text') {
+      const text = msg.text || msg.body || '';
+      const lowerText = text.toLowerCase();
+      
+      if (lowerText.includes('manual') || lowerText.includes('test')) {
+        await processManualEntry(msgId, 'Patient', text, branch, patientPhone);
+      }
+      else if (msg.buttonText || msg.button) {
+        // Handle quick replies
+        const action = msg.buttonText || msg.button;
+        const chatId = `${patientPhone}_${branch}`;
+        
+        if (action === '✅ Convert Done') {
+          await patientsCollection.updateOne(
+            { chatId },
+            { $set: { status: 'converted', updatedAt: new Date() } }
+          );
+          
+          await sendWatiTemplateMessage(
+            patientPhone,
+            CONFIRMATION_TEMPLATE,
+            [{ name: "1", value: "✅ Patient marked as converted" }]
+          );
+        }
+        else if (action === '⏳ Waiting') {
+          await sendWatiTemplateMessage(
+            patientPhone,
+            ASK_DATE_TEMPLATE,
+            [{ name: "1", value: "Please send follow-up date (DD/MM/YYYY)" }]
+          );
+          
+          await patientsCollection.updateOne(
+            { chatId },
+            { $set: { awaiting_followup: true } }
+          );
+        }
+        else if (action === '❌ Not Convert') {
+          await patientsCollection.updateOne(
+            { chatId },
+            { $set: { status: 'not_converted', updatedAt: new Date() } }
+          );
+          
+          // Escalate to manager
+          await sendLeadNotification(
+            EXECUTIVES['Manager'],
+            'Escalation Alert',
+            EXECUTIVES['Manager'],
+            'ALL',
+            'Not Converted',
+            `escalation-${Date.now()}`
+          );
+        }
+      }
+    }
+    else if (msg.type === 'image' || msg.messageType === 'image') {
+      const imageUrl = msg.mediaUrl || msg.url || msg.image?.url;
+      if (imageUrl) {
+        await processImageUpload(msgId, 'Patient', branch, imageUrl, patientPhone);
+      }
+    }
+    else {
+      // Mark other message types as processed to avoid reprocessing
+      await markMessageProcessed(msgId);
+    }
+    
+    res.sendStatus(200);
+  } catch (error) {
+    console.error('❌ Webhook error:', error.message);
+    res.sendStatus(200); // Always return 200 to WATI
+  }
+});
+
+// ============================================
+// ✅ FOLLOW-UP DATE HANDLER
+// ============================================
+app.post('/webhook/followup-date', async (req, res) => {
+  try {
+    const { patientPhone, followupDate, branch } = req.body;
+    const chatId = `${patientPhone}_${branch}`;
+    
+    const date = parseDate(followupDate);
+    if (!date) {
+      return res.status(400).json({ error: 'Invalid date format. Use DD/MM/YYYY' });
+    }
+    
+    await patientsCollection.updateOne(
+      { chatId },
+      { 
+        $set: { 
+          followupDate: date,
+          status: 'waiting',
+          awaiting_followup: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+    
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// ✅ CRON JOB (FALLBACK - हर 5 मिनट)
+// ============================================
+cron.schedule('*/5 * * * *', async () => {
+  console.log(`\n🔍 [${new Date().toLocaleTimeString()}] Fallback check for missed messages...`);
+  
   try {
     const from = new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
     const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -265,170 +596,28 @@ async function fetchRecentChats() {
       headers: { Authorization: `${WATI_TOKEN}` }
     });
     
-    if (Array.isArray(response.data)) return response.data;
-    if (response.data?.messages) return response.data.messages;
-    if (response.data?.data) return response.data.data;
-    return [];
-  } catch (error) {
-    console.error('❌ Fetch error:', error.message);
-    return [];
-  }
-}
-
-// ============================================
-// ✅ OPENAI OCR
-// ============================================
-async function extractWithOpenAI(imageUrl) {
-  try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `Extract patient name and tests from this medical prescription. Return JSON with keys: patientName, tests`
-            },
-            {
-              type: "image_url",
-              image_url: { url: imageUrl }
-            }
-          ]
-        }
-      ],
-      max_tokens: 300
-    });
-    
-    const content = response.choices[0].message.content;
-    try {
-      const parsed = JSON.parse(content);
-      return {
-        patientName: parsed.patientName || 'Not found',
-        tests: parsed.tests || 'Not found'
-      };
-    } catch {
-      return { patientName: 'Not found', tests: 'Not found' };
-    }
-  } catch (error) {
-    return { patientName: 'Not found', tests: 'Not found' };
-  }
-}
-
-// ============================================
-// ✅ PROCESS MANUAL ENTRY
-// ============================================
-async function processManualEntry(chatId, patientName, testNames, branch, patientPhone) {
-  console.log(`\n📝 Processing manual entry`);
-  
-  const executiveNumber = getExecutiveNumber(branch);
-  const priority = getPriority(testNames);
-  
-  // Store in MongoDB
-  await patientsCollection.insertOne({
-    chatId,
-    patientName,
-    testNames,
-    branch,
-    patientPhone,
-    executiveNumber,
-    entryType: 'Manual',
-    priority,
-    status: 'pending',
-    timestamp: new Date(),
-    createdAt: new Date()
-  });
-  
-  // Send template notification with retry
-  await retry(() => sendLeadNotification(
-    executiveNumber, 
-    patientName, 
-    patientPhone, 
-    branch, 
-    testNames, 
-    "Manual", 
-    chatId
-  ));
-}
-
-// ============================================
-// ✅ PROCESS IMAGE UPLOAD
-// ============================================
-async function processImageUpload(chatId, patientName, branch, imageUrl, patientPhone) {
-  console.log(`\n📸 Processing image upload`);
-  
-  const executiveNumber = getExecutiveNumber(branch);
-  
-  // OCR with retry
-  const extracted = await retry(() => extractWithOpenAI(imageUrl), 2, 2000);
-  console.log(`✅ OCR: ${extracted.patientName} - ${extracted.tests}`);
-  
-  const priority = getPriority(extracted.tests);
-  
-  // Store in MongoDB
-  await patientsCollection.insertOne({
-    chatId,
-    patientName,
-    tests: extracted.tests,
-    branch,
-    imageUrl,
-    patientPhone,
-    executiveNumber,
-    entryType: 'Upload',
-    priority,
-    status: 'processed',
-    timestamp: new Date(),
-    createdAt: new Date()
-  });
-  
-  // Send template notification with retry
-  await retry(() => sendLeadNotification(
-    executiveNumber, 
-    extracted.patientName, 
-    patientPhone, 
-    branch, 
-    extracted.tests, 
-    "Upload", 
-    chatId
-  ));
-  
-  processedImages.add(chatId);
-}
-
-function getExecutiveNumber(branch) {
-  const teamName = `${branch} Team`;
-  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
-}
-
-// ============================================
-// ✅ CRON JOB (हर 2 मिनट)
-// ============================================
-cron.schedule('*/2 * * * *', async () => {
-  console.log(`\n🔍 [${new Date().toLocaleTimeString()}] Checking for new leads...`);
-  
-  try {
-    const messages = await fetchRecentChats();
+    let messages = [];
+    if (Array.isArray(response.data)) messages = response.data;
+    else if (response.data?.messages) messages = response.data.messages;
+    else if (response.data?.data) messages = response.data.data;
     
     for (const msg of messages) {
-      await rateLimitDelay(); // Rate limit protection
+      await rateLimitDelay();
       
       const msgId = msg.id || msg.messageId || msg._id;
-      if (!msgId) continue;
-      
-      // Check if already processed in DB
-      if (await isMessageProcessed(msgId)) continue;
+      if (!msgId || await isMessageProcessed(msgId)) continue;
       
       const patientPhone = msg.whatsappNumber || msg.from || msg.waId;
       if (!patientPhone) continue;
       
-      const branch = 'Naroda'; // Default for testing
+      const branch = 'Naroda';
       
+      // Process and mark as processed
       if (msg.type === 'text' || msg.messageType === 'text') {
         const text = msg.text || msg.body || '';
-        const lowerText = text.toLowerCase();
-        
-        if (lowerText.includes('manual') || lowerText.includes('test')) {
+        if (text.toLowerCase().includes('manual') || text.toLowerCase().includes('test')) {
           await processManualEntry(msgId, 'Patient', text, branch, patientPhone);
+        } else {
           await markMessageProcessed(msgId);
         }
       }
@@ -436,24 +625,31 @@ cron.schedule('*/2 * * * *', async () => {
         const imageUrl = msg.mediaUrl || msg.url || msg.image?.url;
         if (imageUrl) {
           await processImageUpload(msgId, 'Patient', branch, imageUrl, patientPhone);
+        } else {
           await markMessageProcessed(msgId);
         }
+      } else {
+        await markMessageProcessed(msgId);
       }
     }
   } catch (error) {
-    console.error('❌ Cron error:', error.message);
+    console.error('❌ Fallback cron error:', error.message);
   }
 });
 
 // ============================================
-// ✅ AUTO FOLLOW-UP (हर 10 मिनट)
+// ✅ AUTO FOLLOW-UP (हर 30 मिनट)
 // ============================================
-cron.schedule('*/10 * * * *', async () => {
+cron.schedule('*/30 * * * *', async () => {
   console.log('⏰ Checking for pending leads...');
   
   const pendingLeads = await patientsCollection.find({
-    status: 'pending',
-    createdAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) }
+    status: 'waiting',
+    followupDate: { $lt: new Date() },
+    $or: [
+      { lastNotificationSentAt: null },
+      { lastNotificationSentAt: { $lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } }
+    ]
   }).toArray();
   
   for (const lead of pendingLeads) {
@@ -462,35 +658,40 @@ cron.schedule('*/10 * * * *', async () => {
       lead.patientName,
       lead.patientPhone,
       lead.branch,
-      lead.testNames || lead.tests,
-      '⏰ Follow-up',
+      lead.testNames || lead.tests || 'Follow-up',
+      '⏰ Follow-up Reminder',
       lead.chatId
+    );
+    
+    await patientsCollection.updateOne(
+      { _id: lead._id },
+      { $set: { lastNotificationSentAt: new Date() } }
     );
   }
 });
 
 // ============================================
-// ✅ MANAGER ESCALATION
+// ✅ MANAGER ESCALATION (Daily at 9 PM)
 // ============================================
-cron.schedule('0 */1 * * *', async () => { // हर घंटे
+cron.schedule('0 21 * * *', async () => {
   const notConverted = await patientsCollection.find({
     status: 'not_converted',
     createdAt: { $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) }
   }).toArray();
   
   if (notConverted.length > 0) {
-    const report = notConverted.map(p => 
-      `❌ ${p.patientName} (${p.branch}) - ${p.executiveNumber}`
+    const summary = notConverted.map(p => 
+      `❌ ${p.patientName} (${p.branch})`
     ).join('\n');
     
     await sendLeadNotification(
       EXECUTIVES['Manager'],
-      'Escalation Alert',
+      'Daily Escalation Summary',
       EXECUTIVES['Manager'],
       'ALL',
-      `${notConverted.length} leads not converted`,
-      '⚠️ Escalation',
-      `escalation-${Date.now()}`
+      `${notConverted.length} leads not converted today`,
+      '📊 Summary',
+      `summary-${Date.now()}`
     );
   }
 });
@@ -502,9 +703,8 @@ app.get('/connect-chat/:chatId', async (req, res) => {
   const { chatId } = req.params;
   const { token } = req.query;
   
-  // Security check
-  const expectedToken = Buffer.from(chatId).toString('base64');
-  if (token !== expectedToken) {
+  // Security check with HMAC
+  if (!verifyToken(chatId, token)) {
     return res.status(403).send(`
       <html>
         <head><title>Unauthorized</title></head>
@@ -555,13 +755,16 @@ app.get('/connect-chat/:chatId', async (req, res) => {
             <strong>Branch:</strong> ${patient.branch || 'N/A'}
           </div>
           <div class="detail-row">
-            <strong>Tests:</strong> ${patient.tests || patient.testNames || 'N/A'}
+            <strong>Tests:</strong> ${patient.testNames || patient.tests || 'N/A'}
           </div>
           <div class="detail-row">
-            <strong>Source:</strong> ${patient.entryType || 'N/A'}
+            <strong>Source:</strong> ${patient.sourceType || patient.entryType || 'N/A'}
           </div>
           <div class="detail-row">
             <strong>Priority:</strong> ${patient.priority || 'low'}
+          </div>
+          <div class="detail-row">
+            <strong>Status:</strong> ${patient.status || 'pending'}
           </div>
           
           ${patient.imageUrl ? `
@@ -584,7 +787,7 @@ app.get('/connect-chat/:chatId', async (req, res) => {
         
         <script>
           function updateStatus(action) {
-            fetch('/exec-action?action=' + action + '&chat=${chatId}')
+            fetch('/exec-action?action=' + action + '&chat=${patient.chatId}')
               .then(response => response.text())
               .then(data => alert(data));
           }
@@ -610,6 +813,44 @@ app.get('/exec-action', async (req, res) => {
   );
   
   res.send(`✅ Patient marked as ${status}`);
+});
+
+// ============================================
+// ✅ TATA TELE WEBHOOK (with Auth)
+// ============================================
+app.post('/tata-misscall', async (req, res) => {
+  try {
+    // Verify Tata Tele webhook
+    const apiKey = req.headers['x-api-key'];
+    if (apiKey !== TATA_SECRET) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    console.log('📞 Tata Miss Call');
+    
+    const callerNumberRaw = getCallerNumberFromPayload(req.body);
+    if (!callerNumberRaw) {
+      return res.status(400).json({ error: 'Caller number not found' });
+    }
+    
+    const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
+    if (!whatsappNumber) {
+      return res.status(400).json({ error: 'Invalid number' });
+    }
+    
+    const branch = getBranchByCalledNumber(req.body.call_to_number || '');
+    
+    if (shouldSkipDuplicateMissCall(whatsappNumber, req.body.call_to_number)) {
+      return res.json({ skipped: true });
+    }
+    
+    await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [{ name: '1', value: branch.name }]);
+    
+    res.json({ success: true, whatsappNumber, branch: branch.name });
+  } catch (error) {
+    console.error('❌ Error:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============================================
@@ -670,7 +911,7 @@ app.get('/', (req, res) => {
     <body>
       <div class="container">
         <h1>🚀 Production Executive System</h1>
-        <p>✅ MongoDB + Rate Limiting + Retry + Security</p>
+        <p>✅ Webhook + Cron + MongoDB + Security + Atomic Ops + Timeouts</p>
         
         <div class="endpoint">
           <div><span class="code">GET</span> <a href="/test-exec?exec=917880261858">/test-exec?exec=917880261858</a></div>
@@ -688,45 +929,16 @@ app.get('/', (req, res) => {
 });
 
 // ============================================
-// ✅ TATA TELE WEBHOOK
-// ============================================
-app.post('/tata-misscall', async (req, res) => {
-  try {
-    console.log('📞 Tata Miss Call');
-    
-    const callerNumberRaw = getCallerNumberFromPayload(req.body);
-    if (!callerNumberRaw) {
-      return res.status(400).json({ error: 'Caller number not found' });
-    }
-    
-    const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
-    if (!whatsappNumber) {
-      return res.status(400).json({ error: 'Invalid number' });
-    }
-    
-    const branch = getBranchByCalledNumber(req.body.call_to_number || '');
-    
-    if (shouldSkipDuplicateMissCall(whatsappNumber, req.body.call_to_number)) {
-      return res.json({ skipped: true });
-    }
-    
-    await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [{ name: '1', value: branch.name }]);
-    
-    res.json({ success: true, whatsappNumber, branch: branch.name });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
 // ✅ START SERVER
 // ============================================
 app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`🚀 PRODUCTION SERVER running on port ${PORT}`);
-  console.log(`📍 MongoDB Connected`);
-  console.log(`📍 Rate Limiting: 300ms delay`);
-  console.log(`📍 Retry Mechanism: 3 attempts`);
-  console.log(`📍 Security: Token-based access`);
+  console.log(`📍 Webhook: Primary`);
+  console.log(`📍 Cron: Fallback (5 min)`);
+  console.log(`📍 MongoDB: Connected`);
+  console.log(`📍 Security: HMAC + API Key + WATI Auth`);
+  console.log(`📍 Atomic Operations: ✅`);
+  console.log(`📍 Timeouts: 5s-10s`);
   console.log('='.repeat(60));
 });
