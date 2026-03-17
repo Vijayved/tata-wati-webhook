@@ -164,20 +164,52 @@ async function sendExecutiveNotification(executiveNumber, messageText) {
 }
 
 // ============================================
-// WATI API FETCH FUNCTIONS
+// IMPROVED: WATI API FETCH FUNCTIONS (v1 + v2 fallback)
 // ============================================
 async function fetchRecentChats() {
   try {
     const from = new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
     const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
     
-    const url = `${WATI_BASE_URL}/api/v1/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
+    // Try v1 endpoint first
+    let url = `${WATI_BASE_URL}/api/v1/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
+    console.log(`📡 Fetching from: ${url}`);
     
-    const response = await axios.get(url, {
-      headers: { Authorization: `${WATI_TOKEN}` }
-    });
-    
-    return response.data || [];
+    try {
+      const response = await axios.get(url, {
+        headers: { Authorization: `${WATI_TOKEN}` }
+      });
+      
+      // Handle different response formats
+      if (response.data && Array.isArray(response.data)) {
+        return response.data;
+      } else if (response.data?.messages) {
+        return response.data.messages;
+      } else if (response.data?.data) {
+        return response.data.data;
+      } else {
+        return [];
+      }
+    } catch (v1Error) {
+      // If v1 fails, try v2 endpoint
+      console.log('⚠️ v1 endpoint failed, trying v2...');
+      url = `${WATI_BASE_URL}/api/v2/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
+      
+      const response = await axios.get(url, {
+        headers: { Authorization: `${WATI_TOKEN}` }
+      });
+      
+      // Handle different response formats for v2
+      if (response.data && Array.isArray(response.data)) {
+        return response.data;
+      } else if (response.data?.messages) {
+        return response.data.messages;
+      } else if (response.data?.data) {
+        return response.data.data;
+      } else {
+        return [];
+      }
+    }
   } catch (error) {
     console.error('❌ Error fetching chats:', error.message);
     return [];
@@ -187,10 +219,21 @@ async function fetchRecentChats() {
 async function getContactDetails(whatsappNumber) {
   try {
     const url = `${WATI_BASE_URL}/api/v1/getContacts?pageSize=1&name=${whatsappNumber}`;
+    
     const response = await axios.get(url, {
       headers: { Authorization: `${WATI_TOKEN}` }
     });
-    return response.data?.[0] || null;
+    
+    // Handle different response formats
+    if (response.data && Array.isArray(response.data)) {
+      return response.data[0] || null;
+    } else if (response.data?.contacts && Array.isArray(response.data.contacts)) {
+      return response.data.contacts[0] || null;
+    } else if (response.data?.data && Array.isArray(response.data.data)) {
+      return response.data.data[0] || null;
+    } else {
+      return null;
+    }
   } catch (error) {
     console.error('❌ Error fetching contact:', error.message);
     return null;
@@ -200,17 +243,18 @@ async function getContactDetails(whatsappNumber) {
 // ============================================
 // PROCESS FUNCTIONS
 // ============================================
-async function processManualEntry(chatId, patientName, testNames, branch) {
+async function processManualEntry(chatId, patientName, testNames, branch, patientPhone) {
   console.log(`📝 Processing manual entry for ${patientName}`);
   
   const executiveNumber = getExecutiveNumber(branch);
   
   const message = `
-📋 *New Manual Test Entry*
+📋 *New Test Booking*
 ━━━━━━━━━━━━━━━━━━
 👤 Patient: ${patientName}
 🔬 Tests: ${testNames}
 🏥 Branch: ${branch}
+📱 Patient: ${patientPhone}
 📅 Time: ${new Date().toLocaleString()}
 ━━━━━━━━━━━━━━━━━━
 🔗 Connect: ${SELF_URL}/connect-chat/${chatId}
@@ -225,6 +269,7 @@ async function processManualEntry(chatId, patientName, testNames, branch) {
     patientName,
     testNames,
     branch,
+    patientPhone,
     executiveNumber,
     entryType: 'manual',
     status: 'pending',
@@ -233,7 +278,7 @@ async function processManualEntry(chatId, patientName, testNames, branch) {
   });
 }
 
-async function processImageUpload(chatId, patientName, branch, imageUrl) {
+async function processImageUpload(chatId, patientName, branch, imageUrl, patientPhone) {
   console.log(`📸 Processing image upload for ${patientName}`);
   
   const executiveNumber = getExecutiveNumber(branch);
@@ -247,6 +292,7 @@ async function processImageUpload(chatId, patientName, branch, imageUrl) {
 🔬 Tests: ${extracted.tests}
 👨‍⚕️ Doctor: ${extracted.doctorName}
 🏥 Branch: ${branch}
+📱 Patient: ${patientPhone}
 📅 Time: ${new Date().toLocaleString()}
 ━━━━━━━━━━━━━━━━━━
 📝 *OCR Preview:*
@@ -265,6 +311,7 @@ ${extracted.rawText.substring(0, 300)}...
     branch,
     imageUrl,
     extracted,
+    patientPhone,
     executiveNumber,
     entryType: 'upload',
     status: 'processed',
@@ -284,35 +331,52 @@ function getExecutiveNumber(branch) {
 // BACKGROUND CRON JOB (हर 2 मिनट में)
 // ============================================
 cron.schedule('*/2 * * * *', async () => {
-  console.log('🔍 [' + new Date().toLocaleTimeString() + '] Checking WATI for new chats...');
+  console.log(`🔍 [${new Date().toLocaleTimeString()}] Checking WATI for new messages...`);
   
   try {
-    const chats = await fetchRecentChats();
+    const messages = await fetchRecentChats();
     
-    for (const chat of chats) {
-      if (processedChats.has(chat.id)) continue;
+    for (const msg of messages) {
+      const msgId = msg.id || msg.messageId || msg._id;
+      if (!msgId || processedChats.has(msgId)) continue;
       
-      const contact = await getContactDetails(chat.whatsappNumber);
-      if (!contact) continue;
+      const patientPhone = msg.whatsappNumber || msg.from || msg.waId;
+      if (!patientPhone) continue;
       
-      const patientName = contact.customAttributes?.patient_name || 'Patient';
-      const branch = contact.customAttributes?.branch_name || 'Main Branch';
+      const contact = await getContactDetails(patientPhone);
       
-      if (chat.lastMessage?.type === 'text') {
-        const text = chat.lastMessage.text?.toLowerCase() || '';
-        // Check for manual entry keywords
-        if (text.includes('manual') || text.includes('test name') || 
-            (chat.messages && chat.messages.some(m => m.text?.toLowerCase().includes('test')))) {
-          const testNames = extractTestNames(chat.messages) || 'Test entry';
-          await processManualEntry(chat.id, patientName, testNames, branch);
-          processedChats.add(chat.id);
+      let patientName = 'Patient';
+      if (contact) {
+        patientName = contact.name || 
+                     contact.firstName || 
+                     contact.fullName || 
+                     contact.customAttributes?.patient_name || 
+                     'Patient';
+      }
+      
+      const branch = contact?.customAttributes?.branch_name || 'Main Branch';
+      
+      if (msg.type === 'text' || msg.messageType === 'text') {
+        const text = msg.text || msg.body || '';
+        const lowerText = text.toLowerCase();
+        
+        if (lowerText.includes('manual') || 
+            lowerText.includes('test') || 
+            lowerText.includes('mri') || 
+            lowerText.includes('ct') || 
+            lowerText.includes('xray') ||
+            lowerText.includes('blood')) {
+          
+          await processManualEntry(msgId, patientName, text, branch, patientPhone);
+          processedChats.add(msgId);
         }
       }
-      else if (chat.lastMessage?.type === 'image') {
-        const imageUrl = chat.lastMessage.mediaUrl;
+      else if (msg.type === 'image' || msg.messageType === 'image') {
+        const imageUrl = msg.mediaUrl || msg.url || msg.image?.url;
         if (imageUrl) {
-          await processImageUpload(chat.id, patientName, branch, imageUrl);
-          processedChats.add(chat.id);
+          await processImageUpload(msgId, patientName, branch, imageUrl, patientPhone);
+          processedChats.add(msgId);
+          processedImages.add(msgId);
         }
       }
     }
@@ -320,21 +384,6 @@ cron.schedule('*/2 * * * *', async () => {
     console.error('❌ Error in cron job:', error.message);
   }
 });
-
-function extractTestNames(messages) {
-  if (!messages || !messages.length) return 'Not specified';
-  
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.type === 'text' && msg.text && 
-        !msg.text.toLowerCase().includes('please') && 
-        !msg.text.toLowerCase().includes('enter') &&
-        msg.text.length < 100) {
-      return msg.text;
-    }
-  }
-  return 'Not specified';
-}
 
 // ============================================
 // OPENAI OCR FUNCTION
@@ -589,7 +638,7 @@ app.get('/test-manual', async (req, res) => {
     const chatId = `test-${Date.now()}`;
     
     const message = `
-📋 *New Manual Test Entry (TEST)*
+📋 *New Test Booking (TEST)*
 ━━━━━━━━━━━━━━━━━━
 👤 Patient: ${patient}
 🔬 Tests: ${test}
