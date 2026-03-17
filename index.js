@@ -52,6 +52,7 @@ let db;
 let processedCollection;
 let patientsCollection;
 let executivesCollection;
+let missCallsCollection; // New collection for miss calls tracking
 
 async function connectDB() {
   try {
@@ -70,10 +71,12 @@ async function connectDB() {
     processedCollection = db.collection('processed_messages');
     patientsCollection = db.collection('patients');
     executivesCollection = db.collection('executives');
+    missCallsCollection = db.collection('miss_calls'); // Track miss calls separately
     
     console.log('✅ Collections initialized:');
     console.log('   - patientsCollection:', patientsCollection ? '✅' : '❌');
     console.log('   - processedCollection:', processedCollection ? '✅' : '❌');
+    console.log('   - missCallsCollection:', missCallsCollection ? '✅' : '❌');
     
     // Create indexes
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
@@ -82,6 +85,7 @@ async function connectDB() {
     await patientsCollection.createIndex({ followupDate: 1 });
     await patientsCollection.createIndex({ createdAt: 1 });
     await patientsCollection.createIndex({ lastNotificationSentAt: 1 });
+    await missCallsCollection.createIndex({ phoneNumber: 1, calledNumber: 1, createdAt: 1 });
     
     console.log('✅ Indexes created successfully');
     
@@ -241,7 +245,6 @@ function shouldSkipDuplicateMissCall(whatsappNumber, calledNumber) {
   return false;
 }
 
-// ✅ UPDATED: Tata Tele payload ke according
 function getCallerNumberFromPayload(body) {
   return body.caller_id_number || 
          body["customer_no_with_prefix "] || 
@@ -401,7 +404,8 @@ async function createOrUpdateLead(chatId, patientName, patientPhone, branch, tes
         lastNotificationSentAt: null,
         followupDate: null,
         createdAt: now,
-        updatedAt: now
+        updatedAt: now,
+        missCallTime: sourceType === 'Miss Call' ? now : null
       },
       $set: imageUrl ? { imageUrl, updatedAt: now } : { updatedAt: now }
     },
@@ -527,7 +531,18 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
-    const branch = 'Naroda';
+    // Try to get branch from message or default to Naroda
+    let branch = 'Naroda';
+    // Check if branch was selected in chat
+    if (msg.text && msg.text.toLowerCase().includes('naroda')) {
+      branch = 'Naroda';
+    } else if (msg.text && msg.text.toLowerCase().includes('usmanpura')) {
+      branch = 'Usmanpura';
+    } else if (msg.text && msg.text.toLowerCase().includes('vadaj')) {
+      branch = 'Vadaj';
+    } else if (msg.text && msg.text.toLowerCase().includes('satellite')) {
+      branch = 'Satellite';
+    }
     
     if (msg.type === 'text' || msg.messageType === 'text') {
       const text = msg.text || msg.body || '';
@@ -848,6 +863,9 @@ app.get('/connect-chat/:chatId', async (req, res) => {
           <div class="detail-row">
             <strong>Status:</strong> ${patient.status || 'pending'}
           </div>
+          <div class="detail-row">
+            <strong>Miss Call Time:</strong> ${patient.missCallTime ? new Date(patient.missCallTime).toLocaleString() : 'N/A'}
+          </div>
           
           ${patient.imageUrl ? `
             <div class="detail-row">
@@ -898,29 +916,24 @@ app.get('/exec-action', async (req, res) => {
 });
 
 // ============================================
-// ✅ FIXED TATA TELE WEBHOOK - दोनों endpoints के लिए
+// ✅ UPDATED TATA TELE WEBHOOK - With Database Save
 // ============================================
-
-// Webhook 1: Miss call new (Call hangup - Missed)
-app.post('/tata-misscall-new', async (req, res) => {
-  await handleTataWebhook(req, res, 'missed');
-});
-
-// Webhook 2: Miss Call to WhatsApp (Call hangup - Missed or Answered)
 app.post('/tata-misscall-whatsapp', async (req, res) => {
-  await handleTataWebhook(req, res, 'all');
-});
-
-// Common handler for both webhooks
-async function handleTataWebhook(req, res, type) {
   try {
-    // Verify Tata Tele webhook
-    const apiKey = req.headers['x-api-key'];
-    console.log('🔑 Received API Key:', apiKey);
-    console.log('📞 Tata Tele Webhook Type:', type);
-    console.log('📦 Full Payload:', JSON.stringify(req.body, null, 2));
+    // Log everything
+    console.log('='.repeat(60));
+    console.log('📞 TATA TELE WEBBOOK RECEIVED');
+    console.log('📦 Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('📦 Body:', JSON.stringify(req.body, null, 2));
     
-    // Check all possible fields for caller number
+    // Verify API key
+    const apiKey = req.headers['x-api-key'];
+    if (apiKey !== process.env.TATA_SECRET) {
+      console.log('❌ Unauthorized - Invalid API Key:', apiKey);
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    // Get caller number from all possible fields
     const callerNumberRaw = req.body.caller_id_number || 
                            req.body["customer_no_with_prefix "] || 
                            req.body.customer_number_with_prefix ||
@@ -932,61 +945,181 @@ async function handleTataWebhook(req, res, type) {
                            req.body.customer_number ||
                            '';
     
-    console.log('📞 Caller Number Raw:', callerNumberRaw);
-    console.log('📞 All possible fields:', {
-      caller_id_number: req.body.caller_id_number,
-      customer_no_with_prefix: req.body["customer_no_with_prefix "],
-      customer_number_with_prefix: req.body.customer_number_with_prefix,
-      cli: req.body.cli,
-      msisdn: req.body.msisdn,
-      call_to_number: req.body.call_to_number
-    });
+    console.log('📞 Raw Caller Number:', callerNumberRaw);
     
     if (!callerNumberRaw) {
-      return res.status(400).json({ 
-        error: 'Caller number not found',
-        receivedFields: Object.keys(req.body)
-      });
+      console.log('❌ No caller number found in payload');
+      return res.status(400).json({ error: 'Caller number not found' });
     }
     
+    // Normalize to WhatsApp format
     const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
-    console.log('📱 WhatsApp Number:', whatsappNumber);
+    console.log('📱 Normalized WhatsApp Number:', whatsappNumber);
     
     if (!whatsappNumber) {
-      return res.status(400).json({ error: 'Invalid number format' });
+      console.log('❌ Invalid number format');
+      return res.status(400).json({ error: 'Invalid number' });
     }
     
-    const calledNumber = req.body.call_to_number || req.body.called_number || req.body.to || '';
+    // Get branch from called number
+    const calledNumber = req.body.call_to_number || req.body.called_number || '';
     const branch = getBranchByCalledNumber(calledNumber);
     console.log('🏢 Branch:', branch);
     
-    // Check for duplicates (only for missed calls to avoid double counting)
-    if (type === 'missed' && shouldSkipDuplicateMissCall(whatsappNumber, calledNumber)) {
-      console.log('⏭️ Skipping duplicate miss call');
-      return res.json({ skipped: true, type, message: 'Duplicate miss call skipped' });
+    // Check for duplicates
+    const isDuplicate = shouldSkipDuplicateMissCall(whatsappNumber, calledNumber);
+    
+    // Save miss call to database
+    try {
+      await missCallsCollection.insertOne({
+        phoneNumber: whatsappNumber,
+        calledNumber: calledNumber,
+        branch: branch.name,
+        rawPayload: req.body,
+        createdAt: new Date(),
+        isDuplicate: isDuplicate
+      });
+      console.log('✅ Miss call saved to database');
+    } catch (dbError) {
+      console.error('❌ Error saving miss call:', dbError.message);
     }
     
-    // Send WATI template
-    await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
-      { name: '1', value: branch.name }
-    ]);
+    if (isDuplicate) {
+      console.log('⏭️ Skipping duplicate miss call');
+      return res.json({ 
+        success: true, 
+        skipped: true, 
+        message: 'Duplicate miss call skipped',
+        whatsappNumber 
+      });
+    }
     
-    // Log to database (optional - track miss calls)
-    console.log(`✅ Miss call processed: ${whatsappNumber} -> ${branch.name} (${type})`);
+    // ✅ Save to patients collection
+    const chatId = `${whatsappNumber}_${branch.name}`;
+    const patientName = 'Miss Call Patient';
+    const testNames = 'Miss Call';
+    const sourceType = 'Miss Call';
+    const priority = 'low';
+    
+    try {
+      // Check if patient already exists
+      const existingPatient = await patientsCollection.findOne({ 
+        patientPhone: whatsappNumber,
+        branch: branch.name,
+        status: { $in: ['pending', 'waiting'] }
+      });
+      
+      if (!existingPatient) {
+        // Create new patient record
+        await patientsCollection.insertOne({
+          chatId,
+          patientName,
+          patientPhone: whatsappNumber,
+          branch: branch.name,
+          testNames,
+          sourceType,
+          executiveNumber: branch.executive,
+          priority,
+          status: 'pending',
+          missCallTime: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
+        console.log('✅ Patient saved to database:', whatsappNumber);
+      } else {
+        console.log('ℹ️ Patient already exists:', whatsappNumber);
+        // Update miss call time
+        await patientsCollection.updateOne(
+          { _id: existingPatient._id },
+          { $set: { missCallTime: new Date(), updatedAt: new Date() } }
+        );
+      }
+    } catch (dbError) {
+      console.error('❌ Database save error:', dbError.message);
+    }
+    
+    // Send WATI template to customer
+    console.log(`📱 Sending template ${TEMPLATE_NAME} to ${whatsappNumber}`);
+    
+    try {
+      const templateResult = await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
+        { name: '1', value: branch.name }
+      ]);
+      console.log('✅ Customer template sent successfully');
+    } catch (templateError) {
+      console.error('❌ Customer template send failed:', templateError.message);
+    }
+    
+    // ✅ Send notification to executive
+    console.log(`📱 Sending executive notification to ${branch.executive}`);
+    
+    try {
+      await sendLeadNotification(
+        branch.executive,
+        patientName,
+        whatsappNumber,
+        branch.name,
+        'Miss Call - Awaiting details',
+        '📞 Miss Call',
+        chatId
+      );
+      console.log('✅ Executive notification sent');
+    } catch (execError) {
+      console.error('❌ Executive notification failed:', execError.message);
+    }
     
     res.json({ 
       success: true, 
-      whatsappNumber, 
-      branch: branch.name,
-      type: type,
-      message: 'Miss call processed successfully'
+      message: 'Miss call processed',
+      whatsappNumber,
+      branch: branch.name
     });
     
   } catch (error) {
-    console.error('❌ Tata Tele Error:', error);
+    console.error('❌ Tata Tele webhook error:', error);
     res.status(500).json({ error: error.message });
   }
-}
+});
+
+// ============================================
+// ✅ MISS CALL STATS ENDPOINT (for dashboard)
+// ============================================
+app.get('/api/misscall-stats', async (req, res) => {
+  try {
+    if (!missCallsCollection || !patientsCollection) {
+      return res.json({ total: 0, today: 0, byBranch: {} });
+    }
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const total = await missCallsCollection.countDocuments();
+    const today_count = await missCallsCollection.countDocuments({
+      createdAt: { $gte: today }
+    });
+    
+    const byBranch = await missCallsCollection.aggregate([
+      { $group: { _id: '$branch', count: { $sum: 1 } } }
+    ]).toArray();
+    
+    const branchStats = {};
+    byBranch.forEach(b => { branchStats[b._id] = b.count; });
+    
+    // Also get patients from miss calls
+    const missCallPatients = await patientsCollection.countDocuments({
+      sourceType: 'Miss Call'
+    });
+    
+    res.json({
+      total,
+      today: today_count,
+      byBranch: branchStats,
+      patientsFromMissCall: missCallPatients
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // ============================================
 // ✅ TEST ENDPOINTS
@@ -1017,6 +1150,49 @@ app.get('/test-exec', async (req, res) => {
   }
 });
 
+app.get('/test-misscall', async (req, res) => {
+  // Test endpoint to simulate miss call
+  const testPhone = req.query.phone || '9876543210';
+  const testBranch = req.query.branch || 'Naroda';
+  
+  const whatsappNumber = normalizeWhatsAppNumber(testPhone);
+  const branch = BRANCHES[normalizeIndianNumber(process.env.NARODA_NUMBER)] || {
+    name: testBranch,
+    executive: process.env.DEFAULT_EXECUTIVE
+  };
+  
+  console.log('🧪 Test miss call:', { whatsappNumber, branch });
+  
+  try {
+    // Send template
+    await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
+      { name: '1', value: branch.name }
+    ]);
+    
+    // Send executive notification
+    const chatId = `${whatsappNumber}_${branch.name}`;
+    await sendLeadNotification(
+      branch.executive,
+      'Test Patient',
+      whatsappNumber,
+      branch.name,
+      'Test Miss Call',
+      '📞 Test',
+      chatId
+    );
+    
+    res.json({ 
+      success: true, 
+      message: 'Test miss call processed',
+      whatsappNumber,
+      branch: branch.name,
+      executive: branch.executive
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/health', async (req, res) => {
   if (!patientsCollection || !processedCollection) {
     return res.status(503).json({
@@ -1030,11 +1206,13 @@ app.get('/health', async (req, res) => {
   try {
     const patientCount = await patientsCollection.countDocuments();
     const processedCount = await processedCollection.countDocuments();
+    const missCallCount = missCallsCollection ? await missCallsCollection.countDocuments() : 0;
     
     res.json({
       success: true,
       patients: patientCount,
       processed: processedCount,
+      missCalls: missCallCount,
       uptime: process.uptime(),
       mongodb: 'connected'
     });
@@ -1066,18 +1244,23 @@ app.get('/', (req, res) => {
         <p>✅ Tata Tele Webhooks + WATI + MongoDB</p>
         
         <div class="endpoint">
-          <div><span class="code">POST</span> /tata-misscall-new</div>
-          <small>For missed calls only</small>
+          <div><span class="code">POST</span> /tata-misscall-whatsapp</div>
+          <small>Main Tata Tele webhook</small>
         </div>
         
         <div class="endpoint">
-          <div><span class="code">POST</span> /tata-misscall-whatsapp</div>
-          <small>For all calls (missed or answered)</small>
+          <div><span class="code">GET</span> <a href="/test-misscall?phone=9876543210">/test-misscall?phone=9876543210</a></div>
+          <small>Test miss call flow</small>
         </div>
         
         <div class="endpoint">
           <div><span class="code">GET</span> <a href="/test-exec?exec=917880261858">/test-exec?exec=917880261858</a></div>
-          <small>Send test template</small>
+          <small>Send test template to executive</small>
+        </div>
+        
+        <div class="endpoint">
+          <div><span class="code">GET</span> <a href="/api/misscall-stats">/api/misscall-stats</a></div>
+          <small>Miss call statistics</small>
         </div>
         
         <div class="endpoint">
@@ -1115,6 +1298,7 @@ app.use('/admin', (req, res, next) => {
   }
   req.patientsCollection = patientsCollection;
   req.processedCollection = processedCollection;
+  req.missCallsCollection = missCallsCollection;
   req.PORT = PORT;
   next();
 }, dashboardRouter);
@@ -1137,14 +1321,13 @@ async function startServer() {
     app.listen(PORT, () => {
       console.log('='.repeat(60));
       console.log(`🚀 PRODUCTION SERVER running on port ${PORT}`);
-      console.log(`📍 Webhook 1: /tata-misscall-new (Missed calls only)`);
-      console.log(`📍 Webhook 2: /tata-misscall-whatsapp (All calls)`);
+      console.log(`📍 Tata Tele Webhook: /tata-misscall-whatsapp`);
       console.log(`📍 WATI Webhook: /wati-webhook`);
+      console.log(`📍 Test Endpoint: /test-misscall`);
       console.log(`📍 Cron: Fallback (5 min)`);
       console.log(`📍 MongoDB: Connected ✅`);
       console.log(`📍 Security: HMAC + API Key + WATI Auth`);
-      console.log(`📍 Atomic Operations: ✅`);
-      console.log(`📍 Timeouts: 5s-10s`);
+      console.log(`📍 Templates: misscall_welcome_v3, lead_notification_v2`);
       console.log('='.repeat(60));
     });
   } catch (error) {
