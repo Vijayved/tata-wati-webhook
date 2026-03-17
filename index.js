@@ -355,7 +355,7 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION
+// ✅ FIXED LEAD NOTIFICATION - Matching test endpoint
 // ============================================
 async function sendLeadNotification(
   executiveNumber, 
@@ -367,9 +367,10 @@ async function sendLeadNotification(
   chatId
 ) {
   console.log(`📤 Preparing lead notification for executive ${executiveNumber}`);
-  const safePatientName = patientName || "Unknown Patient";
-  const safeTestNames = testNames || "Not specified";
-  const safeSourceType = sourceType.replace(/[📝📸]/g, '').trim();
+  
+  const safePatientName = patientName || "Miss Call Patient";
+  const safeTestNames = testNames || "Miss Call";
+  const safeSourceType = sourceType || "Miss Call";
   
   const parameters = [
     { name: "1", value: safePatientName },
@@ -383,11 +384,32 @@ async function sendLeadNotification(
   console.log(`📦 Parameters:`, JSON.stringify(parameters));
   
   try {
-    const result = await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
-    console.log(`✅ Lead notification sent to ${executiveNumber}`);
-    return result;
+    // Direct API call - exactly like test endpoint
+    const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${executiveNumber}`;
+    const payload = {
+      template_name: LEAD_TEMPLATE_NAME,
+      broadcast_name: `lead_${Date.now()}`,
+      parameters: parameters
+    };
+    
+    console.log(`📤 Sending to WATI:`, JSON.stringify(payload));
+    
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Authorization': WATI_TOKEN,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+    
+    console.log(`✅ Lead notification sent successfully to ${executiveNumber}`);
+    return response.data;
+    
   } catch (error) {
-    console.error(`❌ sendLeadNotification error:`, error);
+    console.error(`❌ sendLeadNotification error:`, error.message);
+    if (error.response) {
+      console.error('WATI API Error Response:', error.response.data);
+    }
     throw error;
   }
 }
@@ -710,25 +732,80 @@ app.post('/wati-webhook', async (req, res) => {
       if (branchNames.includes(action)) {
         console.log(`🔍 Processing branch selection: ${action} for ${patientPhone}`);
         
-        // Find the patient awaiting branch - IMPROVED QUERY
+        // Find the patient awaiting branch
         const patient = await patientsCollection.findOne({
           patientPhone: patientPhone,
           status: 'awaiting_branch'
-        }, { 
-          sort: { createdAt: -1 },
-          limit: 1 
-        });
+        }, { sort: { createdAt: -1 } });
         
         if (!patient) {
-          console.log(`❌ CRITICAL: No patient found with status 'awaiting_branch' for ${patientPhone}`);
-          console.log(`🔍 Checking if any patient exists for this phone...`);
+          console.log(`❌ No patient found with status 'awaiting_branch' for ${patientPhone}`);
           
-          // Debug: Check if any patient exists for this phone
+          // Check if any patient exists
           const anyPatient = await patientsCollection.findOne({ patientPhone: patientPhone });
           if (anyPatient) {
             console.log(`⚠️ Patient found but status is: ${anyPatient.status}`);
+            console.log(`⚠️ Patient details:`, JSON.stringify(anyPatient));
+            
+            // If patient exists but not awaiting_branch, still send notification
+            const execNumber = getExecutiveNumber(action);
+            console.log(`📤 Sending notification using existing patient`);
+            
+            try {
+              await sendLeadNotification(
+                execNumber,
+                anyPatient.patientName || 'Miss Call Patient',
+                patientPhone,
+                action,
+                anyPatient.testNames || 'Miss Call',
+                '📞 Miss Call',
+                anyPatient.chatId || `${patientPhone}_${action}`
+              );
+              console.log(`✅ Executive notification sent for existing patient`);
+            } catch (execError) {
+              console.error(`❌ Executive notification failed:`, execError.message);
+            }
+            
+            await markMessageProcessed(msgId);
+            return res.sendStatus(200);
           } else {
             console.log(`⚠️ No patient at all found for ${patientPhone}`);
+            
+            // Create a new patient on the fly
+            console.log(`🔄 Creating new patient on the fly for ${patientPhone}`);
+            const chatId = `${patientPhone}_${action}`;
+            await patientsCollection.insertOne({
+              chatId,
+              patientName: 'Miss Call Patient',
+              patientPhone: patientPhone,
+              branch: action,
+              testNames: 'Branch selected - awaiting details',
+              sourceType: 'Miss Call',
+              executiveNumber: getExecutiveNumber(action),
+              priority: 'low',
+              status: 'pending',
+              createdAt: new Date(),
+              updatedAt: new Date()
+            });
+            
+            // Send executive notification for this new patient
+            const execNumber = getExecutiveNumber(action);
+            console.log(`📤 Sending notification to executive ${execNumber} for new patient`);
+            
+            try {
+              await sendLeadNotification(
+                execNumber,
+                'Miss Call Patient',
+                patientPhone,
+                action,
+                'Miss Call - Branch Selected',
+                '📞 Miss Call',
+                chatId
+              );
+              console.log(`✅ Executive notification sent for new patient`);
+            } catch (execError) {
+              console.error(`❌ Executive notification failed:`, execError.message);
+            }
           }
           
           await markMessageProcessed(msgId);
@@ -762,9 +839,9 @@ app.post('/wati-webhook', async (req, res) => {
         );
         console.log(`✅ Patient updated with branch ${action}`);
         
-        // ✅ SEND EXECUTIVE NOTIFICATION - WITH FULL ERROR HANDLING
+        // ✅ SEND EXECUTIVE NOTIFICATION
         const chatId = `${patientPhone}_${action}`;
-        console.log(`📤 Attempting to send executive notification to ${executiveNumber}`);
+        console.log(`📤 Sending executive notification to ${executiveNumber}`);
         
         try {
           const leadResult = await sendLeadNotification(
@@ -779,38 +856,27 @@ app.post('/wati-webhook', async (req, res) => {
           console.log(`✅ EXECUTIVE NOTIFICATION SENT SUCCESSFULLY!`, leadResult);
         } catch (execError) {
           console.error(`❌ EXECUTIVE NOTIFICATION FAILED:`, execError.message);
-          
-          // Log detailed error
           if (execError.response) {
-            console.error('WATI API Error Response:', {
-              status: execError.response.status,
-              data: execError.response.data,
-              headers: execError.response.headers
-            });
-          } else if (execError.request) {
-            console.error('WATI API No Response:', execError.request);
-          } else {
-            console.error('WATI API Setup Error:', execError.message);
+            console.error('WATI API Error Response:', execError.response.data);
           }
           
-          // Retry logic - try once more after 2 seconds
-          console.log(`🔄 Retrying executive notification in 2 seconds...`);
-          setTimeout(async () => {
-            try {
-              await sendLeadNotification(
-                executiveNumber,
-                patient.patientName || 'Miss Call Patient',
-                patientPhone,
-                action,
-                'Miss Call - Branch Selected (Retry)',
-                '📞 Miss Call',
-                chatId
-              );
-              console.log(`✅ Executive notification sent on retry!`);
-            } catch (retryError) {
-              console.error(`❌ Retry also failed:`, retryError.message);
-            }
-          }, 2000);
+          // Retry once
+          console.log(`🔄 Retrying executive notification...`);
+          try {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            const retryResult = await sendLeadNotification(
+              executiveNumber,
+              patient.patientName || 'Miss Call Patient',
+              patientPhone,
+              action,
+              'Miss Call - Branch Selected (Retry)',
+              '📞 Miss Call',
+              chatId
+            );
+            console.log(`✅ Retry successful!`, retryResult);
+          } catch (retryError) {
+            console.error(`❌ Retry also failed:`, retryError.message);
+          }
         }
         
         await markMessageProcessed(msgId);
@@ -1380,6 +1446,18 @@ app.get('/test-misscall', async (req, res) => {
   }
 });
 
+// ============================================
+// ✅ DEBUG PATIENT ENDPOINT
+// ============================================
+app.get('/debug-patient/:phone', async (req, res) => {
+  const phone = req.params.phone;
+  const normalizedPhone = normalizeWhatsAppNumber(phone);
+  const patient = await patientsCollection.findOne({ 
+    patientPhone: normalizedPhone 
+  });
+  res.json(patient || { error: 'Not found', searchedPhone: normalizedPhone });
+});
+
 app.get('/health', async (req, res) => {
   if (!patientsCollection || !processedCollection) {
     return res.status(503).json({
@@ -1453,6 +1531,11 @@ app.get('/', (req, res) => {
         </div>
         
         <div class="endpoint">
+          <div><span class="code">GET</span> <a href="/debug-patient/919106959092">/debug-patient/919106959092</a></div>
+          <small>Check patient status</small>
+        </div>
+        
+        <div class="endpoint">
           <div><span class="code">GET</span> <a href="/api/misscall-stats">/api/misscall-stats</a></div>
           <small>Miss call statistics</small>
         </div>
@@ -1519,6 +1602,7 @@ async function startServer() {
       console.log(`📍 WATI Webhook: /wati-webhook`);
       console.log(`📍 Test Endpoint: /test-misscall`);
       console.log(`📍 Direct Test: /test-executive-direct`);
+      console.log(`📍 Debug Patient: /debug-patient/:phone`);
       console.log(`📍 Cron: Fallback (5 min)`);
       console.log(`📍 MongoDB: Connected ✅`);
       console.log(`📍 Security: HMAC + API Key + WATI Auth`);
