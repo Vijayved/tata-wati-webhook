@@ -41,7 +41,7 @@ module.exports = (patientsCollection, processedCollection, PORT) => {
   return router;
 };
 
-// ✅ getDashboardHTML function - यह missing था
+// ✅ getDashboardHTML function
 function getDashboardHTML(data) {
   const { 
     patientCount, 
