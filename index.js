@@ -46,7 +46,7 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
 }
 
 // ============================================
-// ✅ DATABASE CONNECTION - FIXED VERSION
+// ✅ DATABASE CONNECTION
 // ============================================
 let db;
 let processedCollection;
@@ -71,7 +71,6 @@ async function connectDB() {
     patientsCollection = db.collection('patients');
     executivesCollection = db.collection('executives');
     
-    // ✅ Verify collections are initialized
     console.log('✅ Collections initialized:');
     console.log('   - patientsCollection:', patientsCollection ? '✅' : '❌');
     console.log('   - processedCollection:', processedCollection ? '✅' : '❌');
@@ -204,7 +203,7 @@ function parseDate(text) {
 }
 
 // ============================================
-// HELPER FUNCTIONS
+// ✅ UPDATED HELPER FUNCTIONS FOR TATA TELE
 // ============================================
 function normalizeIndianNumber(number) {
   if (!number) return '';
@@ -242,15 +241,28 @@ function shouldSkipDuplicateMissCall(whatsappNumber, calledNumber) {
   return false;
 }
 
+// ✅ UPDATED: Tata Tele payload ke according
 function getCallerNumberFromPayload(body) {
-  return body.caller_id_number || body.caller_number || body.from || 
-         body.msisdn || body.mobile || body.customer_number ||
-         body.customer_no_with_prefix || body.cli || '';
+  return body.caller_id_number || 
+         body["customer_no_with_prefix "] || 
+         body.customer_number_with_prefix ||
+         body.cli || 
+         body.msisdn || 
+         body.mobile || 
+         body.caller_number || 
+         body.from || 
+         body.customer_number ||
+         '';
 }
 
 function getCalledNumberFromPayload(body) {
-  return body.call_to_number || body.called_number || body.to || 
-         body.destination || body.did || body.virtual_number || '';
+  return body.call_to_number || 
+         body.called_number || 
+         body.to || 
+         body.destination || 
+         body.did || 
+         body.virtual_number || 
+         '';
 }
 
 // ✅ Check if message is already processed
@@ -359,7 +371,7 @@ async function sendLeadNotification(
 }
 
 // ============================================
-// ✅ ATOMIC LEAD CREATION (No Race Conditions)
+// ✅ ATOMIC LEAD CREATION
 // ============================================
 async function createOrUpdateLead(chatId, patientName, patientPhone, branch, testNames, sourceType, executiveNumber, priority, imageUrl = null) {
   if (!patientsCollection) {
@@ -396,7 +408,7 @@ async function createOrUpdateLead(chatId, patientName, patientPhone, branch, tes
     { upsert: true }
   );
   
-  return result.upsertedCount > 0; // true if new lead created
+  return result.upsertedCount > 0;
 }
 
 // ============================================
@@ -409,16 +421,13 @@ async function processManualEntry(messageId, patientName, testNames, branch, pat
   const priority = getPriority(testNames);
   const chatId = `${patientPhone}_${branch}`;
   
-  // First mark as processed (to prevent duplicates on crash)
   await markMessageProcessed(messageId);
   
-  // Atomic upsert to prevent race conditions
   const isNew = await createOrUpdateLead(
     chatId, patientName, patientPhone, branch, testNames, 'Manual', 
     executiveNumber, priority
   );
   
-  // Only send notification for new leads
   if (isNew) {
     await retryWithTimeout(() => sendLeadNotification(
       executiveNumber, patientName, patientPhone, branch, testNames, "Manual", chatId
@@ -437,16 +446,13 @@ async function processImageUpload(messageId, patientName, branch, imageUrl, pati
   const executiveNumber = getExecutiveNumber(branch);
   const chatId = `${patientPhone}_${branch}`;
   
-  // First mark as processed
   await markMessageProcessed(messageId);
   
-  // OCR with timeout
   const extracted = await retryWithTimeout(() => extractWithOpenAI(imageUrl), 10000, 2);
   console.log(`✅ OCR: ${extracted.patientName} - ${extracted.tests}`);
   
   const priority = getPriority(extracted.tests);
   
-  // Atomic upsert
   const isNew = await createOrUpdateLead(
     chatId, patientName, patientPhone, branch, extracted.tests, 'Upload',
     executiveNumber, priority, imageUrl
@@ -493,11 +499,10 @@ async function extractWithOpenAI(imageUrl) {
 }
 
 // ============================================
-// ✅ WEBHOOK ENDPOINT (MAIN ENTRY POINT)
+// ✅ WATI WEBHOOK ENDPOINT
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
-    // Security check
     if (req.headers['authorization'] !== `Bearer ${WATI_TOKEN}`) {
       console.log('⚠️ Unauthorized webhook attempt');
       return res.sendStatus(403);
@@ -512,7 +517,6 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
-    // Check if already processed
     if (await isMessageProcessed(msgId)) {
       console.log(`⏭️ Message ${msgId} already processed`);
       return res.sendStatus(200);
@@ -523,9 +527,8 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
-    const branch = 'Naroda'; // TODO: Get from contact attributes
+    const branch = 'Naroda';
     
-    // Process based on message type
     if (msg.type === 'text' || msg.messageType === 'text') {
       const text = msg.text || msg.body || '';
       const lowerText = text.toLowerCase();
@@ -534,7 +537,6 @@ app.post('/wati-webhook', async (req, res) => {
         await processManualEntry(msgId, 'Patient', text, branch, patientPhone);
       }
       else if (msg.buttonText || msg.button) {
-        // Handle quick replies
         const action = msg.buttonText || msg.button;
         const chatId = `${patientPhone}_${branch}`;
         
@@ -568,7 +570,6 @@ app.post('/wati-webhook', async (req, res) => {
             { $set: { status: 'not_converted', updatedAt: new Date() } }
           );
           
-          // Escalate to manager
           await sendLeadNotification(
             EXECUTIVES['Manager'],
             'Escalation Alert',
@@ -588,14 +589,13 @@ app.post('/wati-webhook', async (req, res) => {
       }
     }
     else {
-      // Mark other message types as processed to avoid reprocessing
       await markMessageProcessed(msgId);
     }
     
     res.sendStatus(200);
   } catch (error) {
     console.error('❌ Webhook error:', error.message);
-    res.sendStatus(200); // Always return 200 to WATI
+    res.sendStatus(200);
   }
 });
 
@@ -631,7 +631,7 @@ app.post('/webhook/followup-date', async (req, res) => {
 });
 
 // ============================================
-// ✅ CRON JOB (FALLBACK) - FIXED WATI API URL
+// ✅ CRON JOB (FALLBACK)
 // ============================================
 cron.schedule('*/5 * * * *', async () => {
   console.log(`\n🔍 [${new Date().toLocaleTimeString()}] Fallback check for missed messages...`);
@@ -640,7 +640,6 @@ cron.schedule('*/5 * * * *', async () => {
     const from = new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
     const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
     
-    // ✅ FIXED: WATI API URL construction
     let url;
     if (WATI_BASE_URL.includes('/api/v1')) {
       url = `${WATI_BASE_URL}/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
@@ -672,7 +671,6 @@ cron.schedule('*/5 * * * *', async () => {
       
       const branch = 'Naroda';
       
-      // Process and mark as processed
       if (msg.type === 'text' || msg.messageType === 'text') {
         const text = msg.text || msg.body || '';
         if (text.toLowerCase().includes('manual') || text.toLowerCase().includes('test')) {
@@ -699,7 +697,7 @@ cron.schedule('*/5 * * * *', async () => {
 });
 
 // ============================================
-// ✅ AUTO FOLLOW-UP (हर 30 मिनट)
+// ✅ AUTO FOLLOW-UP
 // ============================================
 cron.schedule('*/30 * * * *', async () => {
   console.log('⏰ Checking for pending leads...');
@@ -743,7 +741,7 @@ cron.schedule('*/30 * * * *', async () => {
 });
 
 // ============================================
-// ✅ MANAGER ESCALATION (Daily at 9 PM)
+// ✅ MANAGER ESCALATION
 // ============================================
 cron.schedule('0 21 * * *', async () => {
   if (!patientsCollection) {
@@ -778,13 +776,12 @@ cron.schedule('0 21 * * *', async () => {
 });
 
 // ============================================
-// ✅ EXECUTIVE DASHBOARD (with Security)
+// ✅ EXECUTIVE DASHBOARD
 // ============================================
 app.get('/connect-chat/:chatId', async (req, res) => {
   const { chatId } = req.params;
   const { token } = req.query;
   
-  // Security check with HMAC
   if (!verifyToken(chatId, token)) {
     return res.status(403).send(`
       <html>
@@ -901,42 +898,95 @@ app.get('/exec-action', async (req, res) => {
 });
 
 // ============================================
-// ✅ TATA TELE WEBHOOK (with Auth)
+// ✅ FIXED TATA TELE WEBHOOK - दोनों endpoints के लिए
 // ============================================
-app.post('/tata-misscall', async (req, res) => {
+
+// Webhook 1: Miss call new (Call hangup - Missed)
+app.post('/tata-misscall-new', async (req, res) => {
+  await handleTataWebhook(req, res, 'missed');
+});
+
+// Webhook 2: Miss Call to WhatsApp (Call hangup - Missed or Answered)
+app.post('/tata-misscall-whatsapp', async (req, res) => {
+  await handleTataWebhook(req, res, 'all');
+});
+
+// Common handler for both webhooks
+async function handleTataWebhook(req, res, type) {
   try {
     // Verify Tata Tele webhook
     const apiKey = req.headers['x-api-key'];
-    if (apiKey !== TATA_SECRET) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
+    console.log('🔑 Received API Key:', apiKey);
+    console.log('📞 Tata Tele Webhook Type:', type);
+    console.log('📦 Full Payload:', JSON.stringify(req.body, null, 2));
     
-    console.log('📞 Tata Miss Call');
+    // Check all possible fields for caller number
+    const callerNumberRaw = req.body.caller_id_number || 
+                           req.body["customer_no_with_prefix "] || 
+                           req.body.customer_number_with_prefix ||
+                           req.body.cli || 
+                           req.body.msisdn || 
+                           req.body.mobile || 
+                           req.body.caller_number || 
+                           req.body.from || 
+                           req.body.customer_number ||
+                           '';
     
-    const callerNumberRaw = getCallerNumberFromPayload(req.body);
+    console.log('📞 Caller Number Raw:', callerNumberRaw);
+    console.log('📞 All possible fields:', {
+      caller_id_number: req.body.caller_id_number,
+      customer_no_with_prefix: req.body["customer_no_with_prefix "],
+      customer_number_with_prefix: req.body.customer_number_with_prefix,
+      cli: req.body.cli,
+      msisdn: req.body.msisdn,
+      call_to_number: req.body.call_to_number
+    });
+    
     if (!callerNumberRaw) {
-      return res.status(400).json({ error: 'Caller number not found' });
+      return res.status(400).json({ 
+        error: 'Caller number not found',
+        receivedFields: Object.keys(req.body)
+      });
     }
     
     const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
+    console.log('📱 WhatsApp Number:', whatsappNumber);
+    
     if (!whatsappNumber) {
-      return res.status(400).json({ error: 'Invalid number' });
+      return res.status(400).json({ error: 'Invalid number format' });
     }
     
-    const branch = getBranchByCalledNumber(req.body.call_to_number || '');
+    const calledNumber = req.body.call_to_number || req.body.called_number || req.body.to || '';
+    const branch = getBranchByCalledNumber(calledNumber);
+    console.log('🏢 Branch:', branch);
     
-    if (shouldSkipDuplicateMissCall(whatsappNumber, req.body.call_to_number)) {
-      return res.json({ skipped: true });
+    // Check for duplicates (only for missed calls to avoid double counting)
+    if (type === 'missed' && shouldSkipDuplicateMissCall(whatsappNumber, calledNumber)) {
+      console.log('⏭️ Skipping duplicate miss call');
+      return res.json({ skipped: true, type, message: 'Duplicate miss call skipped' });
     }
     
-    await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [{ name: '1', value: branch.name }]);
+    // Send WATI template
+    await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
+      { name: '1', value: branch.name }
+    ]);
     
-    res.json({ success: true, whatsappNumber, branch: branch.name });
+    // Log to database (optional - track miss calls)
+    console.log(`✅ Miss call processed: ${whatsappNumber} -> ${branch.name} (${type})`);
+    
+    res.json({ 
+      success: true, 
+      whatsappNumber, 
+      branch: branch.name,
+      type: type,
+      message: 'Miss call processed successfully'
+    });
+    
   } catch (error) {
-    console.error('❌ Error:', error);
+    console.error('❌ Tata Tele Error:', error);
     res.status(500).json({ error: error.message });
   }
-});
+}
 
 // ============================================
 // ✅ TEST ENDPOINTS
@@ -1013,7 +1063,17 @@ app.get('/', (req, res) => {
     <body>
       <div class="container">
         <h1>🚀 Production Executive System</h1>
-        <p>✅ Webhook + Cron + MongoDB + Security + Atomic Ops + Timeouts</p>
+        <p>✅ Tata Tele Webhooks + WATI + MongoDB</p>
+        
+        <div class="endpoint">
+          <div><span class="code">POST</span> /tata-misscall-new</div>
+          <small>For missed calls only</small>
+        </div>
+        
+        <div class="endpoint">
+          <div><span class="code">POST</span> /tata-misscall-whatsapp</div>
+          <small>For all calls (missed or answered)</small>
+        </div>
         
         <div class="endpoint">
           <div><span class="code">GET</span> <a href="/test-exec?exec=917880261858">/test-exec?exec=917880261858</a></div>
@@ -1038,10 +1098,8 @@ app.get('/', (req, res) => {
 // ============================================
 // ✅ DASHBOARD ROUTE
 // ============================================
-// Import dashboard with collection checks
 const dashboardRouter = require('./dashboard');
 app.use('/admin', (req, res, next) => {
-  // Verify collections are initialized before passing to dashboard
   if (!patientsCollection || !processedCollection) {
     return res.status(503).send(`
       <html>
@@ -1055,7 +1113,6 @@ app.use('/admin', (req, res, next) => {
       </html>
     `);
   }
-  // Pass collections to dashboard
   req.patientsCollection = patientsCollection;
   req.processedCollection = processedCollection;
   req.PORT = PORT;
@@ -1063,27 +1120,26 @@ app.use('/admin', (req, res, next) => {
 }, dashboardRouter);
 
 // ============================================
-// ✅ START SERVER - FIXED: Only after DB connects
+// ✅ START SERVER
 // ============================================
 async function startServer() {
   try {
     console.log('🔄 Starting server...');
     
-    // First connect to database
     await connectDB();
     
-    // Double-check collections are initialized
     if (!patientsCollection || !processedCollection) {
       throw new Error('Collections not initialized properly after connectDB()');
     }
     
     console.log('✅ All collections verified, starting server...');
     
-    // Now start the server
     app.listen(PORT, () => {
       console.log('='.repeat(60));
       console.log(`🚀 PRODUCTION SERVER running on port ${PORT}`);
-      console.log(`📍 Webhook: Primary`);
+      console.log(`📍 Webhook 1: /tata-misscall-new (Missed calls only)`);
+      console.log(`📍 Webhook 2: /tata-misscall-whatsapp (All calls)`);
+      console.log(`📍 WATI Webhook: /wati-webhook`);
       console.log(`📍 Cron: Fallback (5 min)`);
       console.log(`📍 MongoDB: Connected ✅`);
       console.log(`📍 Security: HMAC + API Key + WATI Auth`);
@@ -1092,12 +1148,9 @@ async function startServer() {
       console.log('='.repeat(60));
     });
   } catch (error) {
-    console.error('❌ Failed to start server:');
-    console.error('❌ Error:', error.message);
-    console.error('❌ Stack:', error.stack);
+    console.error('❌ Failed to start server:', error);
     process.exit(1);
   }
 }
 
-// Start the server
 startServer();
