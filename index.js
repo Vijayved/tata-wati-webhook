@@ -46,7 +46,7 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
 }
 
 // ============================================
-// ✅ DATABASE CONNECTION
+// ✅ DATABASE CONNECTION - FIXED VERSION
 // ============================================
 let db;
 let processedCollection;
@@ -55,13 +55,26 @@ let executivesCollection;
 
 async function connectDB() {
   try {
+    console.log('🔄 Connecting to MongoDB...');
+    console.log('MongoDB URI:', MONGODB_URI ? '✅ Present' : '❌ Missing');
+    
+    if (!MONGODB_URI) {
+      throw new Error('MONGODB_URI is not defined in environment variables');
+    }
+    
     const client = new MongoClient(MONGODB_URI);
     await client.connect();
-    console.log('✅ MongoDB connected');
+    console.log('✅ MongoDB connected successfully');
+    
     db = client.db('executive_system');
     processedCollection = db.collection('processed_messages');
     patientsCollection = db.collection('patients');
     executivesCollection = db.collection('executives');
+    
+    // ✅ Verify collections are initialized
+    console.log('✅ Collections initialized:');
+    console.log('   - patientsCollection:', patientsCollection ? '✅' : '❌');
+    console.log('   - processedCollection:', processedCollection ? '✅' : '❌');
     
     // Create indexes
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
@@ -70,28 +83,51 @@ async function connectDB() {
     await patientsCollection.createIndex({ followupDate: 1 });
     await patientsCollection.createIndex({ createdAt: 1 });
     await patientsCollection.createIndex({ lastNotificationSentAt: 1 });
+    
+    console.log('✅ Indexes created successfully');
+    
+    return true;
   } catch (error) {
-    console.error('❌ MongoDB connection error:', error);
-    process.exit(1);
+    console.error('❌ MongoDB connection error DETAILS:', {
+      message: error.message,
+      name: error.name,
+      code: error.code,
+      stack: error.stack
+    });
+    throw error;
   }
 }
-connectDB();
 
 // ============================================
 // EXECUTIVE NUMBERS MAPPING
 // ============================================
 const EXECUTIVES = {
   'Naroda Team': process.env.NARODA_EXECUTIVE || '917880261858',
-  'Manager': process.env.MANAGER_NUMBER || '919825086099'
+  'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '919825086011',
+  'Vadaj Team': process.env.VADAJ_EXECUTIVE || '919825086011',
+  'Satellite Team': process.env.SATELLITE_EXECUTIVE || '919825086011',
+  'Manager': process.env.MANAGER_NUMBER || '919825086011'
 };
 
 // ============================================
 // BRANCH CONFIGURATION
 // ============================================
 const BRANCHES = {
-  [normalizeIndianNumber(process.env.NARODA_NUMBER || '9898989899')]: {
+  [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: {
     name: 'Naroda',
     executive: EXECUTIVES['Naroda Team']
+  },
+  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: {
+    name: 'Usmanpura',
+    executive: EXECUTIVES['Usmanpura Team']
+  },
+  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: {
+    name: 'Vadaj',
+    executive: EXECUTIVES['Vadaj Team']
+  },
+  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: {
+    name: 'Satellite',
+    executive: EXECUTIVES['Satellite Team']
   },
   [normalizeIndianNumber('917969690935')]: {
     name: 'Test Branch',
@@ -100,7 +136,7 @@ const BRANCHES = {
 };
 
 // ============================================
-// ✅ IN-MEMORY STORAGE (Redis recommended for production)
+// ✅ IN-MEMORY STORAGE
 // ============================================
 const recentMissCalls = new Map();
 
@@ -219,12 +255,20 @@ function getCalledNumberFromPayload(body) {
 
 // ✅ Check if message is already processed
 async function isMessageProcessed(messageId) {
+  if (!processedCollection) {
+    console.error('❌ processedCollection is undefined in isMessageProcessed');
+    return false;
+  }
   const processed = await processedCollection.findOne({ messageId });
   return !!processed;
 }
 
 // ✅ Mark message as processed (atomic)
 async function markMessageProcessed(messageId) {
+  if (!processedCollection) {
+    console.error('❌ processedCollection is undefined in markMessageProcessed');
+    return;
+  }
   await processedCollection.insertOne({ messageId, processedAt: new Date() });
 }
 
@@ -318,6 +362,11 @@ async function sendLeadNotification(
 // ✅ ATOMIC LEAD CREATION (No Race Conditions)
 // ============================================
 async function createOrUpdateLead(chatId, patientName, patientPhone, branch, testNames, sourceType, executiveNumber, priority, imageUrl = null) {
+  if (!patientsCollection) {
+    console.error('❌ patientsCollection is undefined in createOrUpdateLead');
+    return false;
+  }
+  
   const now = new Date();
   
   const result = await patientsCollection.updateOne(
@@ -526,7 +575,8 @@ app.post('/wati-webhook', async (req, res) => {
             EXECUTIVES['Manager'],
             'ALL',
             'Not Converted',
-            `escalation-${Date.now()}`
+            `escalation-${Date.now()}`,
+            chatId
           );
         }
       }
@@ -581,7 +631,7 @@ app.post('/webhook/followup-date', async (req, res) => {
 });
 
 // ============================================
-// ✅ CRON JOB (FALLBACK - हर 5 मिनट)
+// ✅ CRON JOB (FALLBACK) - FIXED WATI API URL
 // ============================================
 cron.schedule('*/5 * * * *', async () => {
   console.log(`\n🔍 [${new Date().toLocaleTimeString()}] Fallback check for missed messages...`);
@@ -590,7 +640,15 @@ cron.schedule('*/5 * * * *', async () => {
     const from = new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
     const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
     
-    const url = `${WATI_BASE_URL}/api/v1/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
+    // ✅ FIXED: WATI API URL construction
+    let url;
+    if (WATI_BASE_URL.includes('/api/v1')) {
+      url = `${WATI_BASE_URL}/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
+    } else {
+      url = `${WATI_BASE_URL}/api/v1/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
+    }
+    
+    console.log('🔍 Fetching messages from:', url);
     
     const response = await axios.get(url, {
       headers: { Authorization: `${WATI_TOKEN}` }
@@ -600,6 +658,8 @@ cron.schedule('*/5 * * * *', async () => {
     if (Array.isArray(response.data)) messages = response.data;
     else if (response.data?.messages) messages = response.data.messages;
     else if (response.data?.data) messages = response.data.data;
+    
+    console.log(`📨 Found ${messages.length} messages`);
     
     for (const msg of messages) {
       await rateLimitDelay();
@@ -633,7 +693,8 @@ cron.schedule('*/5 * * * *', async () => {
       }
     }
   } catch (error) {
-    console.error('❌ Fallback cron error:', error.message);
+    console.error('❌ Fallback cron error:', error.response?.status ? 
+      `Status ${error.response.status}: ${error.response.data}` : error.message);
   }
 });
 
@@ -643,30 +704,41 @@ cron.schedule('*/5 * * * *', async () => {
 cron.schedule('*/30 * * * *', async () => {
   console.log('⏰ Checking for pending leads...');
   
-  const pendingLeads = await patientsCollection.find({
-    status: 'waiting',
-    followupDate: { $lt: new Date() },
-    $or: [
-      { lastNotificationSentAt: null },
-      { lastNotificationSentAt: { $lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } }
-    ]
-  }).toArray();
+  if (!patientsCollection) {
+    console.error('❌ patientsCollection is undefined in follow-up cron');
+    return;
+  }
   
-  for (const lead of pendingLeads) {
-    await sendLeadNotification(
-      lead.executiveNumber,
-      lead.patientName,
-      lead.patientPhone,
-      lead.branch,
-      lead.testNames || lead.tests || 'Follow-up',
-      '⏰ Follow-up Reminder',
-      lead.chatId
-    );
+  try {
+    const pendingLeads = await patientsCollection.find({
+      status: 'waiting',
+      followupDate: { $lt: new Date() },
+      $or: [
+        { lastNotificationSentAt: null },
+        { lastNotificationSentAt: { $lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } }
+      ]
+    }).toArray();
     
-    await patientsCollection.updateOne(
-      { _id: lead._id },
-      { $set: { lastNotificationSentAt: new Date() } }
-    );
+    console.log(`📊 Found ${pendingLeads.length} pending leads for follow-up`);
+    
+    for (const lead of pendingLeads) {
+      await sendLeadNotification(
+        lead.executiveNumber,
+        lead.patientName,
+        lead.patientPhone,
+        lead.branch,
+        lead.testNames || lead.tests || 'Follow-up',
+        '⏰ Follow-up Reminder',
+        lead.chatId
+      );
+      
+      await patientsCollection.updateOne(
+        { _id: lead._id },
+        { $set: { lastNotificationSentAt: new Date() } }
+      );
+    }
+  } catch (error) {
+    console.error('❌ Follow-up cron error:', error.message);
   }
 });
 
@@ -674,25 +746,34 @@ cron.schedule('*/30 * * * *', async () => {
 // ✅ MANAGER ESCALATION (Daily at 9 PM)
 // ============================================
 cron.schedule('0 21 * * *', async () => {
-  const notConverted = await patientsCollection.find({
-    status: 'not_converted',
-    createdAt: { $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) }
-  }).toArray();
+  if (!patientsCollection) {
+    console.error('❌ patientsCollection is undefined in manager escalation');
+    return;
+  }
   
-  if (notConverted.length > 0) {
-    const summary = notConverted.map(p => 
-      `❌ ${p.patientName} (${p.branch})`
-    ).join('\n');
+  try {
+    const notConverted = await patientsCollection.find({
+      status: 'not_converted',
+      createdAt: { $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+    }).toArray();
     
-    await sendLeadNotification(
-      EXECUTIVES['Manager'],
-      'Daily Escalation Summary',
-      EXECUTIVES['Manager'],
-      'ALL',
-      `${notConverted.length} leads not converted today`,
-      '📊 Summary',
-      `summary-${Date.now()}`
-    );
+    if (notConverted.length > 0) {
+      const summary = notConverted.map(p => 
+        `❌ ${p.patientName} (${p.branch})`
+      ).join('\n');
+      
+      await sendLeadNotification(
+        EXECUTIVES['Manager'],
+        'Daily Escalation Summary',
+        EXECUTIVES['Manager'],
+        'ALL',
+        `${notConverted.length} leads not converted today`,
+        '📊 Summary',
+        `summary-${Date.now()}`
+      );
+    }
+  } catch (error) {
+    console.error('❌ Manager escalation error:', error.message);
   }
 });
 
@@ -714,6 +795,10 @@ app.get('/connect-chat/:chatId', async (req, res) => {
         </body>
       </html>
     `);
+  }
+  
+  if (!patientsCollection) {
+    return res.status(500).send('<h2>❌ Database not initialized</h2>');
   }
   
   const patient = await patientsCollection.findOne({ chatId });
@@ -883,15 +968,32 @@ app.get('/test-exec', async (req, res) => {
 });
 
 app.get('/health', async (req, res) => {
-  const patientCount = await patientsCollection.countDocuments();
-  const processedCount = await processedCollection.countDocuments();
+  if (!patientsCollection || !processedCollection) {
+    return res.status(503).json({
+      success: false,
+      error: 'Database not initialized',
+      patientsCollection: !!patientsCollection,
+      processedCollection: !!processedCollection
+    });
+  }
   
-  res.json({
-    success: true,
-    patients: patientCount,
-    processed: processedCount,
-    uptime: process.uptime()
-  });
+  try {
+    const patientCount = await patientsCollection.countDocuments();
+    const processedCount = await processedCollection.countDocuments();
+    
+    res.json({
+      success: true,
+      patients: patientCount,
+      processed: processedCount,
+      uptime: process.uptime(),
+      mongodb: 'connected'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 app.get('/', (req, res) => {
@@ -922,6 +1024,11 @@ app.get('/', (req, res) => {
           <div><span class="code">GET</span> <a href="/health">/health</a></div>
           <small>Health check</small>
         </div>
+        
+        <div class="endpoint">
+          <div><span class="code">GET</span> <a href="/admin">/admin</a></div>
+          <small>Admin Dashboard</small>
+        </div>
       </div>
     </body>
     </html>
@@ -931,20 +1038,66 @@ app.get('/', (req, res) => {
 // ============================================
 // ✅ DASHBOARD ROUTE
 // ============================================
-const dashboardRouter = require('./dashboard')(patientsCollection, processedCollection, PORT);
-app.use('/admin', dashboardRouter);
+// Import dashboard with collection checks
+const dashboardRouter = require('./dashboard');
+app.use('/admin', (req, res, next) => {
+  // Verify collections are initialized before passing to dashboard
+  if (!patientsCollection || !processedCollection) {
+    return res.status(503).send(`
+      <html>
+        <head><title>Dashboard Unavailable</title></head>
+        <body style="font-family: Arial; padding: 30px;">
+          <h2>⏳ Dashboard Initializing</h2>
+          <p>Database connection is being established. Please refresh in a few seconds.</p>
+          <p>Collections: patients=${!!patientsCollection}, processed=${!!processedCollection}</p>
+          <button onclick="location.reload()">Refresh Page</button>
+        </body>
+      </html>
+    `);
+  }
+  // Pass collections to dashboard
+  req.patientsCollection = patientsCollection;
+  req.processedCollection = processedCollection;
+  req.PORT = PORT;
+  next();
+}, dashboardRouter);
 
 // ============================================
-// ✅ START SERVER
+// ✅ START SERVER - FIXED: Only after DB connects
 // ============================================
-app.listen(PORT, () => {
-  console.log('='.repeat(60));
-  console.log(`🚀 PRODUCTION SERVER running on port ${PORT}`);
-  console.log(`📍 Webhook: Primary`);
-  console.log(`📍 Cron: Fallback (5 min)`);
-  console.log(`📍 MongoDB: Connected`);
-  console.log(`📍 Security: HMAC + API Key + WATI Auth`);
-  console.log(`📍 Atomic Operations: ✅`);
-  console.log(`📍 Timeouts: 5s-10s`);
-  console.log('='.repeat(60));
-});
+async function startServer() {
+  try {
+    console.log('🔄 Starting server...');
+    
+    // First connect to database
+    await connectDB();
+    
+    // Double-check collections are initialized
+    if (!patientsCollection || !processedCollection) {
+      throw new Error('Collections not initialized properly after connectDB()');
+    }
+    
+    console.log('✅ All collections verified, starting server...');
+    
+    // Now start the server
+    app.listen(PORT, () => {
+      console.log('='.repeat(60));
+      console.log(`🚀 PRODUCTION SERVER running on port ${PORT}`);
+      console.log(`📍 Webhook: Primary`);
+      console.log(`📍 Cron: Fallback (5 min)`);
+      console.log(`📍 MongoDB: Connected ✅`);
+      console.log(`📍 Security: HMAC + API Key + WATI Auth`);
+      console.log(`📍 Atomic Operations: ✅`);
+      console.log(`📍 Timeouts: 5s-10s`);
+      console.log('='.repeat(60));
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:');
+    console.error('❌ Error:', error.message);
+    console.error('❌ Stack:', error.stack);
+    process.exit(1);
+  }
+}
+
+// Start the server
+startServer();
