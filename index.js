@@ -74,7 +74,7 @@ const processedImages = new Set();
 const processedChats = new Set();
 
 // ============================================
-// HELPER FUNCTIONS
+// ✅ FIXED: Number Normalization Functions
 // ============================================
 function normalizeIndianNumber(number) {
   if (!number) return '';
@@ -91,8 +91,12 @@ function normalizeIndianNumber(number) {
 }
 
 function normalizeWhatsAppNumber(number) {
-  const normalized = normalizeIndianNumber(number);
-  return normalized ? '91' + normalized.slice(-10) : '';
+  if (!number) return '';
+  let digits = String(number).replace(/\D/g, '');
+  if (digits.length === 10) return '91' + digits;
+  if (digits.length === 12 && digits.startsWith('91')) return digits;
+  if (digits.length > 12) return '91' + digits.slice(-10);
+  return digits;
 }
 
 function getBranchByCalledNumber(calledNumber) {
@@ -124,7 +128,7 @@ function getCalledNumberFromPayload(body) {
 }
 
 // ============================================
-// WATI API FUNCTIONS
+// ✅ FIXED: WATI API Functions with Hybrid Approach
 // ============================================
 async function callWatiApi(url, data) {
   try {
@@ -158,8 +162,101 @@ async function sendSessionTextMessage(whatsappNumber, messageText) {
   return await callWatiApi(url, payload);
 }
 
+// ============================================
+// ✅ NEW: Hybrid Executive Notification
+// ============================================
+async function ensureContactInWATI(number) {
+  try {
+    const normalized = normalizeWhatsAppNumber(number);
+    console.log(`📇 Ensuring contact ${normalized} exists...`);
+    
+    await axios.post(
+      `${WATI_BASE_URL}/api/v1/addContact/${normalized}`,
+      { 
+        name: `Executive_${number}`,
+        customParams: [
+          { name: "source", value: "render_server" },
+          { name: "role", value: "executive" }
+        ]
+      },
+      {
+        headers: { 
+          Authorization: `${WATI_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return true;
+  } catch (error) {
+    console.error('⚠️ Contact add warning:', error.response?.data || error.message);
+    return false;
+  }
+}
+
+async function openSession(number) {
+  try {
+    const normalized = normalizeWhatsAppNumber(number);
+    console.log(`🔄 Opening session for ${normalized}...`);
+    
+    await axios.post(
+      `${WATI_BASE_URL}/api/v1/sendSessionMessage/${normalized}?messageText=🔧%20System%20Ping%20Test%20Message`,
+      {},
+      {
+        headers: { Authorization: `${WATI_TOKEN}` }
+      }
+    );
+    return true;
+  } catch (error) {
+    console.error('⚠️ Session open warning:', error.response?.data || error.message);
+    return false;
+  }
+}
+
 async function sendExecutiveNotification(executiveNumber, messageText) {
-  return await sendSessionTextMessage(executiveNumber, messageText);
+  const normalized = normalizeWhatsAppNumber(executiveNumber);
+  console.log(`\n📬 Sending to executive: ${normalized}`);
+  
+  // Step 1: Ensure contact exists
+  await ensureContactInWATI(normalized);
+  
+  // Step 2: Try session message
+  try {
+    const result = await sendSessionTextMessage(normalized, messageText);
+    console.log(`✅ Session message sent successfully`);
+    return result;
+  } catch (sessionError) {
+    console.log(`⚠️ Session failed:`, sessionError.response?.data || sessionError.message);
+    
+    // Step 3: If session fails, open session and retry
+    if (sessionError.response?.status === 404 || 
+        sessionError.response?.data?.info === 'Invalid Conversation') {
+      
+      console.log(`🔄 Session not open, opening now...`);
+      await openSession(normalized);
+      
+      // Wait 2 seconds for session to establish
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      try {
+        const retryResult = await sendSessionTextMessage(normalized, messageText);
+        console.log(`✅ Session message sent after opening session`);
+        return retryResult;
+      } catch (retryError) {
+        console.log(`⚠️ Retry failed:`, retryError.message);
+      }
+    }
+    
+    // Step 4: Fallback to template message
+    console.log(`⚠️ Falling back to template message...`);
+    try {
+      const templateResult = await sendWatiTemplateMessage(normalized, 'System');
+      console.log(`✅ Template message sent as fallback`);
+      return templateResult;
+    } catch (templateError) {
+      console.error(`❌ All sending methods failed`);
+      throw templateError;
+    }
+  }
 }
 
 // ============================================
@@ -198,54 +295,29 @@ async function fetchRecentChats() {
     const from = new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
     const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
     
-    // Log what we're about to do
     console.log('\n📋 ===== WATI API FETCH DEBUG ====');
     console.log(`⏰ Time Range: ${from} to ${to}`);
     
-    // Try v1 endpoint
     const url = `${WATI_BASE_URL}/api/v1/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
-    console.log(`📡 Attempt 1 (v1): ${url}`);
+    console.log(`📡 Fetching: ${url}`);
     
-    try {
-      const response = await axios.get(url, {
-        headers: { Authorization: `${WATI_TOKEN}` }
-      });
-      
-      console.log(`✅ v1 Success! Status: ${response.status}`);
-      console.log(`📦 Response type: ${typeof response.data}`);
-      console.log(`📦 Response structure:`, Object.keys(response.data || {}));
-      
-      return response.data || [];
-      
-    } catch (v1Error) {
-      console.log(`❌ v1 Failed: ${v1Error.message}`);
-      console.log(`❌ v1 Status: ${v1Error.response?.status}`);
-      console.log(`❌ v1 Data:`, v1Error.response?.data);
-      
-      // Try v2 endpoint as fallback
-      console.log(`\n📡 Attempt 2 (v2): Trying v2 endpoint...`);
-      const v2Url = `${WATI_BASE_URL}/api/v2/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
-      
-      try {
-        const v2Response = await axios.get(v2Url, {
-          headers: { Authorization: `${WATI_TOKEN}` }
-        });
-        
-        console.log(`✅ v2 Success! Status: ${v2Response.status}`);
-        return v2Response.data || [];
-        
-      } catch (v2Error) {
-        console.log(`❌ v2 Failed: ${v2Error.message}`);
-        console.log(`❌ v2 Status: ${v2Error.response?.status}`);
-        console.log(`❌ v2 Data:`, v2Error.response?.data);
-        return [];
-      }
+    const response = await axios.get(url, {
+      headers: { Authorization: `${WATI_TOKEN}` }
+    });
+    
+    if (response.data && Array.isArray(response.data)) {
+      return response.data;
+    } else if (response.data?.messages) {
+      return response.data.messages;
+    } else if (response.data?.data) {
+      return response.data.data;
     }
-  } catch (error) {
-    console.error('❌ Unexpected error in fetch:', error.message);
+    
     return [];
-  } finally {
-    console.log('📋 ===== END DEBUG ====\n');
+    
+  } catch (error) {
+    console.error('❌ Error fetching chats:', error.message);
+    return [];
   }
 }
 
@@ -261,8 +333,6 @@ async function getContactDetails(whatsappNumber) {
     const response = await axios.get(url, {
       headers: { Authorization: `${WATI_TOKEN}` }
     });
-    
-    console.log(`✅ Contact fetch success`);
     
     if (response.data && Array.isArray(response.data)) {
       return response.data[0] || null;
@@ -406,50 +476,24 @@ cron.schedule('*/2 * * * *', async () => {
   try {
     const messages = await fetchRecentChats();
     
-    console.log(`📦 Raw messages data:`, messages);
-    
-    // Parse messages based on structure
     let messagesList = [];
     if (Array.isArray(messages)) {
       messagesList = messages;
-      console.log(`✅ Found ${messagesList.length} messages in array format`);
-    } else if (messages?.messages && Array.isArray(messages.messages)) {
+    } else if (messages?.messages) {
       messagesList = messages.messages;
-      console.log(`✅ Found ${messagesList.length} messages in .messages format`);
-    } else if (messages?.data && Array.isArray(messages.data)) {
+    } else if (messages?.data) {
       messagesList = messages.data;
-      console.log(`✅ Found ${messagesList.length} messages in .data format`);
     } else {
-      console.log(`⚠️ Unexpected message format:`, messages);
-      return;
-    }
-    
-    if (messagesList.length === 0) {
-      console.log(`ℹ️ No new messages found`);
+      console.log(`⚠️ No messages found`);
       return;
     }
     
     for (const msg of messagesList) {
-      console.log(`\n📨 Processing message:`, msg);
-      
       const msgId = msg.id || msg.messageId || msg._id;
-      if (!msgId) {
-        console.log(`⚠️ Message has no ID, skipping`);
-        continue;
-      }
-      
-      if (processedChats.has(msgId)) {
-        console.log(`⏭️ Message ${msgId} already processed, skipping`);
-        continue;
-      }
+      if (!msgId || processedChats.has(msgId)) continue;
       
       const patientPhone = msg.whatsappNumber || msg.from || msg.waId;
-      if (!patientPhone) {
-        console.log(`⚠️ Message has no phone number, skipping`);
-        continue;
-      }
-      
-      console.log(`📞 Patient Phone: ${patientPhone}`);
+      if (!patientPhone) continue;
       
       const contact = await getContactDetails(patientPhone);
       
@@ -461,16 +505,13 @@ cron.schedule('*/2 * * * *', async () => {
                      contact.customAttributes?.patient_name || 
                      'Patient';
       }
-      console.log(`👤 Patient Name: ${patientName}`);
       
       const branch = contact?.customAttributes?.branch_name || 'Main Branch';
-      console.log(`🏥 Branch: ${branch}`);
       
       if (msg.type === 'text' || msg.messageType === 'text') {
         const text = msg.text || msg.body || '';
-        console.log(`📝 Text message: "${text}"`);
-        
         const lowerText = text.toLowerCase();
+        
         if (lowerText.includes('manual') || 
             lowerText.includes('test') || 
             lowerText.includes('mri') || 
@@ -478,31 +519,21 @@ cron.schedule('*/2 * * * *', async () => {
             lowerText.includes('xray') ||
             lowerText.includes('blood')) {
           
-          console.log(`✅ Detected as manual test entry`);
           await processManualEntry(msgId, patientName, text, branch, patientPhone);
           processedChats.add(msgId);
-        } else {
-          console.log(`⏭️ Not a manual test entry, skipping`);
         }
       }
       else if (msg.type === 'image' || msg.messageType === 'image') {
-        console.log(`📸 Detected image message`);
         const imageUrl = msg.mediaUrl || msg.url || msg.image?.url;
         if (imageUrl) {
-          console.log(`📸 Image URL: ${imageUrl}`);
           await processImageUpload(msgId, patientName, branch, imageUrl, patientPhone);
           processedChats.add(msgId);
           processedImages.add(msgId);
-        } else {
-          console.log(`⚠️ Image message has no URL`);
         }
-      } else {
-        console.log(`⏭️ Unhandled message type: ${msg.type}`);
       }
     }
   } catch (error) {
     console.error('❌ Error in cron job:', error.message);
-    console.error(error.stack);
   }
   
   console.log('='.repeat(60) + '\n');
@@ -616,60 +647,28 @@ Time: ${new Date().toLocaleString()}
 });
 
 // ============================================
-// ✅ TEST ENDPOINT: Check all configurations
-// ============================================
-app.get('/test-config', (req, res) => {
-  res.json({
-    success: true,
-    config: {
-      WATI_BASE_URL,
-      TEMPLATE_NAME,
-      executives: EXECUTIVES,
-      branches: BRANCHES,
-      processedChats: processedChats.size,
-      processedImages: processedImages.size,
-      patients: patientDB.size
-    }
-  });
-});
-
-// ============================================
 // ✅ ADD CONTACT ENDPOINT
 // ============================================
 app.get('/add-contact/:number', async (req, res) => {
   try {
     const { number } = req.params;
-    
-    console.log(`📇 Adding contact ${number} to WATI...`);
-    
-    const response = await axios.post(
-      `${WATI_BASE_URL}/api/v1/addContact/${number}`,
-      { 
-        name: `Executive_${number}`,
-        customParams: [
-          { name: "source", value: "render_server" },
-          { name: "role", value: "executive" }
-        ]
-      },
-      {
-        headers: { 
-          Authorization: `${WATI_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    
-    res.json({ 
-      success: true, 
-      message: `✅ Contact ${number} added to WATI`,
-      response: response.data 
-    });
-    
+    await ensureContactInWATI(number);
+    res.json({ success: true, message: `✅ Contact ${number} added to WATI` });
   } catch (error) {
-    console.error('❌ Add contact error:', error.response?.data || error.message);
-    res.status(500).json({ 
-      error: error.response?.data || error.message 
-    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// ✅ OPEN SESSION ENDPOINT
+// ============================================
+app.get('/open-session/:number', async (req, res) => {
+  try {
+    const { number } = req.params;
+    await openSession(number);
+    res.json({ success: true, message: `✅ Session opened for ${number}` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -678,13 +677,11 @@ app.get('/add-contact/:number', async (req, res) => {
 // ============================================
 app.get('/connect-chat/:chatId', (req, res) => {
   const { chatId } = req.params;
-  console.log(`🔗 Connect button clicked for chat ${chatId}`);
   res.redirect(`https://app.wati.io/chat/${chatId}`);
 });
 
 app.get('/exec-action', async (req, res) => {
   const { action, chat } = req.query;
-  console.log(`🎯 Executive action: ${action} for chat ${chat}`);
   
   const patient = patientDB.get(chat);
   if (!patient) {
@@ -719,60 +716,6 @@ app.get('/exec-action', async (req, res) => {
   res.send('✅ Action recorded!');
 });
 
-app.get('/open-session/:number', async (req, res) => {
-  try {
-    const { number } = req.params;
-    
-    console.log(`🔄 Opening session for ${number}...`);
-    
-    const response = await axios.post(
-      `${WATI_BASE_URL}/api/v1/sendSessionMessage/${number}?messageText=🔧%20Session%20Open%20Test%20Message`,
-      {},
-      {
-        headers: { Authorization: `${WATI_TOKEN}` }
-      }
-    );
-    
-    res.json({ success: true, message: `✅ Session opened for ${number}`, response: response.data });
-    
-  } catch (error) {
-    console.error('❌ Open session error:', error.response?.data || error.message);
-    res.status(500).json({ error: error.response?.data || error.message });
-  }
-});
-
-app.get('/direct-message', async (req, res) => {
-  try {
-    const { to, message } = req.query;
-    
-    if (!to || !message) {
-      return res.status(400).json({ 
-        error: 'Missing parameters. Use: /direct-message?to=917880261858&message=Hello' 
-      });
-    }
-    
-    console.log(`📤 Direct message to ${to}: ${message.substring(0, 50)}...`);
-    
-    const response = await axios.post(
-      `${WATI_BASE_URL}/api/v1/sendSessionMessage/${to}?messageText=${encodeURIComponent(message)}`,
-      {},
-      {
-        headers: { Authorization: `${WATI_TOKEN}` }
-      }
-    );
-    
-    res.json({ 
-      success: true, 
-      message: `✅ Message sent to ${to}`,
-      response: response.data 
-    });
-    
-  } catch (error) {
-    console.error('❌ Direct message error:', error.response?.data || error.message);
-    res.status(500).json({ error: error.response?.data || error.message });
-  }
-});
-
 // ============================================
 // ✅ SESSION KEEPER
 // ============================================
@@ -781,15 +724,8 @@ cron.schedule('0 */20 * * *', async () => {
   
   for (const num of ALL_EXECUTIVE_NUMBERS) {
     try {
-      await axios.post(
-        `${WATI_BASE_URL}/api/v1/sendSessionMessage/${num}?messageText=🔧%20System%20Ping%20Test%20Message`,
-        {},
-        {
-          headers: { Authorization: `${WATI_TOKEN}` }
-        }
-      );
+      await openSession(num);
       console.log(`✅ Session alive for ${num}`);
-      
       await new Promise(resolve => setTimeout(resolve, 2000));
     } catch (error) {
       console.error(`❌ Failed for ${num}:`, error.message);
@@ -811,8 +747,6 @@ app.get('/test-manual', async (req, res) => {
     }
     
     const chatId = `test-${Date.now()}`;
-    console.log(`🧪 Manual test triggered for ${patient} to ${exec}`);
-    
     const message = `
 📋 *New Test Booking (TEST)*
 ━━━━━━━━━━━━━━━━━━
@@ -836,7 +770,6 @@ app.get('/test-manual', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Test error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -852,8 +785,6 @@ app.get('/test-upload', async (req, res) => {
     }
     
     const chatId = `test-${Date.now()}`;
-    console.log(`🧪 Upload test triggered for ${patient} to ${exec}`);
-    
     const message = `
 📸 *New Prescription Uploaded (TEST)*
 ━━━━━━━━━━━━━━━━━━
@@ -882,141 +813,13 @@ CT Scan whole abdomen...
     });
     
   } catch (error) {
-    console.error('❌ Test error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // ============================================
-// ✅ MAIN ENDPOINTS
+// ✅ HEALTH CHECK
 // ============================================
-app.post('/tata-misscall', async (req, res) => {
-  try {
-    console.log('📞 Tata Miss Call Payload:', JSON.stringify(req.body, null, 2));
-    
-    const callerNumberRaw = getCallerNumberFromPayload(req.body);
-    const calledNumberRaw = getCalledNumberFromPayload(req.body);
-    
-    if (!callerNumberRaw) {
-      return res.status(400).json({ success: false, error: 'Caller number not found' });
-    }
-    
-    let whatsappNumber = String(callerNumberRaw).replace(/\D/g, '');
-    whatsappNumber = whatsappNumber.length >= 10 ? '91' + whatsappNumber.slice(-10) : '';
-    
-    if (!whatsappNumber) {
-      return res.status(400).json({ success: false, error: 'Invalid number format' });
-    }
-    
-    const branch = getBranchByCalledNumber(calledNumberRaw);
-    
-    if (shouldSkipDuplicateMissCall(whatsappNumber, calledNumberRaw)) {
-      console.log(`⏳ Duplicate call skipped for ${whatsappNumber}`);
-      return res.json({ success: true, skipped: true });
-    }
-    
-    await sendWatiTemplateMessage(whatsappNumber, branch.name);
-    
-    return res.json({ success: true, whatsappNumber, branch: branch.name });
-    
-  } catch (error) {
-    console.error('❌ Error:', error);
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.post('/wati-webhook', async (req, res) => {
-  try {
-    console.log('📨 WATI Webhook:', JSON.stringify(req.body, null, 2));
-    
-    const from = normalizeWhatsAppNumber(req.body.from || req.body.whatsappNumber || req.body.sender);
-    const text = String(req.body.text || req.body.message || '').trim().toLowerCase();
-    const mediaUrl = req.body.imageUrl || req.body.media?.url || '';
-    
-    if (!from) return res.json({ received: true, ignored: true });
-    
-    const context = userContext.get(from) || {};
-    const branch = context.branch || 'Main Branch';
-    const executive = context.executive || process.env.DEFAULT_EXECUTIVE || '917880261858';
-    
-    if (text === '1') {
-      await sendSessionTextMessage(from, `📅 *Book Test - ${branch} Branch*\nKripya apna naam, test ka naam, aur preferred date/time bhejiye.`);
-      userContext.set(from, { ...context, stage: 'book_test_requested' });
-    } else if (text === '2') {
-      await sendSessionTextMessage(from, `📸 *Upload Prescription - ${branch} Branch*\nKripya prescription ki clear photo bhejiye.`);
-      userContext.set(from, { ...context, stage: 'awaiting_prescription' });
-    } else if (text === '3') {
-      await sendSessionTextMessage(from, `👨‍💼 Aapko ${branch} branch ke executive se connect kiya ja raha hai.`);
-      userContext.set(from, { ...context, stage: 'executive_requested' });
-    } else if (mediaUrl && context.stage === 'awaiting_prescription') {
-      const extracted = await extractWithOpenAI(mediaUrl);
-      await sendExecutiveNotification(executive, 
-        `📸 *Prescription Received*\n🏥 Branch: ${branch}\n📱 Customer: ${from}\n👤 Patient: ${extracted.patientName}\n👨‍⚕️ Doctor: ${extracted.doctorName}\n🔬 Tests: ${extracted.tests}\n\n🔗 Image: ${mediaUrl}`);
-      await sendSessionTextMessage(from, '✅ Aapki prescription receive ho gayi hai.');
-      userContext.set(from, { ...context, stage: 'prescription_uploaded' });
-    }
-    
-    return res.json({ received: true });
-    
-  } catch (error) {
-    console.error('❌ WATI webhook error:', error.message);
-    return res.status(500).json({ received: false, error: error.message });
-  }
-});
-
-app.post('/ocr-prescription', async (req, res) => {
-  try {
-    const { imageUrl, whatsappNumber, branch, executive } = req.body;
-    
-    if (!imageUrl || !whatsappNumber) {
-      return res.status(400).json({ success: false, error: 'imageUrl and whatsappNumber required' });
-    }
-    
-    const extracted = await extractWithOpenAI(imageUrl);
-    const context = userContext.get(whatsappNumber) || {};
-    const finalBranch = branch || context.branch || 'Not specified';
-    const finalExecutive = executive || context.executive || process.env.DEFAULT_EXECUTIVE || '917880261858';
-    
-    const executiveMessage = `📸 *New Prescription Uploaded*\n━━━━━━━━━━━━━━━━━━\n🏥 *Branch:* ${finalBranch}\n👤 *Patient:* ${extracted.patientName}\n👨‍⚕️ *Doctor:* ${extracted.doctorName}\n🔬 *Tests:* ${extracted.tests}\n━━━━━━━━━━━━━━━━━━\n📝 *OCR Preview:*\n${extracted.rawText}\n\n🔗 Image: ${imageUrl}`;
-    
-    await sendExecutiveNotification(finalExecutive, executiveMessage);
-    await sendSessionTextMessage(whatsappNumber, '✅ Aapki prescription receive ho gayi hai.');
-    
-    userContext.set(whatsappNumber, { ...context, branch: finalBranch, executive: finalExecutive, stage: 'prescription_uploaded' });
-    
-    return res.json({ success: true, extracted });
-    
-  } catch (error) {
-    console.error('❌ OCR error:', error.message);
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ============================================
-// ✅ TEST ENDPOINTS
-// ============================================
-app.get('/test-template', async (req, res) => {
-  try {
-    const number = req.query.number || '919106959092';
-    const branch = req.query.branch || 'Naroda';
-    const result = await sendWatiTemplateMessage(number, branch);
-    res.json({ success: true, result });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.get('/test-ocr', async (req, res) => {
-  try {
-    const imageUrl = req.query.image;
-    if (!imageUrl) return res.status(400).json({ error: 'image URL required' });
-    const result = await extractWithOpenAI(imageUrl);
-    res.json({ success: true, result });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
 app.get('/health', (req, res) => {
   res.json({ 
     success: true, 
@@ -1031,11 +834,12 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>Testing Mode - Every step is logged</p>
+    <p>Hybrid Executive Notification System</p>
     <ul>
-      <li>✅ <a href="/test-wati-api">Test WATI API</a> - Check if WATI is working</li>
-      <li>✅ <a href="/test-config">Test Config</a> - Check your configuration</li>
-      <li>✅ <a href="/test-exec?exec=917880261858">Test Executive</a> - Send test message to executive</li>
+      <li>✅ <a href="/test-wati-api">Test WATI API</a></li>
+      <li>✅ <a href="/add-contact/917880261858">Add Contact</a></li>
+      <li>✅ <a href="/open-session/917880261858">Open Session</a></li>
+      <li>✅ <a href="/test-exec?exec=917880261858">Test Executive</a></li>
       <li>✅ <a href="/health">Health Check</a></li>
     </ul>
   `);
@@ -1047,12 +851,9 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Template: ${TEMPLATE_NAME}`);
-  console.log(`📍 OpenAI OCR: Active with GPT-4o`);
-  console.log(`📍 Testing Executive: 917880261858`);
-  console.log('📍 Test URLs:');
-  console.log(`   - /test-wati-api - Check WATI connection`);
-  console.log(`   - /test-config - View config`);
-  console.log(`   - /test-exec?exec=917880261858 - Send test message`);
+  console.log(`📍 Hybrid Notification System Active`);
+  console.log(`📍 Step 1: /add-contact/917880261858`);
+  console.log(`📍 Step 2: /open-session/917880261858`);
+  console.log(`📍 Step 3: /test-exec?exec=917880261858`);
   console.log('='.repeat(60));
 });
