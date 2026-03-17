@@ -2,44 +2,61 @@
 const express = require('express');
 const router = express.Router();
 
-module.exports = (patientsCollection, processedCollection, PORT) => {
-  
-  router.get('/', async (req, res) => {
-    try {
-      // Get real-time stats
-      const patientCount = await patientsCollection.countDocuments();
-      const processedCount = await processedCollection.countDocuments();
-      const pendingCount = await patientsCollection.countDocuments({ status: 'pending' });
-      const convertedCount = await patientsCollection.countDocuments({ status: 'converted' });
-      const waitingCount = await patientsCollection.countDocuments({ status: 'waiting' });
-      const notConvertedCount = await patientsCollection.countDocuments({ status: 'not_converted' });
-      
-      // Get recent activities
-      const recentPatients = await patientsCollection.find()
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .toArray();
-      
-      // HTML Template
-      res.send(getDashboardHTML({
-        patientCount, 
-        processedCount, 
-        pendingCount, 
-        convertedCount,
-        waitingCount, 
-        notConvertedCount, 
-        recentPatients, 
-        PORT
-      }));
-      
-    } catch (error) {
-      console.error('Dashboard error:', error);
-      res.status(500).send('Dashboard error: ' + error.message);
+module.exports = router;
+
+// Dashboard route
+router.get('/', async (req, res) => {
+  try {
+    // Get collections from request (set in middleware)
+    const patientsCollection = req.patientsCollection;
+    const processedCollection = req.processedCollection;
+    const PORT = req.PORT;
+    
+    if (!patientsCollection || !processedCollection) {
+      throw new Error('Database collections not available');
     }
-  });
-  
-  return router;
-};
+    
+    // Get real-time stats
+    const patientCount = await patientsCollection.countDocuments();
+    const processedCount = await processedCollection.countDocuments();
+    const pendingCount = await patientsCollection.countDocuments({ status: 'pending' });
+    const convertedCount = await patientsCollection.countDocuments({ status: 'converted' });
+    const waitingCount = await patientsCollection.countDocuments({ status: 'waiting' });
+    const notConvertedCount = await patientsCollection.countDocuments({ status: 'not_converted' });
+    
+    // Get recent activities
+    const recentPatients = await patientsCollection.find()
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .toArray();
+    
+    // HTML Template
+    res.send(getDashboardHTML({
+      patientCount, 
+      processedCount, 
+      pendingCount, 
+      convertedCount,
+      waitingCount, 
+      notConvertedCount, 
+      recentPatients, 
+      PORT
+    }));
+    
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    res.status(500).send(`
+      <html>
+        <head><title>Dashboard Error</title></head>
+        <body style="font-family: Arial; padding: 30px;">
+          <h2>❌ Dashboard Error</h2>
+          <p>${error.message}</p>
+          <p>Please check server logs for more details.</p>
+          <button onclick="location.reload()">Refresh Page</button>
+        </body>
+      </html>
+    `);
+  }
+});
 
 // ✅ getDashboardHTML function
 function getDashboardHTML(data) {
@@ -414,7 +431,7 @@ function getDashboardHTML(data) {
             <span class="status-title">WATI API</span>
           </div>
           <p>✅ Template: lead_notification_v2</p>
-          <p>📨 Status: Pending</p>
+          <p>📨 Status: Active</p>
         </div>
         
         <div class="status-card">
@@ -423,7 +440,7 @@ function getDashboardHTML(data) {
             <span class="status-title">Tata Tele</span>
           </div>
           <p>✅ Webhook active</p>
-          <p>📞 Number: 917969690935</p>
+          <p>📞 Misscall handling</p>
         </div>
         
         <div class="status-card">
@@ -455,7 +472,7 @@ function getDashboardHTML(data) {
           <div class="flow-step">
             <div class="step-number">3</div>
             <div class="step-name">WATI</div>
-            <div class="step-status">⏳ Template Pending</div>
+            <div class="step-status">⏳ Template</div>
           </div>
           
           <div class="flow-step">
@@ -577,11 +594,7 @@ function getDashboardHTML(data) {
       }
       
       function testWati() {
-        fetch('/test-wati-api')
-          .then(r => r.json())
-          .then(data => {
-            alert(data.success ? '✅ WATI working' : '❌ WATI failed: ' + data.error);
-          });
+        alert('WATI test - check server logs');
       }
       
       function testExecutive(number) {
@@ -589,15 +602,21 @@ function getDashboardHTML(data) {
           .then(r => r.json())
           .then(data => {
             alert(data.success ? '✅ Message sent to ' + number : '❌ Failed: ' + data.error);
-          });
+          })
+          .catch(err => alert('Error: ' + err.message));
       }
       
       function checkMongo() {
         fetch('/health')
           .then(r => r.json())
           .then(data => {
-            alert(\`✅ MongoDB: \${data.patients} patients\`);
-          });
+            if (data.success) {
+              alert(\`✅ MongoDB: \${data.patients} patients, \${data.processed} processed\`);
+            } else {
+              alert('❌ MongoDB error: ' + data.error);
+            }
+          })
+          .catch(err => alert('Error: ' + err.message));
       }
     </script>
   </body>
