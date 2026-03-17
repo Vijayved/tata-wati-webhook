@@ -164,54 +164,44 @@ async function sendExecutiveNotification(executiveNumber, messageText) {
 }
 
 // ============================================
-// IMPROVED: WATI API FETCH FUNCTIONS (v1 + v2 fallback)
+// UPDATED: WATI API FETCH FUNCTIONS (Basic Plan)
 // ============================================
 async function fetchRecentChats() {
   try {
     const from = new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
     const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
     
-    // Try v1 endpoint first
-    let url = `${WATI_BASE_URL}/api/v1/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
+    // ✅ Basic Plan के लिए सही endpoint
+    const url = `${WATI_BASE_URL}/api/v1/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
+    
     console.log(`📡 Fetching from: ${url}`);
     
-    try {
-      const response = await axios.get(url, {
-        headers: { Authorization: `${WATI_TOKEN}` }
-      });
-      
-      // Handle different response formats
-      if (response.data && Array.isArray(response.data)) {
-        return response.data;
-      } else if (response.data?.messages) {
-        return response.data.messages;
-      } else if (response.data?.data) {
-        return response.data.data;
-      } else {
-        return [];
-      }
-    } catch (v1Error) {
-      // If v1 fails, try v2 endpoint
-      console.log('⚠️ v1 endpoint failed, trying v2...');
-      url = `${WATI_BASE_URL}/api/v2/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
-      
-      const response = await axios.get(url, {
-        headers: { Authorization: `${WATI_TOKEN}` }
-      });
-      
-      // Handle different response formats for v2
-      if (response.data && Array.isArray(response.data)) {
-        return response.data;
-      } else if (response.data?.messages) {
-        return response.data.messages;
-      } else if (response.data?.data) {
-        return response.data.data;
-      } else {
-        return [];
-      }
+    const response = await axios.get(url, {
+      headers: { Authorization: `${WATI_TOKEN}` }
+    });
+    
+    // WATI API response structure के हिसाब से parse करो
+    if (response.data && Array.isArray(response.data)) {
+      return response.data;
+    } else if (response.data?.messages) {
+      return response.data.messages;
+    } else if (response.data?.data) {
+      return response.data.data;
+    } else {
+      console.log('⚠️ Unexpected response format:', response.data);
+      return [];
     }
+    
   } catch (error) {
-    console.error('❌ Error fetching chats:', error.message);
+    if (error.response?.status === 401) {
+      console.error('❌ Unauthorized - Token invalid or expired');
+    } else if (error.response?.status === 404) {
+      console.error('❌ API endpoint not found - Check WATI_BASE_URL');
+    } else if (error.response?.status === 429) {
+      console.error('❌ Rate limit exceeded - Slow down requests');
+    } else {
+      console.error('❌ Error fetching chats:', error.message);
+    }
     return [];
   }
 }
@@ -335,6 +325,10 @@ cron.schedule('*/2 * * * *', async () => {
   
   try {
     const messages = await fetchRecentChats();
+    
+    if (messages.length === 0) {
+      return;
+    }
     
     for (const msg of messages) {
       const msgId = msg.id || msg.messageId || msg._id;
@@ -935,7 +929,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.send(`
     <h1>🚀 Tata-WATI Webhook Server</h1>
-    <p>Executive Notification System Active (Testing Mode - Only Naroda)</p>
+    <p>Executive Notification System Active (Basic Plan)</p>
     <ul>
       <li>✅ POST /tata-misscall - Tata Tele webhook</li>
       <li>✅ POST /wati-webhook - WATI webhook</li>
