@@ -1,8 +1,6 @@
-// dashboard.js - Complete Admin Dashboard
+// dashboard.js - Complete Admin Dashboard with Miss Call Tracking
 const express = require('express');
 const router = express.Router();
-
-module.exports = router;
 
 // Dashboard route
 router.get('/', async (req, res) => {
@@ -10,6 +8,7 @@ router.get('/', async (req, res) => {
     // Get collections from request (set in middleware)
     const patientsCollection = req.patientsCollection;
     const processedCollection = req.processedCollection;
+    const missCallsCollection = req.missCallsCollection;
     const PORT = req.PORT;
     
     if (!patientsCollection || !processedCollection) {
@@ -24,11 +23,35 @@ router.get('/', async (req, res) => {
     const waitingCount = await patientsCollection.countDocuments({ status: 'waiting' });
     const notConvertedCount = await patientsCollection.countDocuments({ status: 'not_converted' });
     
-    // Get recent activities
+    // Get miss call specific stats
+    const missCallCount = missCallsCollection ? await missCallsCollection.countDocuments() : 0;
+    
+    // Get today's miss calls
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayMissCalls = missCallsCollection ? await missCallsCollection.countDocuments({
+      createdAt: { $gte: today }
+    }) : 0;
+    
+    // Get miss calls by branch
+    const missCallsByBranch = missCallsCollection ? await missCallsCollection.aggregate([
+      { $group: { _id: '$branch', count: { $sum: 1 } } }
+    ]).toArray() : [];
+    
+    const branchMissCallMap = {};
+    missCallsByBranch.forEach(b => { branchMissCallMap[b._id] = b.count; });
+    
+    // Get recent activities (mix of patients and miss calls)
     const recentPatients = await patientsCollection.find()
       .sort({ createdAt: -1 })
       .limit(10)
       .toArray();
+    
+    // Get recent miss calls
+    const recentMissCalls = missCallsCollection ? await missCallsCollection.find()
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray() : [];
     
     // HTML Template
     res.send(getDashboardHTML({
@@ -37,8 +60,12 @@ router.get('/', async (req, res) => {
       pendingCount, 
       convertedCount,
       waitingCount, 
-      notConvertedCount, 
+      notConvertedCount,
+      missCallCount,
+      todayMissCalls,
+      branchMissCallMap,
       recentPatients, 
+      recentMissCalls,
       PORT
     }));
     
@@ -65,8 +92,12 @@ function getDashboardHTML(data) {
     pendingCount, 
     convertedCount, 
     waitingCount, 
-    notConvertedCount, 
+    notConvertedCount,
+    missCallCount,
+    todayMissCalls,
+    branchMissCallMap,
     recentPatients, 
+    recentMissCalls,
     PORT 
   } = data;
   
@@ -136,6 +167,11 @@ function getDashboardHTML(data) {
         margin-top: 10px;
       }
       
+      .misscall-highlight {
+        background: #ffedd5;
+        border-left: 4px solid #f97316;
+      }
+      
       .status-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -166,6 +202,7 @@ function getDashboardHTML(data) {
       .status-green { background: #10b981; }
       .status-red { background: #ef4444; }
       .status-yellow { background: #f59e0b; }
+      .status-blue { background: #3b82f6; }
       
       .status-title {
         font-weight: 600;
@@ -306,6 +343,7 @@ function getDashboardHTML(data) {
         background: white;
         border-radius: 10px;
         overflow: hidden;
+        margin-bottom: 20px;
       }
       
       .recent-table th {
@@ -325,6 +363,10 @@ function getDashboardHTML(data) {
         background: #f7fafc;
       }
       
+      .misscall-row {
+        background: #fff7ed;
+      }
+      
       .status-badge {
         padding: 4px 8px;
         border-radius: 12px;
@@ -336,6 +378,7 @@ function getDashboardHTML(data) {
       .badge-converted { background: #d1fae5; color: #065f46; }
       .badge-waiting { background: #dbeafe; color: #1e40af; }
       .badge-not-converted { background: #fee2e2; color: #991b1b; }
+      .badge-misscall { background: #ffedd5; color: #9a3412; }
       
       .test-panel {
         background: white;
@@ -380,6 +423,20 @@ function getDashboardHTML(data) {
       .test-btn-warning:hover {
         background: #dd6b20;
       }
+      
+      .test-btn-orange {
+        background: #f97316;
+      }
+      
+      .test-btn-orange:hover {
+        background: #ea580c;
+      }
+      
+      .section-title {
+        color: white;
+        margin: 30px 0 15px 0;
+        font-size: 1.5em;
+      }
     </style>
   </head>
   <body>
@@ -408,14 +465,34 @@ function getDashboardHTML(data) {
           <div class="stat-title">Not Converted</div>
           <div class="stat-value">${notConvertedCount}</div>
         </div>
+        <div class="stat-card misscall-highlight">
+          <div class="stat-title">📞 Total Miss Calls</div>
+          <div class="stat-value">${missCallCount}</div>
+        </div>
+        <div class="stat-card misscall-highlight">
+          <div class="stat-title">📞 Today's Miss Calls</div>
+          <div class="stat-value">${todayMissCalls}</div>
+        </div>
         <div class="stat-card">
           <div class="stat-title">Uptime</div>
           <div class="stat-value">${Math.floor(process.uptime() / 60)}m</div>
         </div>
       </div>
       
-      <!-- System Status -->
+      <!-- Miss Calls by Branch -->
       <div class="status-grid">
+        <div class="status-card">
+          <div class="status-header">
+            <div class="status-indicator status-blue"></div>
+            <span class="status-title">Miss Calls by Branch</span>
+          </div>
+          <p>Naroda: ${branchMissCallMap['Naroda'] || 0}</p>
+          <p>Usmanpura: ${branchMissCallMap['Usmanpura'] || 0}</p>
+          <p>Vadaj: ${branchMissCallMap['Vadaj'] || 0}</p>
+          <p>Satellite: ${branchMissCallMap['Satellite'] || 0}</p>
+          <p>Other: ${branchMissCallMap['Main Branch'] || 0}</p>
+        </div>
+        
         <div class="status-card">
           <div class="status-header">
             <div class="status-indicator status-green"></div>
@@ -423,6 +500,7 @@ function getDashboardHTML(data) {
           </div>
           <p>✅ Connected to cluster0</p>
           <p>📊 ${patientCount} patients stored</p>
+          <p>📞 ${missCallCount} miss calls tracked</p>
         </div>
         
         <div class="status-card">
@@ -431,6 +509,7 @@ function getDashboardHTML(data) {
             <span class="status-title">WATI API</span>
           </div>
           <p>✅ Template: lead_notification_v2</p>
+          <p>✅ Template: misscall_welcome_v3</p>
           <p>📨 Status: Active</p>
         </div>
         
@@ -439,23 +518,14 @@ function getDashboardHTML(data) {
             <div class="status-indicator status-green"></div>
             <span class="status-title">Tata Tele</span>
           </div>
-          <p>✅ Webhook active</p>
-          <p>📞 Misscall handling</p>
-        </div>
-        
-        <div class="status-card">
-          <div class="status-header">
-            <div class="status-indicator status-green"></div>
-            <span class="status-title">OpenAI</span>
-          </div>
-          <p>✅ GPT-4o ready</p>
-          <p>🔍 OCR active</p>
+          <p>✅ Webhook: /tata-misscall-whatsapp</p>
+          <p>📞 Miss call handling active</p>
         </div>
       </div>
       
       <!-- Flow Diagram -->
       <div class="flow-diagram">
-        <h3 style="margin-bottom: 20px;">🔄 Complete Flow Status</h3>
+        <h3 style="margin-bottom: 20px;">🔄 Miss Call Flow Status</h3>
         <div class="flow-steps">
           <div class="flow-step completed">
             <div class="step-number">1</div>
@@ -471,14 +541,14 @@ function getDashboardHTML(data) {
           
           <div class="flow-step">
             <div class="step-number">3</div>
-            <div class="step-name">WATI</div>
-            <div class="step-status">⏳ Template</div>
+            <div class="step-name">WATI Customer</div>
+            <div class="step-status">${missCallCount > 0 ? '✅ Sent' : '⏳ Pending'}</div>
           </div>
           
           <div class="flow-step">
             <div class="step-number">4</div>
             <div class="step-name">MongoDB</div>
-            <div class="step-status">✅ ${patientCount} records</div>
+            <div class="step-status">✅ ${missCallCount} records</div>
           </div>
           
           <div class="flow-step">
@@ -511,62 +581,101 @@ function getDashboardHTML(data) {
           <div class="log-entry">
             <span class="log-time">${new Date().toLocaleTimeString()}</span>
             <span class="log-level log-info">INFO</span>
-            <span>📍 Template: lead_notification_v2</span>
+            <span>📍 Template: lead_notification_v2 (Approved)</span>
           </div>
           <div class="log-entry">
             <span class="log-time">${new Date().toLocaleTimeString()}</span>
             <span class="log-level log-info">INFO</span>
-            <span>📍 OpenAI OCR active</span>
+            <span>📍 Template: misscall_welcome_v3 (Approved)</span>
+          </div>
+          <div class="log-entry">
+            <span class="log-time">${new Date().toLocaleTimeString()}</span>
+            <span class="log-level log-info">INFO</span>
+            <span>📍 Tata Tele Webhook: /tata-misscall-whatsapp</span>
           </div>
         </div>
       </div>
       
-      <!-- Recent Patients -->
-      <div style="background: white; border-radius: 10px; padding: 20px; margin-bottom: 30px;">
-        <h3 style="margin-bottom: 20px;">🕒 Recent Patients</h3>
-        <table class="recent-table">
-          <thead>
-            <tr>
-              <th>Patient</th>
-              <th>Phone</th>
-              <th>Branch</th>
-              <th>Tests</th>
-              <th>Status</th>
-              <th>Time</th>
+      <!-- Recent Miss Calls -->
+      <h3 class="section-title">📞 Recent Miss Calls</h3>
+      <table class="recent-table">
+        <thead>
+          <tr>
+            <th>Phone</th>
+            <th>Branch</th>
+            <th>Status</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${recentMissCalls.map(m => `
+            <tr class="misscall-row">
+              <td>${m.phoneNumber || 'N/A'}</td>
+              <td>${m.branch || 'N/A'}</td>
+              <td><span class="status-badge badge-misscall">Miss Call</span></td>
+              <td>${new Date(m.createdAt).toLocaleString()}</td>
             </tr>
-          </thead>
-          <tbody>
-            ${recentPatients.map(p => `
-              <tr>
-                <td>${p.patientName || 'N/A'}</td>
-                <td>${p.patientPhone || 'N/A'}</td>
-                <td>${p.branch || 'N/A'}</td>
-                <td>${p.tests || p.testNames || 'N/A'}</td>
-                <td>
-                  <span class="status-badge badge-${p.status || 'pending'}">
-                    ${p.status || 'pending'}
-                  </span>
-                </td>
-                <td>${new Date(p.createdAt).toLocaleString()}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
+          `).join('')}
+          ${recentMissCalls.length === 0 ? `
+            <tr>
+              <td colspan="4" style="text-align: center;">No miss calls yet</td>
+            </tr>
+          ` : ''}
+        </tbody>
+      </table>
+      
+      <!-- Recent Patients -->
+      <h3 class="section-title">🕒 Recent Patients</h3>
+      <table class="recent-table">
+        <thead>
+          <tr>
+            <th>Patient</th>
+            <th>Phone</th>
+            <th>Branch</th>
+            <th>Tests</th>
+            <th>Status</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${recentPatients.map(p => `
+            <tr class="${p.sourceType === 'Miss Call' ? 'misscall-row' : ''}">
+              <td>${p.patientName || 'N/A'}</td>
+              <td>${p.patientPhone || 'N/A'}</td>
+              <td>${p.branch || 'N/A'}</td>
+              <td>${p.tests || p.testNames || 'N/A'}</td>
+              <td>
+                <span class="status-badge badge-${p.status || 'pending'}">
+                  ${p.status || 'pending'} ${p.sourceType === 'Miss Call' ? '📞' : ''}
+                </span>
+              </td>
+              <td>${new Date(p.createdAt).toLocaleString()}</td>
+            </tr>
+          `).join('')}
+          ${recentPatients.length === 0 ? `
+            <tr>
+              <td colspan="6" style="text-align: center;">No patients yet</td>
+            </tr>
+          ` : ''}
+        </tbody>
+      </table>
       
       <!-- Test Panel -->
       <div class="test-panel">
         <h3 style="margin-bottom: 20px;">🧪 Quick Test Tools</h3>
         <div class="test-buttons">
-          <button class="test-btn" onclick="testWati()">📨 Test WATI</button>
-          <button class="test-btn test-btn-success" onclick="testExecutive('917880261858')">
-            📱 Test Executive
+          <button class="test-btn test-btn-orange" onclick="testMissCall()">📞 Test Miss Call</button>
+          <button class="test-btn test-btn-success" onclick="testExecutive('919106959092')">
+            📱 Test Executive (Naroda)
           </button>
-          <button class="test-btn test-btn-warning" onclick="checkMongo()">
+          <button class="test-btn" onclick="checkMongo()">
             🗄️ Check MongoDB
           </button>
           <button class="test-btn" onclick="window.open('/health')">
             ❤️ Health Check
+          </button>
+          <button class="test-btn" onclick="window.open('/api/misscall-stats')">
+            📊 Miss Call Stats
           </button>
         </div>
       </div>
@@ -593,15 +702,32 @@ function getDashboardHTML(data) {
         }
       }
       
-      function testWati() {
-        alert('WATI test - check server logs');
+      function testMissCall() {
+        const phone = prompt('Enter phone number for test (10 digits):', '9876543210');
+        if (phone) {
+          fetch('/test-misscall?phone=' + phone)
+            .then(r => r.json())
+            .then(data => {
+              if (data.success) {
+                alert('✅ Test miss call sent to ' + data.whatsappNumber + '\\nBranch: ' + data.branch);
+                setTimeout(() => location.reload(), 2000);
+              } else {
+                alert('❌ Error: ' + data.error);
+              }
+            })
+            .catch(err => alert('Error: ' + err.message));
+        }
       }
       
       function testExecutive(number) {
         fetch('/test-exec?exec=' + number)
           .then(r => r.json())
           .then(data => {
-            alert(data.success ? '✅ Message sent to ' + number : '❌ Failed: ' + data.error);
+            if (data.success) {
+              alert('✅ Template sent to ' + number);
+            } else {
+              alert('❌ Failed: ' + data.error);
+            }
           })
           .catch(err => alert('Error: ' + err.message));
       }
@@ -611,7 +737,7 @@ function getDashboardHTML(data) {
           .then(r => r.json())
           .then(data => {
             if (data.success) {
-              alert(\`✅ MongoDB: \${data.patients} patients, \${data.processed} processed\`);
+              alert(\`✅ MongoDB: \${data.patients} patients, \${data.missCalls} miss calls\`);
             } else {
               alert('❌ MongoDB error: ' + data.error);
             }
@@ -623,3 +749,5 @@ function getDashboardHTML(data) {
   </html>
   `;
 }
+
+module.exports = router;
