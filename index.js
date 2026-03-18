@@ -46,7 +46,7 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
 }
 
 // ============================================
-// ✅ DATABASE CONNECTION
+// ✅ DATABASE CONNECTION WITH ENHANCED INDEXES
 // ============================================
 let db;
 let processedCollection;
@@ -73,28 +73,36 @@ async function connectDB() {
     executivesCollection = db.collection('executives');
     missCallsCollection = db.collection('miss_calls');
     
-    console.log('✅ Collections initialized:');
-    console.log('   - patientsCollection:', patientsCollection ? '✅' : '❌');
-    console.log('   - processedCollection:', processedCollection ? '✅' : '❌');
-    console.log('   - missCallsCollection:', missCallsCollection ? '✅' : '❌');
+    console.log('✅ Collections initialized');
     
-    // Create indexes
+    // Create comprehensive indexes
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
-    await patientsCollection.createIndex({ chatId: 1 }, { unique: true });
+    
+    await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
+    await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
+    await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
+    await patientsCollection.createIndex({ status: 1, followupDate: 1 });
     await patientsCollection.createIndex({ patientPhone: 1, branch: 1, status: 1 });
     await patientsCollection.createIndex({ followupDate: 1 });
     await patientsCollection.createIndex({ createdAt: 1 });
     await patientsCollection.createIndex({ lastNotificationSentAt: 1 });
-    await patientsCollection.createIndex({ status: 1, patientPhone: 1 });
-    await missCallsCollection.createIndex({ phoneNumber: 1, calledNumber: 1, createdAt: 1 });
+    await patientsCollection.createIndex({ notificationSent: 1 });
     
-    console.log('✅ Indexes created successfully');
+    // Compound index for optimal queries
+    await patientsCollection.createIndex(
+      { patientPhone: 1, status: 1, createdAt: -1 },
+      { background: true }
+    );
+    
+    await missCallsCollection.createIndex({ phoneNumber: 1, createdAt: -1 });
+    await missCallsCollection.createIndex({ calledNumber: 1, createdAt: -1 });
+    
+    console.log('✅ All indexes created successfully');
     
     return true;
   } catch (error) {
-    console.error('❌ MongoDB connection error DETAILS:', {
+    console.error('❌ MongoDB connection error:', {
       message: error.message,
-      name: error.name,
       code: error.code,
       stack: error.stack
     });
@@ -145,7 +153,7 @@ const BRANCHES = {
 const recentMissCalls = new Map();
 
 // ============================================
-// ✅ TOKEN GENERATION (HMAC)
+// ✅ TOKEN GENERATION (HMAC) WITH SAFE COMPARE
 // ============================================
 function generateToken(chatId) {
   return crypto
@@ -156,7 +164,11 @@ function generateToken(chatId) {
 
 function verifyToken(chatId, token) {
   const expectedToken = generateToken(chatId);
-  return token === expectedToken;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken));
+  } catch {
+    return false;
+  }
 }
 
 // ============================================
@@ -208,7 +220,7 @@ function parseDate(text) {
 }
 
 // ============================================
-// ✅ UPDATED HELPER FUNCTIONS FOR TATA TELE
+// ✅ NUMBER NORMALIZATION FUNCTIONS
 // ============================================
 function normalizeIndianNumber(number) {
   if (!number) return '';
@@ -269,26 +281,24 @@ function getCalledNumberFromPayload(body) {
          '';
 }
 
-// ✅ Check if message is already processed
+// ============================================
+// ✅ DATABASE HELPER FUNCTIONS
+// ============================================
 async function isMessageProcessed(messageId) {
-  if (!processedCollection) {
-    console.error('❌ processedCollection is undefined in isMessageProcessed');
-    return false;
-  }
+  if (!processedCollection) return false;
   const processed = await processedCollection.findOne({ messageId });
   return !!processed;
 }
 
-// ✅ Mark message as processed (atomic)
 async function markMessageProcessed(messageId) {
-  if (!processedCollection) {
-    console.error('❌ processedCollection is undefined in markMessageProcessed');
-    return;
-  }
-  await processedCollection.insertOne({ messageId, processedAt: new Date() });
+  if (!processedCollection) return;
+  await processedCollection.updateOne(
+    { messageId },
+    { $set: { messageId, processedAt: new Date() } },
+    { upsert: true }
+  );
 }
 
-// ✅ Get priority based on tests
 function getPriority(testNames) {
   const tests = testNames.toLowerCase();
   if (tests.includes('mri') || tests.includes('ct') || tests.includes('emergency')) {
@@ -300,15 +310,11 @@ function getPriority(testNames) {
   return 'low';
 }
 
-// ✅ Get executive number by branch name
 function getExecutiveNumber(branchName) {
   const teamName = `${branchName} Team`;
-  const number = EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
-  console.log(`🔍 getExecutiveNumber for ${branchName} returns ${number}`);
-  return number;
+  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
 }
 
-// ✅ Safe JSON parse for OpenAI response
 function safeJSONParse(content) {
   try {
     const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -355,7 +361,7 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 }
 
 // ============================================
-// ✅ FIXED LEAD NOTIFICATION - Matching test endpoint
+// ✅ LEAD NOTIFICATION - WITH ATOMIC FLAG
 // ============================================
 async function sendLeadNotification(
   executiveNumber, 
@@ -383,45 +389,82 @@ async function sendLeadNotification(
   
   console.log(`📦 Parameters:`, JSON.stringify(parameters));
   
+  const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${executiveNumber}`;
+  const payload = {
+    template_name: LEAD_TEMPLATE_NAME,
+    broadcast_name: `lead_${Date.now()}`,
+    parameters: parameters
+  };
+  
+  const response = await axios.post(url, payload, {
+    headers: {
+      'Authorization': WATI_TOKEN,
+      'Content-Type': 'application/json'
+    },
+    timeout: 15000
+  });
+  
+  console.log(`✅ Lead notification sent successfully to ${executiveNumber}`);
+  return response.data;
+}
+
+// ============================================
+// ✅ ATOMIC NOTIFICATION SENDER (RACE CONDITION FREE)
+// ============================================
+async function sendNotificationAtomic(patientId, notificationFunction) {
+  const session = patientsCollection.client.startSession();
+  
   try {
-    // Direct API call - exactly like test endpoint
-    const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${executiveNumber}`;
-    const payload = {
-      template_name: LEAD_TEMPLATE_NAME,
-      broadcast_name: `lead_${Date.now()}`,
-      parameters: parameters
-    };
+    session.startTransaction();
     
-    console.log(`📤 Sending to WATI:`, JSON.stringify(payload));
+    // Atomic check using $or for null/missing
+    const patient = await patientsCollection.findOne({
+      _id: patientId,
+      $or: [
+        { notificationSent: { $ne: true } },
+        { notificationSent: { $exists: false } }
+      ]
+    }, { session });
     
-    const response = await axios.post(url, payload, {
-      headers: {
-        'Authorization': WATI_TOKEN,
-        'Content-Type': 'application/json'
+    if (!patient) {
+      console.log(`⏭️ Notification already sent, skipping`);
+      await session.abortTransaction();
+      return false;
+    }
+    
+    // Execute notification
+    await notificationFunction();
+    
+    // Mark as sent
+    await patientsCollection.updateOne(
+      { _id: patientId },
+      { 
+        $set: { 
+          notificationSent: true,
+          lastNotificationSentAt: new Date()
+        } 
       },
-      timeout: 15000
-    });
+      { session }
+    );
     
-    console.log(`✅ Lead notification sent successfully to ${executiveNumber}`);
-    return response.data;
+    await session.commitTransaction();
+    console.log(`✅ Atomic notification sent successfully`);
+    return true;
     
   } catch (error) {
-    console.error(`❌ sendLeadNotification error:`, error.message);
-    if (error.response) {
-      console.error('WATI API Error Response:', error.response.data);
-    }
+    await session.abortTransaction();
+    console.error(`❌ Atomic notification failed:`, error);
     throw error;
+  } finally {
+    session.endSession();
   }
 }
 
 // ============================================
-// ✅ ATOMIC LEAD CREATION
+// ✅ ATOMIC LEAD CREATION/UPSERT
 // ============================================
 async function createOrUpdateLead(chatId, patientName, patientPhone, branch, testNames, sourceType, executiveNumber, priority, imageUrl = null) {
-  if (!patientsCollection) {
-    console.error('❌ patientsCollection is undefined in createOrUpdateLead');
-    return false;
-  }
+  if (!patientsCollection) return false;
   
   const now = new Date();
   
@@ -442,7 +485,7 @@ async function createOrUpdateLead(chatId, patientName, patientPhone, branch, tes
         executiveNumber,
         priority,
         status: 'pending',
-        lastNotificationSentAt: null,
+        notificationSent: false,
         followupDate: null,
         createdAt: now,
         updatedAt: now,
@@ -466,47 +509,122 @@ async function processManualEntry(messageId, patientName, testNames, branch, pat
   const priority = getPriority(testNames);
   const chatId = `${patientPhone}_${branch}`;
   
-  await markMessageProcessed(messageId);
-  
   const isNew = await createOrUpdateLead(
     chatId, patientName, patientPhone, branch, testNames, 'Manual', 
     executiveNumber, priority
   );
   
   if (isNew) {
-    await retryWithTimeout(() => sendLeadNotification(
-      executiveNumber, patientName, patientPhone, branch, testNames, "Manual", chatId
-    ), 5000, 3);
+    // For new leads, we need to get the inserted ID
+    const patient = await patientsCollection.findOne({ chatId });
+    if (patient) {
+      await sendNotificationAtomic(patient._id, () => 
+        sendLeadNotification(
+          executiveNumber, patientName, patientPhone, branch, testNames, "Manual", chatId
+        )
+      );
+    }
   } else {
     console.log(`ℹ️ Lead already exists, skipping notification`);
   }
+  
+  await markMessageProcessed(messageId);
 }
 
 // ============================================
-// ✅ PROCESS IMAGE UPLOAD
+// ✅ PRODUCTION-READY PROCESS IMAGE UPLOAD
 // ============================================
 async function processImageUpload(messageId, patientName, branch, imageUrl, patientPhone) {
-  console.log(`\n📸 Processing image upload`);
+  console.log(`\n📸 Processing image upload for ${patientPhone}`);
   
-  const executiveNumber = getExecutiveNumber(branch);
-  const chatId = `${patientPhone}_${branch}`;
-  
-  await markMessageProcessed(messageId);
-  
-  const extracted = await retryWithTimeout(() => extractWithOpenAI(imageUrl), 10000, 2);
-  console.log(`✅ OCR: ${extracted.patientName} - ${extracted.tests}`);
-  
-  const priority = getPriority(extracted.tests);
-  
-  const isNew = await createOrUpdateLead(
-    chatId, patientName, patientPhone, branch, extracted.tests, 'Upload',
-    executiveNumber, priority, imageUrl
-  );
-  
-  if (isNew) {
-    await retryWithTimeout(() => sendLeadNotification(
-      executiveNumber, extracted.patientName, patientPhone, branch, extracted.tests, "Upload", chatId
-    ), 5000, 3);
+  try {
+    // Find active patient
+    const patient = await patientsCollection.findOne({
+      patientPhone: patientPhone,
+      status: { $in: ['awaiting_branch', 'pending', 'waiting'] }
+    }, { 
+      sort: { createdAt: -1 },
+      limit: 1 
+    });
+    
+    if (!patient) {
+      console.log(`❌ No active patient found for ${patientPhone}, creating temporary`);
+      
+      // Create temporary patient
+      const tempChatId = `${patientPhone}_${branch}`;
+      const insertResult = await patientsCollection.insertOne({
+        chatId: tempChatId,
+        patientName: 'Miss Call Patient',
+        patientPhone: patientPhone,
+        branch: branch,
+        testNames: 'Awaiting details',
+        sourceType: 'Miss Call',
+        executiveNumber: getExecutiveNumber(branch),
+        priority: 'low',
+        status: 'pending',
+        notificationSent: false,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+      
+      patient._id = insertResult.insertedId;
+    }
+    
+    const finalBranch = patient.branch || branch;
+    const executiveNumber = getExecutiveNumber(finalBranch);
+    const chatId = patient.chatId || `${patientPhone}_${finalBranch}`;
+    
+    console.log(`🏥 Using branch: ${finalBranch}, Executive: ${executiveNumber}`);
+    
+    // Perform OCR with safe fallback
+    let extracted = { patientName: patientName, tests: 'Unknown' };
+    try {
+      extracted = await retryWithTimeout(() => extractWithOpenAI(imageUrl), 10000, 2);
+      console.log(`✅ OCR successful:`, extracted);
+    } catch (ocrError) {
+      console.error(`❌ OCR failed, using fallback:`, ocrError.message);
+    }
+    
+    const priority = getPriority(extracted.tests);
+    
+    // Update patient record
+    await patientsCollection.updateOne(
+      { _id: patient._id },
+      {
+        $set: {
+          patientName: extracted.patientName || patientName,
+          testNames: extracted.tests,
+          imageUrl: imageUrl,
+          updatedAt: new Date(),
+          priority: priority,
+          status: 'pending',
+          lastUploadTime: new Date()
+        }
+      }
+    );
+    
+    console.log(`✅ Patient record updated with OCR data`);
+    
+    // Send notification atomically
+    await sendNotificationAtomic(patient._id, () => 
+      sendLeadNotification(
+        executiveNumber,
+        extracted.patientName || patientName,
+        patientPhone,
+        finalBranch,
+        extracted.tests,
+        "📸 Prescription Upload",
+        chatId
+      )
+    );
+    
+    return true;
+    
+  } catch (error) {
+    console.error(`❌ processImageUpload error:`, error);
+    return false;
+  } finally {
+    await markMessageProcessed(messageId);
   }
 }
 
@@ -539,147 +657,78 @@ async function extractWithOpenAI(imageUrl) {
 }
 
 // ============================================
-// ✅ UPDATED TATA TELE WEBHOOK - Without immediate executive notification
+// ✅ TATA TELE WEBHOOK
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
-    // Log everything
     console.log('='.repeat(60));
     console.log('📞 TATA TELE WEBBOOK RECEIVED');
-    console.log('📦 Headers:', JSON.stringify(req.headers, null, 2));
-    console.log('📦 Body:', JSON.stringify(req.body, null, 2));
     
     // Verify API key
     const apiKey = req.headers['x-api-key'];
     if (apiKey !== process.env.TATA_SECRET) {
-      console.log('❌ Unauthorized - Invalid API Key:', apiKey);
+      console.log('❌ Unauthorized');
       return res.status(403).json({ error: 'Unauthorized' });
     }
     
-    // Get caller number from all possible fields
-    const callerNumberRaw = req.body.caller_id_number || 
-                           req.body["customer_no_with_prefix "] || 
-                           req.body.customer_number_with_prefix ||
-                           req.body.cli || 
-                           req.body.msisdn || 
-                           req.body.mobile || 
-                           req.body.caller_number || 
-                           req.body.from || 
-                           req.body.customer_number ||
-                           '';
-    
-    console.log('📞 Raw Caller Number:', callerNumberRaw);
-    
+    const callerNumberRaw = getCallerNumberFromPayload(req.body);
     if (!callerNumberRaw) {
-      console.log('❌ No caller number found in payload');
       return res.status(400).json({ error: 'Caller number not found' });
     }
     
-    // Normalize to WhatsApp format
     const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
-    console.log('📱 Normalized WhatsApp Number:', whatsappNumber);
-    
     if (!whatsappNumber) {
-      console.log('❌ Invalid number format');
       return res.status(400).json({ error: 'Invalid number' });
     }
     
-    // Get branch from called number
-    const calledNumber = req.body.call_to_number || req.body.called_number || '';
+    const calledNumber = req.body.call_to_number || '';
     const branch = getBranchByCalledNumber(calledNumber);
-    console.log('🏢 Initial Branch (from called number):', branch);
     
-    // Check for duplicates
-    const isDuplicate = shouldSkipDuplicateMissCall(whatsappNumber, calledNumber);
-    
-    // Save miss call to database
-    try {
-      await missCallsCollection.insertOne({
-        phoneNumber: whatsappNumber,
-        calledNumber: calledNumber,
-        branch: branch.name,
-        rawPayload: req.body,
-        createdAt: new Date(),
-        isDuplicate: isDuplicate
-      });
-      console.log('✅ Miss call saved to database');
-    } catch (dbError) {
-      console.error('❌ Error saving miss call:', dbError.message);
+    if (shouldSkipDuplicateMissCall(whatsappNumber, calledNumber)) {
+      return res.json({ skipped: true });
     }
     
-    if (isDuplicate) {
-      console.log('⏭️ Skipping duplicate miss call');
-      return res.json({ 
-        success: true, 
-        skipped: true, 
-        message: 'Duplicate miss call skipped',
-        whatsappNumber 
-      });
-    }
-    
-    // ✅ Save to patients collection with status 'awaiting_branch'
+    // Save to patients collection
     const chatId = `${whatsappNumber}_${branch.name}`;
-    const patientName = 'Miss Call Patient';
-    const testNames = 'Awaiting details';
-    const sourceType = 'Miss Call';
-    const priority = 'low';
+    const existingPatient = await patientsCollection.findOne({ 
+      patientPhone: whatsappNumber,
+      status: { $in: ['awaiting_branch', 'pending', 'waiting'] }
+    });
     
-    try {
-      // Check if patient already exists with awaiting_branch or pending
-      const existingPatient = await patientsCollection.findOne({ 
+    if (!existingPatient) {
+      await patientsCollection.insertOne({
+        chatId,
+        patientName: 'Miss Call Patient',
         patientPhone: whatsappNumber,
-        status: { $in: ['awaiting_branch', 'pending', 'waiting'] }
+        branch: branch.name,
+        testNames: 'Awaiting details',
+        sourceType: 'Miss Call',
+        executiveNumber: branch.executive,
+        priority: 'low',
+        status: 'awaiting_branch',
+        notificationSent: false,
+        missCallTime: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date()
       });
-      
-      if (!existingPatient) {
-        // Create new patient record with awaiting_branch
-        await patientsCollection.insertOne({
-          chatId,
-          patientName,
-          patientPhone: whatsappNumber,
-          branch: branch.name,
-          testNames,
-          sourceType,
-          executiveNumber: branch.executive,
-          priority,
-          status: 'awaiting_branch',
-          missCallTime: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date()
-        });
-        console.log('✅ Patient saved to database (awaiting_branch):', whatsappNumber);
-      } else {
-        console.log('ℹ️ Patient already exists:', whatsappNumber);
-        // Update miss call time
-        await patientsCollection.updateOne(
-          { _id: existingPatient._id },
-          { $set: { missCallTime: new Date(), updatedAt: new Date() } }
-        );
-      }
-    } catch (dbError) {
-      console.error('❌ Database save error:', dbError.message);
+      console.log('✅ New patient created (awaiting_branch)');
     }
     
-    // Send WATI template to customer (branch selection)
+    // Send welcome template
     await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
       { name: '1', value: branch.name }
     ]);
     
-    res.json({ 
-      success: true, 
-      message: 'Miss call processed, waiting for branch selection',
-      whatsappNumber,
-      branch: branch.name
-    });
+    res.json({ success: true, whatsappNumber, branch: branch.name });
     
   } catch (error) {
-    console.error('❌ Tata Tele webhook error:', error);
+    console.error('❌ Tata Tele error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // ============================================
-// ✅ UPDATED WATI WEBHOOK - WITH COMPLETE BRANCH HANDLING
+// ✅ WATI WEBHOOK - WITH COMPLETE BRANCH HANDLING
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -689,18 +738,12 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(403);
     }
     
-    console.log('📨 WATI Webhook:', JSON.stringify(req.body, null, 2));
+    console.log('📨 WATI Webhook received');
     
     const msg = req.body;
     const msgId = msg.id || msg.messageId || msg._id;
     
-    if (!msgId) {
-      return res.sendStatus(200);
-    }
-    
-    // Check if already processed
-    if (await isMessageProcessed(msgId)) {
-      console.log(`⏭️ Message ${msgId} already processed`);
+    if (!msgId || await isMessageProcessed(msgId)) {
       return res.sendStatus(200);
     }
     
@@ -709,266 +752,163 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
-    console.log(`📱 Processing for phone: ${patientPhone}`);
-    
-    // Branch names for selection (exact match with WATI buttons)
     const branchNames = ['Naroda', 'Usmanpura', 'Vadaj', 'Satellite', 'Test Branch'];
     
-    if (msg.type === 'text' || msg.messageType === 'text') {
-      const text = msg.text || msg.body || '';
-      const lowerText = text.toLowerCase();
-      
-      if (lowerText.includes('manual') || lowerText.includes('test')) {
-        await processManualEntry(msgId, 'Patient', text, 'Naroda', patientPhone);
-      } else {
-        await markMessageProcessed(msgId);
-      }
-    }
-    else if (msg.buttonText || msg.button) {
+    // Handle button clicks
+    if (msg.buttonText || msg.button) {
       const action = msg.buttonText || msg.button;
       console.log(`🔘 Button clicked: "${action}"`);
       
-      // Check if it's a branch selection
+      // Branch selection
       if (branchNames.includes(action)) {
-        console.log(`🔍 Processing branch selection: ${action} for ${patientPhone}`);
-        
-        // Find the patient awaiting branch
-        const patient = await patientsCollection.findOne({
-          patientPhone: patientPhone,
-          status: 'awaiting_branch'
-        }, { sort: { createdAt: -1 } });
-        
-        if (!patient) {
-          console.log(`❌ No patient found with status 'awaiting_branch' for ${patientPhone}`);
-          
-          // Check if any patient exists
-          const anyPatient = await patientsCollection.findOne({ patientPhone: patientPhone });
-          if (anyPatient) {
-            console.log(`⚠️ Patient found but status is: ${anyPatient.status}`);
-            console.log(`⚠️ Patient details:`, JSON.stringify(anyPatient));
-            
-            // If patient exists but not awaiting_branch, still send notification
-            const execNumber = getExecutiveNumber(action);
-            console.log(`📤 Sending notification using existing patient`);
-            
-            try {
-              await sendLeadNotification(
-                execNumber,
-                anyPatient.patientName || 'Miss Call Patient',
-                patientPhone,
-                action,
-                anyPatient.testNames || 'Miss Call',
-                '📞 Miss Call',
-                anyPatient.chatId || `${patientPhone}_${action}`
-              );
-              console.log(`✅ Executive notification sent for existing patient`);
-            } catch (execError) {
-              console.error(`❌ Executive notification failed:`, execError.message);
-            }
-            
-            await markMessageProcessed(msgId);
-            return res.sendStatus(200);
-          } else {
-            console.log(`⚠️ No patient at all found for ${patientPhone}`);
-            
-            // Create a new patient on the fly
-            console.log(`🔄 Creating new patient on the fly for ${patientPhone}`);
-            const chatId = `${patientPhone}_${action}`;
-            await patientsCollection.insertOne({
-              chatId,
-              patientName: 'Miss Call Patient',
-              patientPhone: patientPhone,
+        // Find patient atomically
+        const patient = await patientsCollection.findOneAndUpdate(
+          {
+            patientPhone: patientPhone,
+            status: 'awaiting_branch'
+          },
+          {
+            $set: {
               branch: action,
-              testNames: 'Branch selected - awaiting details',
-              sourceType: 'Miss Call',
+              status: 'pending',
               executiveNumber: getExecutiveNumber(action),
-              priority: 'low',
-              status: 'pending',
-              createdAt: new Date(),
               updatedAt: new Date()
-            });
-            
-            // Send executive notification for this new patient
-            const execNumber = getExecutiveNumber(action);
-            console.log(`📤 Sending notification to executive ${execNumber} for new patient`);
-            
-            try {
-              await sendLeadNotification(
-                execNumber,
-                'Miss Call Patient',
-                patientPhone,
-                action,
-                'Miss Call - Branch Selected',
-                '📞 Miss Call',
-                chatId
-              );
-              console.log(`✅ Executive notification sent for new patient`);
-            } catch (execError) {
-              console.error(`❌ Executive notification failed:`, execError.message);
             }
-          }
-          
-          await markMessageProcessed(msgId);
-          return res.sendStatus(200);
-        }
-        
-        console.log(`✅ Patient found:`, JSON.stringify(patient));
-        
-        // Get executive number for selected branch
-        const executiveNumber = getExecutiveNumber(action);
-        console.log(`👤 Executive number for ${action}: ${executiveNumber}`);
-        
-        if (!executiveNumber) {
-          console.log(`❌ No executive number found for branch ${action}`);
-          await markMessageProcessed(msgId);
-          return res.sendStatus(200);
-        }
-        
-        // Update patient with selected branch
-        await patientsCollection.updateOne(
-          { _id: patient._id },
-          { 
-            $set: { 
-              branch: action,
-              status: 'pending',
-              updatedAt: new Date(),
-              executiveNumber: executiveNumber,
-              testNames: 'Branch selected - awaiting details'
-            } 
+          },
+          {
+            sort: { createdAt: -1 },
+            returnDocument: 'before'
           }
         );
-        console.log(`✅ Patient updated with branch ${action}`);
         
-        // ✅ SEND EXECUTIVE NOTIFICATION
-        const chatId = `${patientPhone}_${action}`;
-        console.log(`📤 Sending executive notification to ${executiveNumber}`);
-        
-        try {
-          const leadResult = await sendLeadNotification(
-            executiveNumber,
-            patient.patientName || 'Miss Call Patient',
+        if (patient.value) {
+          console.log(`✅ Branch updated for patient`);
+          
+          // Send notification if not already sent
+          if (!patient.value.notificationSent) {
+            await sendNotificationAtomic(patient.value._id, () =>
+              sendLeadNotification(
+                getExecutiveNumber(action),
+                patient.value.patientName,
+                patientPhone,
+                action,
+                'Branch Selected',
+                '📞 Miss Call',
+                `${patientPhone}_${action}`
+              )
+            );
+          }
+        } else {
+          console.log(`⚠️ No awaiting_branch patient found, creating new`);
+          
+          // Create new patient
+          const chatId = `${patientPhone}_${action}`;
+          const execNumber = getExecutiveNumber(action);
+          const result = await patientsCollection.insertOne({
+            chatId,
+            patientName: 'Miss Call Patient',
+            patientPhone: patientPhone,
+            branch: action,
+            testNames: 'Branch selected',
+            sourceType: 'Miss Call',
+            executiveNumber: execNumber,
+            priority: 'low',
+            status: 'pending',
+            notificationSent: true, // Mark as sent immediately
+            lastNotificationSentAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date()
+          });
+          
+          // Send notification
+          await sendLeadNotification(
+            execNumber,
+            'Miss Call Patient',
             patientPhone,
             action,
-            'Miss Call - Branch Selected',
+            'Branch Selected',
             '📞 Miss Call',
             chatId
           );
-          console.log(`✅ EXECUTIVE NOTIFICATION SENT SUCCESSFULLY!`, leadResult);
-        } catch (execError) {
-          console.error(`❌ EXECUTIVE NOTIFICATION FAILED:`, execError.message);
-          if (execError.response) {
-            console.error('WATI API Error Response:', execError.response.data);
-          }
-          
-          // Retry once
-          console.log(`🔄 Retrying executive notification...`);
-          try {
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            const retryResult = await sendLeadNotification(
-              executiveNumber,
-              patient.patientName || 'Miss Call Patient',
-              patientPhone,
-              action,
-              'Miss Call - Branch Selected (Retry)',
-              '📞 Miss Call',
-              chatId
-            );
-            console.log(`✅ Retry successful!`, retryResult);
-          } catch (retryError) {
-            console.error(`❌ Retry also failed:`, retryError.message);
-          }
         }
         
         await markMessageProcessed(msgId);
         return res.sendStatus(200);
       }
       
-      // Existing button handlers (Convert, Waiting, Not Convert)
-      else if (action === '✅ Convert Done') {
-        // Find patient by phone
-        const patient = await patientsCollection.findOne({
-          patientPhone: patientPhone,
-          status: { $in: ['pending', 'waiting'] }
-        }, { sort: { createdAt: -1 } });
+      // Handle other buttons (Convert, Waiting, Not Convert)
+      if (action === '✅ Convert Done') {
+        const patient = await patientsCollection.findOneAndUpdate(
+          { patientPhone, status: { $in: ['pending', 'waiting'] } },
+          { $set: { status: 'converted', updatedAt: new Date() } },
+          { sort: { createdAt: -1 } }
+        );
         
-        if (patient) {
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            { $set: { status: 'converted', updatedAt: new Date() } }
-          );
-          
-          await sendWatiTemplateMessage(
-            patientPhone,
-            CONFIRMATION_TEMPLATE,
-            [{ name: "1", value: "✅ Patient marked as converted" }]
-          );
+        if (patient.value) {
+          await sendWatiTemplateMessage(patientPhone, CONFIRMATION_TEMPLATE, [
+            { name: "1", value: "✅ Patient marked as converted" }
+          ]);
         }
-        
-        await markMessageProcessed(msgId);
       }
       else if (action === '⏳ Waiting') {
-        const patient = await patientsCollection.findOne({
-          patientPhone: patientPhone,
-          status: { $in: ['pending', 'converted'] }
-        }, { sort: { createdAt: -1 } });
+        const patient = await patientsCollection.findOneAndUpdate(
+          { patientPhone, status: 'pending' },
+          { $set: { awaiting_followup: true } },
+          { sort: { createdAt: -1 } }
+        );
         
-        if (patient) {
-          await sendWatiTemplateMessage(
-            patientPhone,
-            ASK_DATE_TEMPLATE,
-            [{ name: "1", value: "Please send follow-up date (DD/MM/YYYY)" }]
-          );
-          
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            { $set: { awaiting_followup: true } }
-          );
+        if (patient.value) {
+          await sendWatiTemplateMessage(patientPhone, ASK_DATE_TEMPLATE, [
+            { name: "1", value: "Please send follow-up date (DD/MM/YYYY)" }
+          ]);
         }
-        
-        await markMessageProcessed(msgId);
       }
       else if (action === '❌ Not Convert') {
-        const patient = await patientsCollection.findOne({
-          patientPhone: patientPhone,
-          status: { $in: ['pending', 'waiting'] }
-        }, { sort: { createdAt: -1 } });
+        const patient = await patientsCollection.findOneAndUpdate(
+          { patientPhone, status: { $in: ['pending', 'waiting'] } },
+          { $set: { status: 'not_converted', updatedAt: new Date() } },
+          { sort: { createdAt: -1 } }
+        );
         
-        if (patient) {
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            { $set: { status: 'not_converted', updatedAt: new Date() } }
-          );
-          
+        if (patient.value) {
           await sendLeadNotification(
             EXECUTIVES['Manager'],
             'Escalation Alert',
             EXECUTIVES['Manager'],
             'ALL',
             'Not Converted',
-            `escalation-${Date.now()}`,
-            patient.chatId
+            '⚠️ Escalation',
+            patient.value.chatId
           );
         }
-        
-        await markMessageProcessed(msgId);
       }
-      else {
-        await markMessageProcessed(msgId);
-      }
+      
+      await markMessageProcessed(msgId);
+      return res.sendStatus(200);
     }
-    else if (msg.type === 'image' || msg.messageType === 'image') {
+    
+    // Handle image messages
+    if (msg.type === 'image' || msg.messageType === 'image') {
       const imageUrl = msg.mediaUrl || msg.url || msg.image?.url;
       if (imageUrl) {
         await processImageUpload(msgId, 'Patient', 'Naroda', imageUrl, patientPhone);
       } else {
         await markMessageProcessed(msgId);
       }
-    }
-    else {
-      await markMessageProcessed(msgId);
+      return res.sendStatus(200);
     }
     
+    // Handle text messages
+    if (msg.type === 'text' || msg.messageType === 'text') {
+      const text = msg.text || msg.body || '';
+      if (text.toLowerCase().includes('manual') || text.toLowerCase().includes('test')) {
+        await processManualEntry(msgId, 'Patient', text, 'Naroda', patientPhone);
+      }
+    }
+    
+    await markMessageProcessed(msgId);
     res.sendStatus(200);
+    
   } catch (error) {
     console.error('❌ Webhook error:', error);
     res.sendStatus(200);
@@ -981,15 +921,14 @@ app.post('/wati-webhook', async (req, res) => {
 app.post('/webhook/followup-date', async (req, res) => {
   try {
     const { patientPhone, followupDate, branch } = req.body;
-    const chatId = `${patientPhone}_${branch}`;
-    
     const date = parseDate(followupDate);
+    
     if (!date) {
       return res.status(400).json({ error: 'Invalid date format. Use DD/MM/YYYY' });
     }
     
-    await patientsCollection.updateOne(
-      { chatId },
+    const result = await patientsCollection.updateOne(
+      { patientPhone, branch, status: 'pending' },
       { 
         $set: { 
           followupDate: date,
@@ -1000,7 +939,7 @@ app.post('/webhook/followup-date', async (req, res) => {
       }
     );
     
-    res.json({ success: true });
+    res.json({ success: true, matched: result.matchedCount });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
