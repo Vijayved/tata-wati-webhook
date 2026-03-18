@@ -922,6 +922,14 @@ app.post('/webhook/followup-date', async (req, res) => {
 // ✅ POLLING WATI MESSAGES (NO WEBHOOK REQUIRED)
 // ============================================
 let pollingActive = false;
+let pollingStats = {
+  lastRun: null,
+  totalRuns: 0,
+  messagesFound: 0,
+  doneMessagesFound: 0,
+  notificationsSent: 0,
+  errors: 0
+};
 
 cron.schedule(POLLING_INTERVAL, async () => {
   if (pollingActive) {
@@ -930,71 +938,92 @@ cron.schedule(POLLING_INTERVAL, async () => {
   }
   
   pollingActive = true;
+  pollingStats.lastRun = new Date();
+  pollingStats.totalRuns++;
   
   try {
     console.log('🔄 [POLLING] Checking WATI messages...');
     
-    // Calculate time range
     const to = new Date().toISOString();
     const from = new Date(Date.now() - POLLING_WINDOW_MINUTES * 60 * 1000).toISOString();
     
-    // Construct WATI API URL
-    let url;
-    if (WATI_BASE_URL.includes('/api/v1')) {
-      url = `${WATI_BASE_URL}/getMessages?pageSize=${POLLING_MESSAGES_LIMIT}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-    } else {
-      url = `${WATI_BASE_URL}/api/v1/getMessages?pageSize=${POLLING_MESSAGES_LIMIT}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-    }
+    // Try different API endpoints
+    const endpoints = [
+      `${WATI_BASE_URL}/api/v1/getMessages`,
+      `${WATI_BASE_URL}/getMessages`,
+      `${WATI_BASE_URL}/api/v1/messages`,
+      `${WATI_BASE_URL}/messages`
+    ];
     
-    console.log(`🔍 Polling URL: ${url}`);
-    
-    const response = await axios.get(url, {
-      headers: {
-        'Authorization': WATI_TOKEN,
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000
-    });
-    
-    // Extract messages
     let messages = [];
-    if (Array.isArray(response.data)) {
-      messages = response.data;
-    } else if (response.data?.messages) {
-      messages = response.data.messages;
-    } else if (response.data?.data) {
-      messages = response.data.data;
+    let success = false;
+    
+    for (const endpoint of endpoints) {
+      try {
+        const url = `${endpoint}?pageSize=${POLLING_MESSAGES_LIMIT}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+        console.log(`🔍 Trying endpoint: ${endpoint}`);
+        
+        const response = await axios.get(url, {
+          headers: { 'Authorization': WATI_TOKEN },
+          timeout: 5000
+        });
+        
+        if (Array.isArray(response.data)) {
+          messages = response.data;
+          success = true;
+          console.log(`✅ Success with ${endpoint}`);
+          break;
+        } else if (response.data?.messages) {
+          messages = response.data.messages;
+          success = true;
+          console.log(`✅ Success with ${endpoint}`);
+          break;
+        } else if (response.data?.data) {
+          messages = response.data.data;
+          success = true;
+          console.log(`✅ Success with ${endpoint}`);
+          break;
+        }
+      } catch (e) {
+        console.log(`❌ Endpoint failed: ${endpoint}`, e.message);
+      }
     }
     
+    if (!success) {
+      console.log('❌ All endpoints failed');
+      pollingStats.errors++;
+      return;
+    }
+    
+    pollingStats.messagesFound += messages.length;
     console.log(`📨 Found ${messages.length} messages to check`);
     
     for (const msg of messages) {
-      // Check if already processed
-      const alreadyProcessed = await processedCollection.findOne({ 
-        messageId: msg.id 
-      });
+      if (!msg.id) continue;
       
-      if (alreadyProcessed) {
-        continue;
-      }
+      // Check if already processed
+      const alreadyProcessed = await processedCollection.findOne({ messageId: msg.id });
+      if (alreadyProcessed) continue;
       
       const text = (msg.text || msg.body || '').toUpperCase().trim();
-      console.log(`📝 Checking message: "${text}" from ${msg.waId || msg.from}`);
+      const sender = msg.waId || msg.from;
+      
+      console.log(`📝 Checking message: "${text}" from ${sender}`);
       
       // Look for DONE_ pattern
       if (text.startsWith('DONE_')) {
+        pollingStats.doneMessagesFound++;
         const branch = text.replace('DONE_', '');
-        console.log(`🏥 Branch detected: ${branch}`);
+        console.log(`🎯 Branch detected: ${branch}`);
         
-        const patientPhone = msg.waId || msg.from;
-        if (!patientPhone) {
+        if (!sender) {
           console.log('❌ No phone number in message');
           await processedCollection.insertOne({ messageId: msg.id, processedAt: new Date() });
           continue;
         }
         
         // Normalize phone number
-        const whatsappNumber = normalizeWhatsAppNumber(patientPhone);
+        const whatsappNumber = normalizeWhatsAppNumber(sender);
         console.log(`📱 Patient phone: ${whatsappNumber}`);
         
         // Get executive number for this branch
@@ -1064,6 +1093,7 @@ cron.schedule(POLLING_INTERVAL, async () => {
           );
           
           if (notified) {
+            pollingStats.notificationsSent++;
             console.log(`✅ Executive notification sent successfully`);
           } else {
             console.log(`ℹ️ Notification already sent previously`);
@@ -1071,6 +1101,7 @@ cron.schedule(POLLING_INTERVAL, async () => {
           
         } catch (notifError) {
           console.error(`❌ Failed to send executive notification:`, notifError.message);
+          pollingStats.errors++;
           if (notifError.response) {
             console.error('WATI API Error:', notifError.response.data);
           }
@@ -1087,6 +1118,7 @@ cron.schedule(POLLING_INTERVAL, async () => {
     
   } catch (error) {
     console.error('❌ Polling error:', error.message);
+    pollingStats.errors++;
     if (error.response) {
       console.error('WATI API Error:', {
         status: error.response.status,
@@ -1398,138 +1430,6 @@ app.get('/api/misscall-stats', async (req, res) => {
 });
 
 // ============================================
-// ✅ TEST ENDPOINTS
-// ============================================
-app.get('/test-exec', async (req, res) => {
-  try {
-    const { exec } = req.query;
-    const executiveNumber = exec || '917880261858';
-    const chatId = `test-${Date.now()}`;
-    
-    await sendLeadNotification(
-      executiveNumber, 
-      'Test Patient', 
-      executiveNumber, 
-      'Test Branch', 
-      'MRI Brain, CT Scan', 
-      'Test', 
-      chatId
-    );
-    
-    res.json({
-      success: true,
-      message: `Template sent to ${executiveNumber}`,
-      chatId
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
-// ✅ DIRECT EXECUTIVE TEMPLATE TEST
-// ============================================
-app.get('/test-executive-direct', async (req, res) => {
-  try {
-    const execNumber = req.query.exec || '919106959092';
-    const patientPhone = req.query.patient || '9876543210';
-    
-    console.log(`🧪 Direct test called with exec=${execNumber}, patient=${patientPhone}`);
-    
-    const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${execNumber}`;
-    const payload = {
-      template_name: "lead_notification_v2",
-      broadcast_name: `lead_${Date.now()}`,
-      parameters: [
-        { name: "1", value: "Test Patient" },
-        { name: "2", value: patientPhone },
-        { name: "3", value: "Naroda" },
-        { name: "4", value: "MRI Brain, Blood Test" },
-        { name: "5", value: "Test" },
-        { name: "6", value: "https://example.com" }
-      ]
-    };
-    
-    console.log(`📤 Sending to WATI:`, JSON.stringify(payload));
-    
-    const response = await axios.post(url, payload, {
-      headers: {
-        'Authorization': WATI_TOKEN,
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000
-    });
-    
-    console.log(`✅ WATI response:`, response.data);
-    res.json({ 
-      success: true, 
-      message: `Template sent to ${execNumber}`,
-      response: response.data 
-    });
-    
-  } catch (error) {
-    console.error(`❌ Direct test failed:`, error.message);
-    if (error.response) {
-      console.error(`WATI error response:`, error.response.data);
-    }
-    res.status(500).json({ 
-      success: false, 
-      error: error.message,
-      details: error.response?.data || 'No response from WATI'
-    });
-  }
-});
-
-app.get('/test-misscall', async (req, res) => {
-  const testPhone = req.query.phone || '9876543210';
-  const testBranch = req.query.branch || 'Naroda';
-  
-  const whatsappNumber = normalizeWhatsAppNumber(testPhone);
-  const branch = BRANCHES[normalizeIndianNumber(process.env.NARODA_NUMBER)] || {
-    name: testBranch,
-    executive: process.env.DEFAULT_EXECUTIVE
-  };
-  
-  console.log('🧪 Test miss call:', { whatsappNumber, branch });
-  
-  try {
-    const chatId = `${whatsappNumber}_${branch.name}`;
-    const result = await patientsCollection.insertOne({
-      chatId,
-      patientName: 'Test Patient',
-      patientPhone: whatsappNumber,
-      branch: branch.name,
-      testNames: 'Test Miss Call',
-      sourceType: 'Test',
-      executiveNumber: branch.executive,
-      priority: 'low',
-      status: 'awaiting_branch',
-      notificationSent: false,
-      missCallTime: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      currentStage: STAGES.AWAITING_BRANCH,
-      stageHistory: { [STAGES.AWAITING_BRANCH]: new Date() }
-    });
-    
-    await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
-      { name: '1', value: branch.name }
-    ]);
-    
-    res.json({ 
-      success: true, 
-      message: 'Test miss call processed',
-      whatsappNumber,
-      branch: branch.name,
-      executive: branch.executive,
-      patientId: result.insertedId
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
 // ✅ DEBUG PATIENT ENDPOINT
 // ============================================
 app.get('/debug-patient/:phone', async (req, res) => {
@@ -1541,6 +1441,9 @@ app.get('/debug-patient/:phone', async (req, res) => {
   res.json(patient || { error: 'Not found', searchedPhone: normalizedPhone });
 });
 
+// ============================================
+// ✅ HEALTH ENDPOINT
+// ============================================
 app.get('/health', async (req, res) => {
   if (!patientsCollection || !processedCollection) {
     return res.status(503).json({
@@ -1584,78 +1487,11 @@ app.get('/health', async (req, res) => {
   }
 });
 
+// ============================================
+// ✅ HOME ROUTE
+// ============================================
 app.get('/', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Production Executive System</title>
-      <style>
-        body { font-family: Arial; padding: 30px; background: #f5f5f5; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }
-        h1 { color: #333; }
-        .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-left: 4px solid #007bff; }
-        .btn { display: inline-block; background: #28a745; color: white; padding: 8px 15px; text-decoration: none; border-radius: 4px; margin-top: 10px; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>🚀 Production Executive System</h1>
-        <p>✅ Tata Tele Webhooks + WATI Polling + MongoDB + Stage Tracking</p>
-        
-        <div class="endpoint">
-          <div><span class="code">POST</span> /tata-misscall-whatsapp</div>
-          <small>Main Tata Tele webhook</small>
-        </div>
-        
-        <div class="endpoint">
-          <div><span class="code">GET</span> <a href="/test-misscall?phone=9876543210">/test-misscall?phone=9876543210</a></div>
-          <small>Test miss call flow</small>
-        </div>
-        
-        <div class="endpoint">
-          <div><span class="code">GET</span> <a href="/test-exec?exec=917880261858">/test-exec?exec=917880261858</a></div>
-          <small>Send test template to executive</small>
-        </div>
-        
-        <div class="endpoint">
-          <div><span class="code">GET</span> <a href="/test-executive-direct?exec=919106959092">/test-executive-direct?exec=919106959092</a></div>
-          <small>Direct executive template test</small>
-        </div>
-        
-        <div class="endpoint">
-          <div><span class="code">GET</span> <a href="/debug-patient/919106959092">/debug-patient/919106959092</a></div>
-          <small>Check patient status</small>
-        </div>
-        
-        <div class="endpoint">
-          <div><span class="code">GET</span> <a href="/api/stage-stats">/api/stage-stats</a></div>
-          <small>Stage wise statistics</small>
-        </div>
-        
-        <div class="endpoint">
-          <div><span class="code">GET</span> <a href="/api/misscall-stats">/api/misscall-stats</a></div>
-          <small>Miss call statistics</small>
-        </div>
-        
-        <div class="endpoint">
-          <div><span class="code">GET</span> <a href="/health">/health</a></div>
-          <small>Health check</small>
-        </div>
-        
-        <div class="endpoint">
-          <div><span class="code">GET</span> <a href="/admin">/admin</a></div>
-          <small>Admin Dashboard</small>
-        </div>
-        
-        <div class="endpoint" style="background: #e8f5e8;">
-          <div><span class="code">🔄 POLLING</span> ${POLLING_INTERVAL}</div>
-          <small>Checking for DONE_ messages every 15 seconds</small>
-        </div>
-      </div>
-    </body>
-    </html>
-  `);
+  res.redirect('/admin');
 });
 
 // ============================================
@@ -1712,7 +1548,6 @@ async function startServer() {
       console.log(`📍 WATI Webhook: /wati-webhook (disabled, using polling)`);
       console.log(`📍 Polling: ${POLLING_INTERVAL} for DONE_ messages`);
       console.log(`📍 Test Endpoint: /test-misscall`);
-      console.log(`📍 Direct Test: /test-executive-direct`);
       console.log(`📍 Debug Patient: /debug-patient/:phone`);
       console.log(`📍 Stage Tracking: ${Object.keys(STAGES).length} stages`);
       console.log(`📍 Cron: Fallback (5 min), Follow-up (30 min)`);
