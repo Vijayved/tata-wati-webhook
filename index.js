@@ -29,8 +29,8 @@ const FOLLOWUP_TEMPLATE = process.env.FOLLOWUP_TEMPLATE || 'followup_template';
 const CONFIRMATION_TEMPLATE = process.env.CONFIRMATION_TEMPLATE || 'confirmation_template';
 const ASK_DATE_TEMPLATE = process.env.ASK_DATE_TEMPLATE || 'ask_date_template';
 
-// Polling configuration
-const POLLING_INTERVAL = process.env.POLLING_INTERVAL || '*/15 * * * * *'; // हर 15 सेकंड
+// Polling configuration (optional, you can keep it as backup)
+const POLLING_INTERVAL = process.env.POLLING_INTERVAL || '*/15 * * * * *';
 const POLLING_MESSAGES_LIMIT = process.env.POLLING_MESSAGES_LIMIT || 50;
 const POLLING_WINDOW_MINUTES = process.env.POLLING_WINDOW_MINUTES || 10;
 
@@ -864,7 +864,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK (KEEP FOR BACKWARD COMPATIBILITY)
+// ✅ FIXED WATI WEBHOOK - WITH BRANCH DETECTION
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -874,8 +874,125 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(403);
     }
     
-    console.log('📨 WATI Webhook received (keeping for compatibility)');
-    await markMessageProcessed(req.body.id || req.body.messageId);
+    console.log('📨 WATI WEBHOOK RECEIVED:', JSON.stringify(req.body, null, 2));
+    
+    const msg = req.body;
+    const msgId = msg.id || msg.messageId || msg._id;
+    
+    if (!msgId) {
+      return res.sendStatus(200);
+    }
+    
+    // Check if already processed
+    if (await isMessageProcessed(msgId)) {
+      console.log(`⏭️ Message ${msgId} already processed`);
+      return res.sendStatus(200);
+    }
+    
+    const patientPhone = msg.whatsappNumber || msg.from || msg.waId;
+    if (!patientPhone) {
+      await markMessageProcessed(msgId);
+      return res.sendStatus(200);
+    }
+    
+    const text = (msg.text || msg.body || '').toUpperCase().trim();
+    console.log(`📝 Webhook message: "${text}" from ${patientPhone}`);
+    
+    // Look for DONE_ pattern
+    if (text.startsWith('DONE_')) {
+      const branch = text.replace('DONE_', '');
+      console.log(`🎯 BRANCH DETECTED VIA WEBHOOK: ${branch}`);
+      
+      // Normalize phone number
+      const whatsappNumber = normalizeWhatsAppNumber(patientPhone);
+      
+      // Get executive number for this branch
+      const executiveNumber = getExecutiveNumber(branch);
+      console.log(`👤 Executive for ${branch}: ${executiveNumber}`);
+      
+      const chatId = `${whatsappNumber}_${branch}`;
+      
+      // Find patient awaiting branch
+      let patient = await patientsCollection.findOne({ 
+        patientPhone: whatsappNumber,
+        status: 'awaiting_branch'
+      });
+      
+      if (!patient) {
+        // If no awaiting_branch patient, find any patient
+        patient = await patientsCollection.findOne({ 
+          patientPhone: whatsappNumber 
+        });
+      }
+      
+      if (!patient) {
+        // Create new patient
+        console.log(`🆕 Creating new patient for ${whatsappNumber}`);
+        const result = await patientsCollection.insertOne({
+          chatId,
+          patientName: 'Miss Call Patient',
+          patientPhone: whatsappNumber,
+          branch: branch,
+          testNames: 'Chatbot Flow',
+          sourceType: 'Miss Call',
+          executiveNumber: executiveNumber,
+          priority: 'low',
+          status: 'pending',
+          notificationSent: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          currentStage: STAGES.BRANCH_SELECTED,
+          stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
+        });
+        patient = { _id: result.insertedId };
+      } else {
+        // Update existing patient
+        console.log(`📝 Updating existing patient ${patient._id}`);
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          {
+            $set: {
+              branch: branch,
+              status: 'pending',
+              executiveNumber: executiveNumber,
+              updatedAt: new Date(),
+              currentStage: STAGES.BRANCH_SELECTED
+            },
+            $push: {
+              stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
+            }
+          }
+        );
+      }
+      
+      // Send executive notification
+      console.log(`📤 Sending notification to executive ${executiveNumber} via webhook`);
+      
+      try {
+        const notified = await sendNotificationAtomic(patient._id, () =>
+          sendLeadNotification(
+            executiveNumber,
+            'Miss Call Patient',
+            whatsappNumber,
+            branch,
+            'Chatbot Flow',
+            '📞 Miss Call',
+            chatId
+          )
+        );
+        
+        if (notified) {
+          console.log(`✅✅ EXECUTIVE NOTIFICATION SENT VIA WEBHOOK`);
+        } else {
+          console.log(`ℹ️ Notification already sent previously`);
+        }
+      } catch (notifError) {
+        console.error(`❌ Webhook notification failed:`, notifError.message);
+      }
+    }
+    
+    // Mark message as processed
+    await markMessageProcessed(msgId);
     res.sendStatus(200);
     
   } catch (error) {
@@ -885,41 +1002,7 @@ app.post('/wati-webhook', async (req, res) => {
 });
 
 // ============================================
-// ✅ FOLLOW-UP DATE HANDLER
-// ============================================
-app.post('/webhook/followup-date', async (req, res) => {
-  try {
-    const { patientPhone, followupDate, branch } = req.body;
-    const date = parseDate(followupDate);
-    
-    if (!date) {
-      return res.status(400).json({ error: 'Invalid date format. Use DD/MM/YYYY' });
-    }
-    
-    const result = await patientsCollection.updateOne(
-      { patientPhone, branch, status: 'pending' },
-      { 
-        $set: { 
-          followupDate: date,
-          status: 'waiting',
-          awaiting_followup: false,
-          updatedAt: new Date(),
-          currentStage: STAGES.WAITING
-        },
-        $push: {
-          stageHistory: { [STAGES.WAITING]: new Date() }
-        }
-      }
-    );
-    
-    res.json({ success: true, matched: result.matchedCount });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
-// ✅ POLLING WATI MESSAGES (NO WEBHOOK REQUIRED)
+// ✅ POLLING WATI MESSAGES (BACKUP, CAN BE DISABLED)
 // ============================================
 let pollingActive = false;
 let pollingStats = {
@@ -1545,8 +1628,8 @@ async function startServer() {
       console.log(`🚀 PRODUCTION SERVER running on port ${PORT}`);
       console.log(`📍 Host: ${HOST}`);
       console.log(`📍 Tata Tele Webhook: /tata-misscall-whatsapp`);
-      console.log(`📍 WATI Webhook: /wati-webhook (disabled, using polling)`);
-      console.log(`📍 Polling: ${POLLING_INTERVAL} for DONE_ messages`);
+      console.log(`📍 WATI Webhook: /wati-webhook (ENABLED)`);
+      console.log(`📍 Polling: ${POLLING_INTERVAL} (backup)`);
       console.log(`📍 Test Endpoint: /test-misscall`);
       console.log(`📍 Debug Patient: /debug-patient/:phone`);
       console.log(`📍 Stage Tracking: ${Object.keys(STAGES).length} stages`);
