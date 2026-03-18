@@ -29,6 +29,11 @@ const FOLLOWUP_TEMPLATE = process.env.FOLLOWUP_TEMPLATE || 'followup_template';
 const CONFIRMATION_TEMPLATE = process.env.CONFIRMATION_TEMPLATE || 'confirmation_template';
 const ASK_DATE_TEMPLATE = process.env.ASK_DATE_TEMPLATE || 'ask_date_template';
 
+// Polling configuration
+const POLLING_INTERVAL = process.env.POLLING_INTERVAL || '*/15 * * * * *'; // हर 15 सेकंड
+const POLLING_MESSAGES_LIMIT = process.env.POLLING_MESSAGES_LIMIT || 50;
+const POLLING_WINDOW_MINUTES = process.env.POLLING_WINDOW_MINUTES || 10;
+
 // OpenAI
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
@@ -859,7 +864,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - WITH COMPLETE BRANCH HANDLING
+// ✅ WATI WEBHOOK (KEEP FOR BACKWARD COMPATIBILITY)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -869,213 +874,8 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(403);
     }
     
-    console.log('📨 WATI Webhook received');
-    
-    const msg = req.body;
-    const msgId = msg.id || msg.messageId || msg._id;
-    
-    if (!msgId || await isMessageProcessed(msgId)) {
-      return res.sendStatus(200);
-    }
-    
-    const patientPhone = msg.whatsappNumber || msg.from || msg.waId;
-    if (!patientPhone) {
-      return res.sendStatus(200);
-    }
-    
-    const branchNames = ['Naroda', 'Usmanpura', 'Vadaj', 'Satellite', 'Test Branch'];
-    
-    // Handle button clicks
-    if (msg.buttonText || msg.button) {
-      const action = msg.buttonText || msg.button;
-      console.log(`🔘 Button clicked: "${action}"`);
-      
-      // Branch selection
-      if (branchNames.includes(action)) {
-        // Find patient atomically
-        const patient = await patientsCollection.findOneAndUpdate(
-          {
-            patientPhone: patientPhone,
-            status: 'awaiting_branch'
-          },
-          {
-            $set: {
-              branch: action,
-              status: 'pending',
-              executiveNumber: getExecutiveNumber(action),
-              updatedAt: new Date(),
-              currentStage: STAGES.BRANCH_SELECTED
-            },
-            $push: {
-              stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
-            }
-          },
-          {
-            sort: { createdAt: -1 },
-            returnDocument: 'before'
-          }
-        );
-        
-        if (patient.value) {
-          console.log(`✅ Branch updated for patient`);
-          await updatePatientStage(patient.value._id, STAGES.BRANCH_SELECTED);
-          
-          // Send notification if not already sent
-          if (!patient.value.notificationSent) {
-            await sendNotificationAtomic(patient.value._id, () =>
-              sendLeadNotification(
-                getExecutiveNumber(action),
-                patient.value.patientName,
-                patientPhone,
-                action,
-                'Branch Selected',
-                '📞 Miss Call',
-                `${patientPhone}_${action}`
-              )
-            );
-            await updatePatientStage(patient.value._id, STAGES.EXECUTIVE_NOTIFIED);
-          }
-        } else {
-          console.log(`⚠️ No awaiting_branch patient found, creating new`);
-          
-          // Create new patient
-          const chatId = `${patientPhone}_${action}`;
-          const execNumber = getExecutiveNumber(action);
-          const result = await patientsCollection.insertOne({
-            chatId,
-            patientName: 'Miss Call Patient',
-            patientPhone: patientPhone,
-            branch: action,
-            testNames: 'Branch selected',
-            sourceType: 'Miss Call',
-            executiveNumber: execNumber,
-            priority: 'low',
-            status: 'pending',
-            notificationSent: true,
-            lastNotificationSentAt: new Date(),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            currentStage: STAGES.EXECUTIVE_NOTIFIED,
-            stageHistory: {
-              [STAGES.BRANCH_SELECTED]: new Date(),
-              [STAGES.EXECUTIVE_NOTIFIED]: new Date()
-            }
-          });
-          
-          // Send notification
-          await sendLeadNotification(
-            execNumber,
-            'Miss Call Patient',
-            patientPhone,
-            action,
-            'Branch Selected',
-            '📞 Miss Call',
-            chatId
-          );
-        }
-        
-        await markMessageProcessed(msgId);
-        return res.sendStatus(200);
-      }
-      
-      // Handle other buttons (Convert, Waiting, Not Convert)
-      if (action === '✅ Convert Done') {
-        const patient = await patientsCollection.findOneAndUpdate(
-          { patientPhone, status: { $in: ['pending', 'waiting'] } },
-          { 
-            $set: { 
-              status: 'converted', 
-              updatedAt: new Date(),
-              currentStage: STAGES.CONVERTED
-            },
-            $push: {
-              stageHistory: { [STAGES.CONVERTED]: new Date() }
-            }
-          },
-          { sort: { createdAt: -1 } }
-        );
-        
-        if (patient.value) {
-          await sendWatiTemplateMessage(patientPhone, CONFIRMATION_TEMPLATE, [
-            { name: "1", value: "✅ Patient marked as converted" }
-          ]);
-        }
-      }
-      else if (action === '⏳ Waiting') {
-        const patient = await patientsCollection.findOneAndUpdate(
-          { patientPhone, status: 'pending' },
-          { 
-            $set: { 
-              awaiting_followup: true,
-              currentStage: STAGES.WAITING
-            },
-            $push: {
-              stageHistory: { [STAGES.WAITING]: new Date() }
-            }
-          },
-          { sort: { createdAt: -1 } }
-        );
-        
-        if (patient.value) {
-          await sendWatiTemplateMessage(patientPhone, ASK_DATE_TEMPLATE, [
-            { name: "1", value: "Please send follow-up date (DD/MM/YYYY)" }
-          ]);
-        }
-      }
-      else if (action === '❌ Not Convert') {
-        const patient = await patientsCollection.findOneAndUpdate(
-          { patientPhone, status: { $in: ['pending', 'waiting'] } },
-          { 
-            $set: { 
-              status: 'not_converted', 
-              updatedAt: new Date(),
-              currentStage: STAGES.NOT_CONVERTED
-            },
-            $push: {
-              stageHistory: { [STAGES.NOT_CONVERTED]: new Date() }
-            }
-          },
-          { sort: { createdAt: -1 } }
-        );
-        
-        if (patient.value) {
-          await sendLeadNotification(
-            EXECUTIVES['Manager'],
-            'Escalation Alert',
-            EXECUTIVES['Manager'],
-            'ALL',
-            'Not Converted',
-            '⚠️ Escalation',
-            patient.value.chatId
-          );
-          await updatePatientStage(patient.value._id, STAGES.ESCALATED);
-        }
-      }
-      
-      await markMessageProcessed(msgId);
-      return res.sendStatus(200);
-    }
-    
-    // Handle image messages
-    if (msg.type === 'image' || msg.messageType === 'image') {
-      const imageUrl = msg.mediaUrl || msg.url || msg.image?.url;
-      if (imageUrl) {
-        await processImageUpload(msgId, 'Patient', 'Naroda', imageUrl, patientPhone);
-      } else {
-        await markMessageProcessed(msgId);
-      }
-      return res.sendStatus(200);
-    }
-    
-    // Handle text messages
-    if (msg.type === 'text' || msg.messageType === 'text') {
-      const text = msg.text || msg.body || '';
-      if (text.toLowerCase().includes('manual') || text.toLowerCase().includes('test')) {
-        await processManualEntry(msgId, 'Patient', text, 'Naroda', patientPhone);
-      }
-    }
-    
-    await markMessageProcessed(msgId);
+    console.log('📨 WATI Webhook received (keeping for compatibility)');
+    await markMessageProcessed(req.body.id || req.body.messageId);
     res.sendStatus(200);
     
   } catch (error) {
@@ -1119,68 +919,182 @@ app.post('/webhook/followup-date', async (req, res) => {
 });
 
 // ============================================
-// ✅ CRON JOBS
+// ✅ POLLING WATI MESSAGES (NO WEBHOOK REQUIRED)
 // ============================================
-cron.schedule('*/5 * * * *', async () => {
-  console.log(`\n🔍 [${new Date().toLocaleTimeString()}] Fallback check for missed messages...`);
+let pollingActive = false;
+
+cron.schedule(POLLING_INTERVAL, async () => {
+  if (pollingActive) {
+    console.log('⏭️ Previous poll still running, skipping...');
+    return;
+  }
+  
+  pollingActive = true;
   
   try {
-    const from = new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
-    const to = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    console.log('🔄 [POLLING] Checking WATI messages...');
     
+    // Calculate time range
+    const to = new Date().toISOString();
+    const from = new Date(Date.now() - POLLING_WINDOW_MINUTES * 60 * 1000).toISOString();
+    
+    // Construct WATI API URL
     let url;
     if (WATI_BASE_URL.includes('/api/v1')) {
-      url = `${WATI_BASE_URL}/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
+      url = `${WATI_BASE_URL}/getMessages?pageSize=${POLLING_MESSAGES_LIMIT}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
     } else {
-      url = `${WATI_BASE_URL}/api/v1/getMessages?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&pageSize=50`;
+      url = `${WATI_BASE_URL}/api/v1/getMessages?pageSize=${POLLING_MESSAGES_LIMIT}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
     }
     
-    console.log('🔍 Fetching messages from:', url);
+    console.log(`🔍 Polling URL: ${url}`);
     
     const response = await axios.get(url, {
-      headers: { Authorization: `${WATI_TOKEN}` }
+      headers: {
+        'Authorization': WATI_TOKEN,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000
     });
     
+    // Extract messages
     let messages = [];
-    if (Array.isArray(response.data)) messages = response.data;
-    else if (response.data?.messages) messages = response.data.messages;
-    else if (response.data?.data) messages = response.data.data;
+    if (Array.isArray(response.data)) {
+      messages = response.data;
+    } else if (response.data?.messages) {
+      messages = response.data.messages;
+    } else if (response.data?.data) {
+      messages = response.data.data;
+    }
     
-    console.log(`📨 Found ${messages.length} messages`);
+    console.log(`📨 Found ${messages.length} messages to check`);
     
     for (const msg of messages) {
-      await rateLimitDelay();
+      // Check if already processed
+      const alreadyProcessed = await processedCollection.findOne({ 
+        messageId: msg.id 
+      });
       
-      const msgId = msg.id || msg.messageId || msg._id;
-      if (!msgId || await isMessageProcessed(msgId)) continue;
+      if (alreadyProcessed) {
+        continue;
+      }
       
-      const patientPhone = msg.whatsappNumber || msg.from || msg.waId;
-      if (!patientPhone) continue;
+      const text = (msg.text || msg.body || '').toUpperCase().trim();
+      console.log(`📝 Checking message: "${text}" from ${msg.waId || msg.from}`);
       
-      const branch = 'Naroda';
-      
-      if (msg.type === 'text' || msg.messageType === 'text') {
-        const text = msg.text || msg.body || '';
-        if (text.toLowerCase().includes('manual') || text.toLowerCase().includes('test')) {
-          await processManualEntry(msgId, 'Patient', text, branch, patientPhone);
+      // Look for DONE_ pattern
+      if (text.startsWith('DONE_')) {
+        const branch = text.replace('DONE_', '');
+        console.log(`🏥 Branch detected: ${branch}`);
+        
+        const patientPhone = msg.waId || msg.from;
+        if (!patientPhone) {
+          console.log('❌ No phone number in message');
+          await processedCollection.insertOne({ messageId: msg.id, processedAt: new Date() });
+          continue;
+        }
+        
+        // Normalize phone number
+        const whatsappNumber = normalizeWhatsAppNumber(patientPhone);
+        console.log(`📱 Patient phone: ${whatsappNumber}`);
+        
+        // Get executive number for this branch
+        const executiveNumber = getExecutiveNumber(branch);
+        console.log(`👤 Executive: ${executiveNumber}`);
+        
+        const chatId = `${whatsappNumber}_${branch}`;
+        
+        // Check if patient exists
+        let patient = await patientsCollection.findOne({
+          patientPhone: whatsappNumber
+        });
+        
+        if (!patient) {
+          // Create new patient
+          const result = await patientsCollection.insertOne({
+            chatId,
+            patientName: 'Miss Call Patient',
+            patientPhone: whatsappNumber,
+            branch: branch,
+            testNames: 'Chatbot Flow',
+            sourceType: 'Miss Call',
+            executiveNumber: executiveNumber,
+            priority: 'low',
+            status: 'pending',
+            notificationSent: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            currentStage: STAGES.BRANCH_SELECTED,
+            stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
+          });
+          patient = { _id: result.insertedId };
+          console.log(`✅ New patient created`);
         } else {
-          await markMessageProcessed(msgId);
+          // Update existing patient
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            {
+              $set: {
+                branch: branch,
+                status: 'pending',
+                executiveNumber: executiveNumber,
+                updatedAt: new Date(),
+                currentStage: STAGES.BRANCH_SELECTED
+              },
+              $push: {
+                stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
+              }
+            }
+          );
+          console.log(`✅ Patient updated`);
+        }
+        
+        // Send executive notification
+        try {
+          console.log(`📤 Sending notification to executive ${executiveNumber}`);
+          const notified = await sendNotificationAtomic(patient._id, () =>
+            sendLeadNotification(
+              executiveNumber,
+              'Miss Call Patient',
+              whatsappNumber,
+              branch,
+              'Chatbot Flow',
+              '📞 Miss Call',
+              chatId
+            )
+          );
+          
+          if (notified) {
+            console.log(`✅ Executive notification sent successfully`);
+          } else {
+            console.log(`ℹ️ Notification already sent previously`);
+          }
+          
+        } catch (notifError) {
+          console.error(`❌ Failed to send executive notification:`, notifError.message);
+          if (notifError.response) {
+            console.error('WATI API Error:', notifError.response.data);
+          }
         }
       }
-      else if (msg.type === 'image' || msg.messageType === 'image') {
-        const imageUrl = msg.mediaUrl || msg.url || msg.image?.url;
-        if (imageUrl) {
-          await processImageUpload(msgId, 'Patient', branch, imageUrl, patientPhone);
-        } else {
-          await markMessageProcessed(msgId);
-        }
-      } else {
-        await markMessageProcessed(msgId);
-      }
+      
+      // Mark as processed
+      await processedCollection.insertOne({
+        messageId: msg.id,
+        processedAt: new Date(),
+        messageType: 'polling'
+      });
     }
+    
   } catch (error) {
-    console.error('❌ Fallback cron error:', error.response?.status ? 
-      `Status ${error.response.status}: ${error.response.data}` : error.message);
+    console.error('❌ Polling error:', error.message);
+    if (error.response) {
+      console.error('WATI API Error:', {
+        status: error.response.status,
+        data: error.response.data
+      });
+    }
+  } finally {
+    pollingActive = false;
   }
 });
 
@@ -1656,7 +1570,11 @@ app.get('/health', async (req, res) => {
       awaitingBranch: awaitingBranchCount,
       stageStats,
       uptime: process.uptime(),
-      mongodb: 'connected'
+      mongodb: 'connected',
+      polling: {
+        interval: POLLING_INTERVAL,
+        active: pollingActive
+      }
     });
   } catch (error) {
     res.status(500).json({
@@ -1683,7 +1601,7 @@ app.get('/', (req, res) => {
     <body>
       <div class="container">
         <h1>🚀 Production Executive System</h1>
-        <p>✅ Tata Tele Webhooks + WATI + MongoDB + Stage Tracking</p>
+        <p>✅ Tata Tele Webhooks + WATI Polling + MongoDB + Stage Tracking</p>
         
         <div class="endpoint">
           <div><span class="code">POST</span> /tata-misscall-whatsapp</div>
@@ -1728,6 +1646,11 @@ app.get('/', (req, res) => {
         <div class="endpoint">
           <div><span class="code">GET</span> <a href="/admin">/admin</a></div>
           <small>Admin Dashboard</small>
+        </div>
+        
+        <div class="endpoint" style="background: #e8f5e8;">
+          <div><span class="code">🔄 POLLING</span> ${POLLING_INTERVAL}</div>
+          <small>Checking for DONE_ messages every 15 seconds</small>
         </div>
       </div>
     </body>
@@ -1786,12 +1709,13 @@ async function startServer() {
       console.log(`🚀 PRODUCTION SERVER running on port ${PORT}`);
       console.log(`📍 Host: ${HOST}`);
       console.log(`📍 Tata Tele Webhook: /tata-misscall-whatsapp`);
-      console.log(`📍 WATI Webhook: /wati-webhook`);
+      console.log(`📍 WATI Webhook: /wati-webhook (disabled, using polling)`);
+      console.log(`📍 Polling: ${POLLING_INTERVAL} for DONE_ messages`);
       console.log(`📍 Test Endpoint: /test-misscall`);
       console.log(`📍 Direct Test: /test-executive-direct`);
       console.log(`📍 Debug Patient: /debug-patient/:phone`);
       console.log(`📍 Stage Tracking: ${Object.keys(STAGES).length} stages`);
-      console.log(`📍 Cron: Fallback (5 min)`);
+      console.log(`📍 Cron: Fallback (5 min), Follow-up (30 min)`);
       console.log(`📍 MongoDB: Connected ✅`);
       console.log(`📍 Security: HMAC + API Key + WATI Auth`);
       console.log(`📍 Templates: misscall_welcome_v3, lead_notification_v2`);
