@@ -1,4 +1,4 @@
-// dashboard.js - Complete Admin Dashboard with Miss Call Tracking
+// dashboard.js - Complete Admin Dashboard with Stage Tracking
 const express = require('express');
 const router = express.Router();
 
@@ -9,6 +9,7 @@ router.get('/', async (req, res) => {
     const patientsCollection = req.patientsCollection;
     const processedCollection = req.processedCollection;
     const missCallsCollection = req.missCallsCollection;
+    const STAGES = req.STAGES;
     const PORT = req.PORT;
     
     if (!patientsCollection || !processedCollection) {
@@ -22,6 +23,12 @@ router.get('/', async (req, res) => {
     const convertedCount = await patientsCollection.countDocuments({ status: 'converted' });
     const waitingCount = await patientsCollection.countDocuments({ status: 'waiting' });
     const notConvertedCount = await patientsCollection.countDocuments({ status: 'not_converted' });
+    
+    // Get stage wise stats
+    const stageStats = {};
+    for (const [key, value] of Object.entries(STAGES)) {
+      stageStats[key] = await patientsCollection.countDocuments({ currentStage: value });
+    }
     
     // Get miss call specific stats
     const missCallCount = missCallsCollection ? await missCallsCollection.countDocuments() : 0;
@@ -41,16 +48,16 @@ router.get('/', async (req, res) => {
     const branchMissCallMap = {};
     missCallsByBranch.forEach(b => { branchMissCallMap[b._id] = b.count; });
     
-    // Get recent activities (mix of patients and miss calls)
+    // Get recent patients with stage info
     const recentPatients = await patientsCollection.find()
       .sort({ createdAt: -1 })
-      .limit(10)
+      .limit(15)
       .toArray();
     
     // Get recent miss calls
     const recentMissCalls = missCallsCollection ? await missCallsCollection.find()
       .sort({ createdAt: -1 })
-      .limit(5)
+      .limit(10)
       .toArray() : [];
     
     // HTML Template
@@ -64,6 +71,8 @@ router.get('/', async (req, res) => {
       missCallCount,
       todayMissCalls,
       branchMissCallMap,
+      stageStats,
+      STAGES,
       recentPatients, 
       recentMissCalls,
       PORT
@@ -96,6 +105,8 @@ function getDashboardHTML(data) {
     missCallCount,
     todayMissCalls,
     branchMissCallMap,
+    stageStats,
+    STAGES,
     recentPatients, 
     recentMissCalls,
     PORT 
@@ -134,6 +145,12 @@ function getDashboardHTML(data) {
         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
       }
       
+      h2 {
+        color: white;
+        margin: 30px 0 15px 0;
+        font-size: 1.8em;
+      }
+      
       .stats-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -165,6 +182,41 @@ function getDashboardHTML(data) {
         font-weight: bold;
         color: #333;
         margin-top: 10px;
+      }
+      
+      .stage-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 15px;
+        margin-bottom: 30px;
+      }
+      
+      .stage-card {
+        background: white;
+        border-radius: 8px;
+        padding: 15px;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        border-left: 4px solid;
+      }
+      
+      .stage-card.misscall { border-color: #f59e0b; }
+      .stage-card.branch { border-color: #3b82f6; }
+      .stage-card.ocr { border-color: #10b981; }
+      .stage-card.executive { border-color: #8b5cf6; }
+      .stage-card.converted { border-color: #10b981; }
+      .stage-card.waiting { border-color: #f59e0b; }
+      .stage-card.notconverted { border-color: #ef4444; }
+      
+      .stage-name {
+        font-size: 0.8em;
+        color: #666;
+        text-transform: uppercase;
+      }
+      
+      .stage-value {
+        font-size: 1.8em;
+        font-weight: bold;
+        margin-top: 5px;
       }
       
       .misscall-highlight {
@@ -203,6 +255,7 @@ function getDashboardHTML(data) {
       .status-red { background: #ef4444; }
       .status-yellow { background: #f59e0b; }
       .status-blue { background: #3b82f6; }
+      .status-purple { background: #8b5cf6; }
       
       .status-title {
         font-weight: 600;
@@ -227,7 +280,7 @@ function getDashboardHTML(data) {
       
       .flow-step {
         flex: 1;
-        min-width: 150px;
+        min-width: 120px;
         text-align: center;
         padding: 15px;
         background: #f8f9fa;
@@ -263,9 +316,10 @@ function getDashboardHTML(data) {
         margin-bottom: 5px;
       }
       
-      .step-status {
-        font-size: 0.8em;
-        color: #666;
+      .step-count {
+        font-size: 1.2em;
+        font-weight: bold;
+        color: #667eea;
       }
       
       .logs-section {
@@ -379,6 +433,9 @@ function getDashboardHTML(data) {
       .badge-waiting { background: #dbeafe; color: #1e40af; }
       .badge-not-converted { background: #fee2e2; color: #991b1b; }
       .badge-misscall { background: #ffedd5; color: #9a3412; }
+      .badge-branch { background: #dbeafe; color: #1e40af; }
+      .badge-ocr { background: #d1fae5; color: #065f46; }
+      .badge-executive { background: #ede9fe; color: #5b21b6; }
       
       .test-panel {
         background: white;
@@ -432,6 +489,14 @@ function getDashboardHTML(data) {
         background: #ea580c;
       }
       
+      .test-btn-purple {
+        background: #8b5cf6;
+      }
+      
+      .test-btn-purple:hover {
+        background: #7c3aed;
+      }
+      
       .section-title {
         color: white;
         margin: 30px 0 15px 0;
@@ -479,6 +544,59 @@ function getDashboardHTML(data) {
         </div>
       </div>
       
+      <!-- Stage Wise Tracking -->
+      <h2>📊 Stage Wise Tracking</h2>
+      <div class="stage-grid">
+        <div class="stage-card misscall">
+          <div class="stage-name">Miss Call Received</div>
+          <div class="stage-value">${stageStats.MISS_CALL_RECEIVED || 0}</div>
+        </div>
+        <div class="stage-card branch">
+          <div class="stage-name">Awaiting Branch</div>
+          <div class="stage-value">${stageStats.AWAITING_BRANCH || 0}</div>
+        </div>
+        <div class="stage-card branch">
+          <div class="stage-name">Branch Selected</div>
+          <div class="stage-value">${stageStats.BRANCH_SELECTED || 0}</div>
+        </div>
+        <div class="stage-card ocr">
+          <div class="stage-name">Awaiting Prescription</div>
+          <div class="stage-value">${stageStats.AWAITING_PRESCRIPTION || 0}</div>
+        </div>
+        <div class="stage-card ocr">
+          <div class="stage-name">Prescription Uploaded</div>
+          <div class="stage-value">${stageStats.PRESCRIPTION_UPLOADED || 0}</div>
+        </div>
+        <div class="stage-card ocr">
+          <div class="stage-name">OCR Processing</div>
+          <div class="stage-value">${stageStats.OCR_PROCESSING || 0}</div>
+        </div>
+        <div class="stage-card ocr">
+          <div class="stage-name">OCR Completed</div>
+          <div class="stage-value">${stageStats.OCR_COMPLETED || 0}</div>
+        </div>
+        <div class="stage-card executive">
+          <div class="stage-name">Executive Notified</div>
+          <div class="stage-value">${stageStats.EXECUTIVE_NOTIFIED || 0}</div>
+        </div>
+        <div class="stage-card converted">
+          <div class="stage-name">Converted</div>
+          <div class="stage-value">${stageStats.CONVERTED || 0}</div>
+        </div>
+        <div class="stage-card waiting">
+          <div class="stage-name">Waiting</div>
+          <div class="stage-value">${stageStats.WAITING || 0}</div>
+        </div>
+        <div class="stage-card notconverted">
+          <div class="stage-name">Not Converted</div>
+          <div class="stage-value">${stageStats.NOT_CONVERTED || 0}</div>
+        </div>
+        <div class="stage-card notconverted">
+          <div class="stage-name">Escalated</div>
+          <div class="stage-value">${stageStats.ESCALATED || 0}</div>
+        </div>
+      </div>
+      
       <!-- Miss Calls by Branch -->
       <div class="status-grid">
         <div class="status-card">
@@ -523,38 +641,38 @@ function getDashboardHTML(data) {
         </div>
       </div>
       
-      <!-- Flow Diagram -->
+      <!-- Flow Diagram with Counts -->
       <div class="flow-diagram">
-        <h3 style="margin-bottom: 20px;">🔄 Miss Call Flow Status</h3>
+        <h3 style="margin-bottom: 20px;">🔄 Current Flow Status</h3>
         <div class="flow-steps">
-          <div class="flow-step completed">
+          <div class="flow-step ${stageStats.MISS_CALL_RECEIVED > 0 ? 'completed' : ''}">
             <div class="step-number">1</div>
-            <div class="step-name">Tata Tele</div>
-            <div class="step-status">✅ Webhook</div>
+            <div class="step-name">Miss Call</div>
+            <div class="step-count">${stageStats.MISS_CALL_RECEIVED || 0}</div>
           </div>
           
-          <div class="flow-step active">
+          <div class="flow-step ${stageStats.BRANCH_SELECTED > 0 ? 'completed' : ''}">
             <div class="step-number">2</div>
-            <div class="step-name">Render Server</div>
-            <div class="step-status">⚡ Running</div>
+            <div class="step-name">Branch Select</div>
+            <div class="step-count">${stageStats.BRANCH_SELECTED || 0}</div>
           </div>
           
-          <div class="flow-step">
+          <div class="flow-step ${stageStats.PRESCRIPTION_UPLOADED > 0 ? 'completed' : ''}">
             <div class="step-number">3</div>
-            <div class="step-name">WATI Customer</div>
-            <div class="step-status">${missCallCount > 0 ? '✅ Sent' : '⏳ Pending'}</div>
+            <div class="step-name">Upload</div>
+            <div class="step-count">${stageStats.PRESCRIPTION_UPLOADED || 0}</div>
           </div>
           
-          <div class="flow-step">
+          <div class="flow-step ${stageStats.OCR_COMPLETED > 0 ? 'completed' : ''}">
             <div class="step-number">4</div>
-            <div class="step-name">MongoDB</div>
-            <div class="step-status">✅ ${missCallCount} records</div>
+            <div class="step-name">OCR</div>
+            <div class="step-count">${stageStats.OCR_COMPLETED || 0}</div>
           </div>
           
-          <div class="flow-step">
+          <div class="flow-step ${stageStats.EXECUTIVE_NOTIFIED > 0 ? 'completed' : ''}">
             <div class="step-number">5</div>
             <div class="step-name">Executive</div>
-            <div class="step-status">⏳ Awaiting</div>
+            <div class="step-count">${stageStats.EXECUTIVE_NOTIFIED || 0}</div>
           </div>
         </div>
       </div>
@@ -581,23 +699,13 @@ function getDashboardHTML(data) {
           <div class="log-entry">
             <span class="log-time">${new Date().toLocaleTimeString()}</span>
             <span class="log-level log-info">INFO</span>
-            <span>📍 Template: lead_notification_v2 (Approved)</span>
-          </div>
-          <div class="log-entry">
-            <span class="log-time">${new Date().toLocaleTimeString()}</span>
-            <span class="log-level log-info">INFO</span>
-            <span>📍 Template: misscall_welcome_v3 (Approved)</span>
-          </div>
-          <div class="log-entry">
-            <span class="log-time">${new Date().toLocaleTimeString()}</span>
-            <span class="log-level log-info">INFO</span>
-            <span>📍 Tata Tele Webhook: /tata-misscall-whatsapp</span>
+            <span>📍 Stage tracking active with ${Object.keys(STAGES).length} stages</span>
           </div>
         </div>
       </div>
       
       <!-- Recent Miss Calls -->
-      <h3 class="section-title">📞 Recent Miss Calls</h3>
+      <h2 class="section-title">📞 Recent Miss Calls</h2>
       <table class="recent-table">
         <thead>
           <tr>
@@ -624,8 +732,8 @@ function getDashboardHTML(data) {
         </tbody>
       </table>
       
-      <!-- Recent Patients -->
-      <h3 class="section-title">🕒 Recent Patients</h3>
+      <!-- Recent Patients with Stage -->
+      <h2 class="section-title">🕒 Recent Patients</h2>
       <table class="recent-table">
         <thead>
           <tr>
@@ -633,28 +741,35 @@ function getDashboardHTML(data) {
             <th>Phone</th>
             <th>Branch</th>
             <th>Tests</th>
+            <th>Stage</th>
             <th>Status</th>
             <th>Time</th>
           </tr>
         </thead>
         <tbody>
-          ${recentPatients.map(p => `
-            <tr class="${p.sourceType === 'Miss Call' ? 'misscall-row' : ''}">
-              <td>${p.patientName || 'N/A'}</td>
-              <td>${p.patientPhone || 'N/A'}</td>
-              <td>${p.branch || 'N/A'}</td>
-              <td>${p.tests || p.testNames || 'N/A'}</td>
-              <td>
-                <span class="status-badge badge-${p.status || 'pending'}">
-                  ${p.status || 'pending'} ${p.sourceType === 'Miss Call' ? '📞' : ''}
-                </span>
-              </td>
-              <td>${new Date(p.createdAt).toLocaleString()}</td>
-            </tr>
-          `).join('')}
+          ${recentPatients.map(p => {
+            let badgeClass = 'badge-pending';
+            if (p.currentStage === 'converted') badgeClass = 'badge-converted';
+            else if (p.currentStage === 'waiting') badgeClass = 'badge-waiting';
+            else if (p.currentStage === 'not_converted') badgeClass = 'badge-not-converted';
+            else if (p.currentStage === 'awaiting_branch') badgeClass = 'badge-branch';
+            else if (p.currentStage === 'executive_notified') badgeClass = 'badge-executive';
+            
+            return `
+              <tr class="${p.sourceType === 'Miss Call' ? 'misscall-row' : ''}">
+                <td>${p.patientName || 'N/A'}</td>
+                <td>${p.patientPhone || 'N/A'}</td>
+                <td>${p.branch || 'N/A'}</td>
+                <td>${p.testNames || p.tests || 'N/A'}</td>
+                <td><span class="status-badge ${badgeClass}">${(p.currentStage || 'pending').replace(/_/g, ' ')}</span></td>
+                <td><span class="status-badge badge-${p.status || 'pending'}">${p.status || 'pending'}</span></td>
+                <td>${new Date(p.createdAt).toLocaleString()}</td>
+              </tr>
+            `;
+          }).join('')}
           ${recentPatients.length === 0 ? `
             <tr>
-              <td colspan="6" style="text-align: center;">No patients yet</td>
+              <td colspan="7" style="text-align: center;">No patients yet</td>
             </tr>
           ` : ''}
         </tbody>
@@ -668,14 +783,17 @@ function getDashboardHTML(data) {
           <button class="test-btn test-btn-success" onclick="testExecutive('919106959092')">
             📱 Test Executive (Naroda)
           </button>
+          <button class="test-btn test-btn-purple" onclick="testExecutive('919825086011')">
+            📱 Test Manager
+          </button>
           <button class="test-btn" onclick="checkMongo()">
             🗄️ Check MongoDB
           </button>
+          <button class="test-btn" onclick="window.open('/api/stage-stats')">
+            📊 Stage Stats
+          </button>
           <button class="test-btn" onclick="window.open('/health')">
             ❤️ Health Check
-          </button>
-          <button class="test-btn" onclick="window.open('/api/misscall-stats')">
-            📊 Miss Call Stats
           </button>
         </div>
       </div>
@@ -684,6 +802,7 @@ function getDashboardHTML(data) {
     <script>
       // Auto-refresh logs every 10 seconds
       setInterval(refreshLogs, 10000);
+      setInterval(() => location.reload(), 30000); // Refresh dashboard every 30 seconds
       
       function refreshLogs() {
         const container = document.getElementById('logs-container');
@@ -737,7 +856,14 @@ function getDashboardHTML(data) {
           .then(r => r.json())
           .then(data => {
             if (data.success) {
-              alert(\`✅ MongoDB: \${data.patients} patients, \${data.missCalls} miss calls\`);
+              let msg = \`✅ MongoDB: \${data.patients} patients, \${data.missCalls} miss calls\\n\`;
+              msg += \`📊 Stage Stats:\\n\`;
+              for (const [stage, count] of Object.entries(data.stageStats)) {
+                if (count > 0) {
+                  msg += \`   \${stage.replace(/_/g, ' ')}: \${count}\\n\`;
+                }
+              }
+              alert(msg);
             } else {
               alert('❌ MongoDB error: ' + data.error);
             }
