@@ -1762,7 +1762,7 @@ app.use('/admin', (req, res, next) => {
 }, dashboardRouter);
 
 // ============================================
-// ✅ START SERVER
+// ✅ START SERVER - FIXED WITH HOST 0.0.0.0
 // ============================================
 async function startServer() {
   try {
@@ -1775,10 +1775,16 @@ async function startServer() {
     }
     
     console.log('✅ All collections verified, starting server...');
-    
-    app.listen(PORT, () => {
+
+    // ⭐️ FIX: होस्ट '0.0.0.0' को स्पष्ट रूप में जोड़ें
+    const HOST = '0.0.0.0';
+    console.log(`🟡 Attempting to start server on host: ${HOST}, port: ${PORT}`);
+
+    const server = app.listen(PORT, HOST, () => {
       console.log('='.repeat(60));
+      console.log(`✅ SUCCESS: Server is listening on port ${PORT}`);
       console.log(`🚀 PRODUCTION SERVER running on port ${PORT}`);
+      console.log(`📍 Host: ${HOST}`);
       console.log(`📍 Tata Tele Webhook: /tata-misscall-whatsapp`);
       console.log(`📍 WATI Webhook: /wati-webhook`);
       console.log(`📍 Test Endpoint: /test-misscall`);
@@ -1791,6 +1797,12 @@ async function startServer() {
       console.log(`📍 Templates: misscall_welcome_v3, lead_notification_v2`);
       console.log('='.repeat(60));
     });
+
+    server.on('error', (err) => {
+      console.error(`❌ FAILED: Server could not start. Error:`, err.message);
+      process.exit(1);
+    });
+
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);
