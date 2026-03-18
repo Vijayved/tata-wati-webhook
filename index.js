@@ -46,7 +46,7 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
 }
 
 // ============================================
-// ✅ DATABASE CONNECTION WITH ENHANCED INDEXES
+// ✅ DATABASE CONNECTION WITH INDEX FIX
 // ============================================
 let db;
 let processedCollection;
@@ -75,29 +75,91 @@ async function connectDB() {
     
     console.log('✅ Collections initialized');
     
-    // Create comprehensive indexes
-    await processedCollection.createIndex({ messageId: 1 }, { unique: true });
+    // ============================================
+    // ✅ FIX INDEX CONFLICT - DROP AND RECREATE
+    // ============================================
     
-    await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
-    await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
-    await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
-    await patientsCollection.createIndex({ status: 1, followupDate: 1 });
-    await patientsCollection.createIndex({ patientPhone: 1, branch: 1, status: 1 });
-    await patientsCollection.createIndex({ followupDate: 1 });
-    await patientsCollection.createIndex({ createdAt: 1 });
-    await patientsCollection.createIndex({ lastNotificationSentAt: 1 });
-    await patientsCollection.createIndex({ notificationSent: 1 });
+    // Get existing indexes
+    const existingIndexes = await patientsCollection.indexes();
+    console.log('📋 Existing indexes:', existingIndexes.map(idx => idx.name));
     
-    // Compound index for optimal queries
-    await patientsCollection.createIndex(
-      { patientPhone: 1, status: 1, createdAt: -1 },
-      { background: true }
-    );
+    // Check for chatId index and drop if exists
+    const chatIdIndex = existingIndexes.find(idx => idx.name === 'chatId_1');
+    if (chatIdIndex) {
+      console.log('⚠️ Found existing chatId_1 index, dropping it...');
+      await patientsCollection.dropIndex('chatId_1');
+      console.log('✅ Dropped old chatId_1 index');
+    }
     
-    await missCallsCollection.createIndex({ phoneNumber: 1, createdAt: -1 });
-    await missCallsCollection.createIndex({ calledNumber: 1, createdAt: -1 });
+    // Create new indexes safely
+    const indexesToCreate = [
+      {
+        name: 'chatId_1',
+        key: { chatId: 1 },
+        unique: true,
+        sparse: true
+      },
+      {
+        name: 'patientPhone_1_status_1',
+        key: { patientPhone: 1, status: 1 }
+      },
+      {
+        name: 'patientPhone_1_createdAt_-1',
+        key: { patientPhone: 1, createdAt: -1 }
+      },
+      {
+        name: 'status_1_followupDate_1',
+        key: { status: 1, followupDate: 1 }
+      },
+      {
+        name: 'patientPhone_1_branch_1_status_1',
+        key: { patientPhone: 1, branch: 1, status: 1 }
+      },
+      {
+        name: 'followupDate_1',
+        key: { followupDate: 1 }
+      },
+      {
+        name: 'createdAt_1',
+        key: { createdAt: 1 }
+      },
+      {
+        name: 'lastNotificationSentAt_1',
+        key: { lastNotificationSentAt: 1 }
+      },
+      {
+        name: 'notificationSent_1',
+        key: { notificationSent: 1 }
+      },
+      {
+        name: 'currentStage_1',
+        key: { currentStage: 1 }
+      },
+      {
+        name: 'patientPhone_1_status_1_createdAt_-1',
+        key: { patientPhone: 1, status: 1, createdAt: -1 }
+      }
+    ];
     
-    console.log('✅ All indexes created successfully');
+    for (const indexSpec of indexesToCreate) {
+      try {
+        await patientsCollection.createIndex(indexSpec.key, {
+          name: indexSpec.name,
+          unique: indexSpec.unique || false,
+          sparse: indexSpec.sparse || false,
+          background: true
+        });
+        console.log(`✅ Created index: ${indexSpec.name}`);
+      } catch (indexError) {
+        if (indexError.code === 85 || indexError.codeName === 'IndexOptionsConflict') {
+          console.log(`⚠️ Index ${indexSpec.name} already exists with different options, skipping...`);
+        } else {
+          console.error(`❌ Failed to create index ${indexSpec.name}:`, indexError.message);
+        }
+      }
+    }
+    
+    console.log('✅ All indexes verified successfully');
     
     return true;
   } catch (error) {
@@ -145,6 +207,24 @@ const BRANCHES = {
     name: 'Test Branch',
     executive: '917880261858'
   }
+};
+
+// ============================================
+// ✅ STAGE TRACKING CONSTANTS
+// ============================================
+const STAGES = {
+  MISS_CALL_RECEIVED: 'miss_call_received',
+  AWAITING_BRANCH: 'awaiting_branch',
+  BRANCH_SELECTED: 'branch_selected',
+  AWAITING_PRESCRIPTION: 'awaiting_prescription',
+  PRESCRIPTION_UPLOADED: 'prescription_uploaded',
+  OCR_PROCESSING: 'ocr_processing',
+  OCR_COMPLETED: 'ocr_completed',
+  EXECUTIVE_NOTIFIED: 'executive_notified',
+  CONVERTED: 'converted',
+  WAITING: 'waiting',
+  NOT_CONVERTED: 'not_converted',
+  ESCALATED: 'escalated'
 };
 
 // ============================================
@@ -330,6 +410,33 @@ function safeJSONParse(content) {
 }
 
 // ============================================
+// ✅ UPDATE PATIENT STAGE
+// ============================================
+async function updatePatientStage(patientId, stage, metadata = {}) {
+  try {
+    const updateData = {
+      currentStage: stage,
+      lastStageUpdate: new Date(),
+      ...metadata
+    };
+    
+    // Add stage history
+    updateData[`stageHistory.${stage}`] = new Date();
+    
+    await patientsCollection.updateOne(
+      { _id: patientId },
+      { $set: updateData }
+    );
+    
+    console.log(`📍 Stage updated for patient ${patientId}: ${stage}`);
+    return true;
+  } catch (error) {
+    console.error(`❌ Failed to update stage:`, error.message);
+    return false;
+  }
+}
+
+// ============================================
 // ✅ WATI TEMPLATE SENDER
 // ============================================
 async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
@@ -489,7 +596,11 @@ async function createOrUpdateLead(chatId, patientName, patientPhone, branch, tes
         followupDate: null,
         createdAt: now,
         updatedAt: now,
-        missCallTime: sourceType === 'Miss Call' ? now : null
+        missCallTime: sourceType === 'Miss Call' ? now : null,
+        currentStage: sourceType === 'Miss Call' ? STAGES.MISS_CALL_RECEIVED : STAGES.AWAITING_PRESCRIPTION,
+        stageHistory: {
+          [sourceType === 'Miss Call' ? STAGES.MISS_CALL_RECEIVED : STAGES.AWAITING_PRESCRIPTION]: now
+        }
       },
       $set: imageUrl ? { imageUrl, updatedAt: now } : { updatedAt: now }
     },
@@ -518,11 +629,13 @@ async function processManualEntry(messageId, patientName, testNames, branch, pat
     // For new leads, we need to get the inserted ID
     const patient = await patientsCollection.findOne({ chatId });
     if (patient) {
+      await updatePatientStage(patient._id, STAGES.AWAITING_PRESCRIPTION);
       await sendNotificationAtomic(patient._id, () => 
         sendLeadNotification(
           executiveNumber, patientName, patientPhone, branch, testNames, "Manual", chatId
         )
       );
+      await updatePatientStage(patient._id, STAGES.EXECUTIVE_NOTIFIED);
     }
   } else {
     console.log(`ℹ️ Lead already exists, skipping notification`);
@@ -564,11 +677,15 @@ async function processImageUpload(messageId, patientName, branch, imageUrl, pati
         status: 'pending',
         notificationSent: false,
         createdAt: new Date(),
-        updatedAt: new Date()
+        updatedAt: new Date(),
+        currentStage: STAGES.AWAITING_PRESCRIPTION,
+        stageHistory: { [STAGES.AWAITING_PRESCRIPTION]: new Date() }
       });
       
       patient._id = insertResult.insertedId;
     }
+    
+    await updatePatientStage(patient._id, STAGES.PRESCRIPTION_UPLOADED);
     
     const finalBranch = patient.branch || branch;
     const executiveNumber = getExecutiveNumber(finalBranch);
@@ -577,10 +694,13 @@ async function processImageUpload(messageId, patientName, branch, imageUrl, pati
     console.log(`🏥 Using branch: ${finalBranch}, Executive: ${executiveNumber}`);
     
     // Perform OCR with safe fallback
+    await updatePatientStage(patient._id, STAGES.OCR_PROCESSING);
+    
     let extracted = { patientName: patientName, tests: 'Unknown' };
     try {
       extracted = await retryWithTimeout(() => extractWithOpenAI(imageUrl), 10000, 2);
       console.log(`✅ OCR successful:`, extracted);
+      await updatePatientStage(patient._id, STAGES.OCR_COMPLETED);
     } catch (ocrError) {
       console.error(`❌ OCR failed, using fallback:`, ocrError.message);
     }
@@ -606,7 +726,7 @@ async function processImageUpload(messageId, patientName, branch, imageUrl, pati
     console.log(`✅ Patient record updated with OCR data`);
     
     // Send notification atomically
-    await sendNotificationAtomic(patient._id, () => 
+    const notified = await sendNotificationAtomic(patient._id, () => 
       sendLeadNotification(
         executiveNumber,
         extracted.patientName || patientName,
@@ -617,6 +737,10 @@ async function processImageUpload(messageId, patientName, branch, imageUrl, pati
         chatId
       )
     );
+    
+    if (notified) {
+      await updatePatientStage(patient._id, STAGES.EXECUTIVE_NOTIFIED);
+    }
     
     return true;
     
@@ -695,8 +819,9 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       status: { $in: ['awaiting_branch', 'pending', 'waiting'] }
     });
     
+    let patientId;
     if (!existingPatient) {
-      await patientsCollection.insertOne({
+      const result = await patientsCollection.insertOne({
         chatId,
         patientName: 'Miss Call Patient',
         patientPhone: whatsappNumber,
@@ -709,9 +834,15 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         notificationSent: false,
         missCallTime: new Date(),
         createdAt: new Date(),
-        updatedAt: new Date()
+        updatedAt: new Date(),
+        currentStage: STAGES.AWAITING_BRANCH,
+        stageHistory: { [STAGES.AWAITING_BRANCH]: new Date() }
       });
+      patientId = result.insertedId;
       console.log('✅ New patient created (awaiting_branch)');
+    } else {
+      patientId = existingPatient._id;
+      await updatePatientStage(patientId, STAGES.AWAITING_BRANCH);
     }
     
     // Send welcome template
@@ -719,7 +850,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       { name: '1', value: branch.name }
     ]);
     
-    res.json({ success: true, whatsappNumber, branch: branch.name });
+    res.json({ success: true, whatsappNumber, branch: branch.name, patientId });
     
   } catch (error) {
     console.error('❌ Tata Tele error:', error);
@@ -772,7 +903,11 @@ app.post('/wati-webhook', async (req, res) => {
               branch: action,
               status: 'pending',
               executiveNumber: getExecutiveNumber(action),
-              updatedAt: new Date()
+              updatedAt: new Date(),
+              currentStage: STAGES.BRANCH_SELECTED
+            },
+            $push: {
+              stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
             }
           },
           {
@@ -783,6 +918,7 @@ app.post('/wati-webhook', async (req, res) => {
         
         if (patient.value) {
           console.log(`✅ Branch updated for patient`);
+          await updatePatientStage(patient.value._id, STAGES.BRANCH_SELECTED);
           
           // Send notification if not already sent
           if (!patient.value.notificationSent) {
@@ -797,6 +933,7 @@ app.post('/wati-webhook', async (req, res) => {
                 `${patientPhone}_${action}`
               )
             );
+            await updatePatientStage(patient.value._id, STAGES.EXECUTIVE_NOTIFIED);
           }
         } else {
           console.log(`⚠️ No awaiting_branch patient found, creating new`);
@@ -814,10 +951,15 @@ app.post('/wati-webhook', async (req, res) => {
             executiveNumber: execNumber,
             priority: 'low',
             status: 'pending',
-            notificationSent: true, // Mark as sent immediately
+            notificationSent: true,
             lastNotificationSentAt: new Date(),
             createdAt: new Date(),
-            updatedAt: new Date()
+            updatedAt: new Date(),
+            currentStage: STAGES.EXECUTIVE_NOTIFIED,
+            stageHistory: {
+              [STAGES.BRANCH_SELECTED]: new Date(),
+              [STAGES.EXECUTIVE_NOTIFIED]: new Date()
+            }
           });
           
           // Send notification
@@ -840,7 +982,16 @@ app.post('/wati-webhook', async (req, res) => {
       if (action === '✅ Convert Done') {
         const patient = await patientsCollection.findOneAndUpdate(
           { patientPhone, status: { $in: ['pending', 'waiting'] } },
-          { $set: { status: 'converted', updatedAt: new Date() } },
+          { 
+            $set: { 
+              status: 'converted', 
+              updatedAt: new Date(),
+              currentStage: STAGES.CONVERTED
+            },
+            $push: {
+              stageHistory: { [STAGES.CONVERTED]: new Date() }
+            }
+          },
           { sort: { createdAt: -1 } }
         );
         
@@ -853,7 +1004,15 @@ app.post('/wati-webhook', async (req, res) => {
       else if (action === '⏳ Waiting') {
         const patient = await patientsCollection.findOneAndUpdate(
           { patientPhone, status: 'pending' },
-          { $set: { awaiting_followup: true } },
+          { 
+            $set: { 
+              awaiting_followup: true,
+              currentStage: STAGES.WAITING
+            },
+            $push: {
+              stageHistory: { [STAGES.WAITING]: new Date() }
+            }
+          },
           { sort: { createdAt: -1 } }
         );
         
@@ -866,7 +1025,16 @@ app.post('/wati-webhook', async (req, res) => {
       else if (action === '❌ Not Convert') {
         const patient = await patientsCollection.findOneAndUpdate(
           { patientPhone, status: { $in: ['pending', 'waiting'] } },
-          { $set: { status: 'not_converted', updatedAt: new Date() } },
+          { 
+            $set: { 
+              status: 'not_converted', 
+              updatedAt: new Date(),
+              currentStage: STAGES.NOT_CONVERTED
+            },
+            $push: {
+              stageHistory: { [STAGES.NOT_CONVERTED]: new Date() }
+            }
+          },
           { sort: { createdAt: -1 } }
         );
         
@@ -880,6 +1048,7 @@ app.post('/wati-webhook', async (req, res) => {
             '⚠️ Escalation',
             patient.value.chatId
           );
+          await updatePatientStage(patient.value._id, STAGES.ESCALATED);
         }
       }
       
@@ -934,7 +1103,11 @@ app.post('/webhook/followup-date', async (req, res) => {
           followupDate: date,
           status: 'waiting',
           awaiting_followup: false,
-          updatedAt: new Date()
+          updatedAt: new Date(),
+          currentStage: STAGES.WAITING
+        },
+        $push: {
+          stageHistory: { [STAGES.WAITING]: new Date() }
         }
       }
     );
@@ -946,7 +1119,7 @@ app.post('/webhook/followup-date', async (req, res) => {
 });
 
 // ============================================
-// ✅ CRON JOB (FALLBACK)
+// ✅ CRON JOBS
 // ============================================
 cron.schedule('*/5 * * * *', async () => {
   console.log(`\n🔍 [${new Date().toLocaleTimeString()}] Fallback check for missed messages...`);
@@ -1047,7 +1220,15 @@ cron.schedule('*/30 * * * *', async () => {
       
       await patientsCollection.updateOne(
         { _id: lead._id },
-        { $set: { lastNotificationSentAt: new Date() } }
+        { 
+          $set: { 
+            lastNotificationSentAt: new Date(),
+            currentStage: STAGES.EXECUTIVE_NOTIFIED 
+          },
+          $push: {
+            stageHistory: { [STAGES.EXECUTIVE_NOTIFIED]: new Date() }
+          }
+        }
       );
     }
   } catch (error) {
@@ -1084,6 +1265,10 @@ cron.schedule('0 21 * * *', async () => {
         '📊 Summary',
         `summary-${Date.now()}`
       );
+      
+      for (const patient of notConverted) {
+        await updatePatientStage(patient._id, STAGES.ESCALATED);
+      }
     }
   } catch (error) {
     console.error('❌ Manager escalation error:', error.message);
@@ -1136,11 +1321,20 @@ app.get('/connect-chat/:chatId', async (req, res) => {
           .btn-convert { background: #28a745; color: white; }
           .btn-waiting { background: #ffc107; color: black; }
           .btn-notconvert { background: #dc3545; color: white; }
+          .stage-badge { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 0.8em; font-weight: 600; margin-left: 10px; }
+          .stage-misscall { background: #fef3c7; color: #92400e; }
+          .stage-branch { background: #dbeafe; color: #1e40af; }
+          .stage-ocr { background: #d1fae5; color: #065f46; }
+          .stage-executive { background: #ede9fe; color: #5b21b6; }
         </style>
       </head>
       <body>
         <div class="container priority-${patient.priority || 'low'}">
-          <h1>👤 Patient Details</h1>
+          <h1>👤 Patient Details 
+            <span class="stage-badge stage-${patient.currentStage || 'pending'}">
+              ${patient.currentStage?.replace(/_/g, ' ') || 'pending'}
+            </span>
+          </h1>
           
           <div class="detail-row">
             <strong>Patient:</strong> ${patient.patientName || 'N/A'}
@@ -1162,6 +1356,9 @@ app.get('/connect-chat/:chatId', async (req, res) => {
           </div>
           <div class="detail-row">
             <strong>Status:</strong> ${patient.status || 'pending'}
+          </div>
+          <div class="detail-row">
+            <strong>Current Stage:</strong> ${patient.currentStage?.replace(/_/g, ' ') || 'pending'}
           </div>
           <div class="detail-row">
             <strong>Miss Call Time:</strong> ${patient.missCallTime ? new Date(patient.missCallTime).toLocaleString() : 'N/A'}
@@ -1189,7 +1386,8 @@ app.get('/connect-chat/:chatId', async (req, res) => {
           function updateStatus(action) {
             fetch('/exec-action?action=' + action + '&chat=${patient.chatId}')
               .then(response => response.text())
-              .then(data => alert(data));
+              .then(data => alert(data))
+              .then(() => setTimeout(() => location.reload(), 1000));
           }
         </script>
       </body>
@@ -1207,12 +1405,43 @@ app.get('/exec-action', async (req, res) => {
     action === 'convert' ? 'converted' :
     action === 'waiting' ? 'waiting' : 'not_converted';
   
+  const stage = 
+    action === 'convert' ? STAGES.CONVERTED :
+    action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
+  
   await patientsCollection.updateOne(
     { chatId: chat },
-    { $set: { status, updatedAt: new Date() } }
+    { 
+      $set: { 
+        status, 
+        updatedAt: new Date(),
+        currentStage: stage
+      },
+      $push: {
+        stageHistory: { [stage]: new Date() }
+      }
+    }
   );
   
   res.send(`✅ Patient marked as ${status}`);
+});
+
+// ============================================
+// ✅ STAGE STATS ENDPOINT
+// ============================================
+app.get('/api/stage-stats', async (req, res) => {
+  try {
+    const stages = Object.values(STAGES);
+    const stats = {};
+    
+    for (const stage of stages) {
+      stats[stage] = await patientsCollection.countDocuments({ currentStage: stage });
+    }
+    
+    res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============================================
@@ -1233,7 +1462,7 @@ app.get('/api/misscall-stats', async (req, res) => {
     });
     
     const awaitingBranch = await patientsCollection.countDocuments({
-      status: 'awaiting_branch'
+      currentStage: STAGES.AWAITING_BRANCH
     });
     
     const byBranch = await missCallsCollection.aggregate([
@@ -1284,7 +1513,7 @@ app.get('/test-exec', async (req, res) => {
 });
 
 // ============================================
-// ✅ DIRECT EXECUTIVE TEMPLATE TEST (FIXED)
+// ✅ DIRECT EXECUTIVE TEMPLATE TEST
 // ============================================
 app.get('/test-executive-direct', async (req, res) => {
   try {
@@ -1293,7 +1522,6 @@ app.get('/test-executive-direct', async (req, res) => {
     
     console.log(`🧪 Direct test called with exec=${execNumber}, patient=${patientPhone}`);
     
-    // Direct API call (bypassing sendLeadNotification)
     const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${execNumber}`;
     const payload = {
       template_name: "lead_notification_v2",
@@ -1351,9 +1579,8 @@ app.get('/test-misscall', async (req, res) => {
   console.log('🧪 Test miss call:', { whatsappNumber, branch });
   
   try {
-    // Save patient with awaiting_branch
     const chatId = `${whatsappNumber}_${branch.name}`;
-    await patientsCollection.insertOne({
+    const result = await patientsCollection.insertOne({
       chatId,
       patientName: 'Test Patient',
       patientPhone: whatsappNumber,
@@ -1363,12 +1590,14 @@ app.get('/test-misscall', async (req, res) => {
       executiveNumber: branch.executive,
       priority: 'low',
       status: 'awaiting_branch',
+      notificationSent: false,
       missCallTime: new Date(),
       createdAt: new Date(),
-      updatedAt: new Date()
+      updatedAt: new Date(),
+      currentStage: STAGES.AWAITING_BRANCH,
+      stageHistory: { [STAGES.AWAITING_BRANCH]: new Date() }
     });
     
-    // Send template
     await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
       { name: '1', value: branch.name }
     ]);
@@ -1378,7 +1607,8 @@ app.get('/test-misscall', async (req, res) => {
       message: 'Test miss call processed',
       whatsappNumber,
       branch: branch.name,
-      executive: branch.executive
+      executive: branch.executive,
+      patientId: result.insertedId
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1411,7 +1641,12 @@ app.get('/health', async (req, res) => {
     const patientCount = await patientsCollection.countDocuments();
     const processedCount = await processedCollection.countDocuments();
     const missCallCount = missCallsCollection ? await missCallsCollection.countDocuments() : 0;
-    const awaitingBranchCount = await patientsCollection.countDocuments({ status: 'awaiting_branch' });
+    const awaitingBranchCount = await patientsCollection.countDocuments({ currentStage: STAGES.AWAITING_BRANCH });
+    
+    const stageStats = {};
+    for (const stage of Object.values(STAGES)) {
+      stageStats[stage] = await patientsCollection.countDocuments({ currentStage: stage });
+    }
     
     res.json({
       success: true,
@@ -1419,6 +1654,7 @@ app.get('/health', async (req, res) => {
       processed: processedCount,
       missCalls: missCallCount,
       awaitingBranch: awaitingBranchCount,
+      stageStats,
       uptime: process.uptime(),
       mongodb: 'connected'
     });
@@ -1447,7 +1683,7 @@ app.get('/', (req, res) => {
     <body>
       <div class="container">
         <h1>🚀 Production Executive System</h1>
-        <p>✅ Tata Tele Webhooks + WATI + MongoDB</p>
+        <p>✅ Tata Tele Webhooks + WATI + MongoDB + Stage Tracking</p>
         
         <div class="endpoint">
           <div><span class="code">POST</span> /tata-misscall-whatsapp</div>
@@ -1472,6 +1708,11 @@ app.get('/', (req, res) => {
         <div class="endpoint">
           <div><span class="code">GET</span> <a href="/debug-patient/919106959092">/debug-patient/919106959092</a></div>
           <small>Check patient status</small>
+        </div>
+        
+        <div class="endpoint">
+          <div><span class="code">GET</span> <a href="/api/stage-stats">/api/stage-stats</a></div>
+          <small>Stage wise statistics</small>
         </div>
         
         <div class="endpoint">
@@ -1515,6 +1756,7 @@ app.use('/admin', (req, res, next) => {
   req.patientsCollection = patientsCollection;
   req.processedCollection = processedCollection;
   req.missCallsCollection = missCallsCollection;
+  req.STAGES = STAGES;
   req.PORT = PORT;
   next();
 }, dashboardRouter);
@@ -1542,6 +1784,7 @@ async function startServer() {
       console.log(`📍 Test Endpoint: /test-misscall`);
       console.log(`📍 Direct Test: /test-executive-direct`);
       console.log(`📍 Debug Patient: /debug-patient/:phone`);
+      console.log(`📍 Stage Tracking: ${Object.keys(STAGES).length} stages`);
       console.log(`📍 Cron: Fallback (5 min)`);
       console.log(`📍 MongoDB: Connected ✅`);
       console.log(`📍 Security: HMAC + API Key + WATI Auth`);
