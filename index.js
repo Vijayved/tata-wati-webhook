@@ -6,7 +6,6 @@ const cron = require('node-cron');
 const OpenAI = require('openai');
 const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
-const path = require('path');
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -332,7 +331,7 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK - FIXED WITH DEDUPE OFF
+// ✅ TATA TELE WEBHOOK
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -352,7 +351,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
     
-    // MISS CALL TRACKING - हर miss call track करो
+    // MISS CALL TRACKING
     await missCallsCollection.insertOne({
       phoneNumber: whatsappNumber,
       calledNumber: calledNumber,
@@ -362,7 +361,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     const chatId = `${whatsappNumber}_${branch.name}`;
     
-    // Patient check - अगर exists तो update, नहीं तो create
     const existingPatient = await patientsCollection.findOne({ 
       patientPhone: whatsappNumber
     });
@@ -378,7 +376,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
             status: 'awaiting_branch',
             currentStage: STAGES.AWAITING_BRANCH
           },
-          $inc: { missCallCount: 1 } // Miss call count बढ़ाओ
+          $inc: { missCallCount: 1 }
         }
       );
       console.log(`✅ Patient updated, total miss calls: ${(existingPatient.missCallCount || 0) + 1}`);
@@ -404,7 +402,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       console.log(`✅ New patient created`);
     }
     
-    // हर miss call पर template भेजो
     try {
       await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
         { name: '1', value: branch.name }
@@ -423,7 +420,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - WITH BRANCH DETECTION
+// ✅ WATI WEBHOOK
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -451,7 +448,6 @@ app.post('/wati-webhook', async (req, res) => {
       const whatsappNumber = normalizeWhatsAppNumber(patientPhone);
       const executiveNumber = getExecutiveNumber(branch);
       
-      // Find or create patient
       let patient = await patientsCollection.findOne({ 
         patientPhone: whatsappNumber
       });
@@ -494,7 +490,6 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Patient updated from DONE_ message`);
       }
       
-      // Send executive notification
       try {
         const notified = await sendNotificationAtomic(patient._id, () =>
           sendLeadNotification(
@@ -555,7 +550,7 @@ app.get('/test-executive-direct', async (req, res) => {
 });
 
 // ============================================
-// ✅ API ENDPOINTS FOR DASHBOARD
+// ✅ API STATS ENDPOINT
 // ============================================
 app.get('/api/stats', async (req, res) => {
   try {
@@ -622,22 +617,14 @@ app.get('/api/stats', async (req, res) => {
 });
 
 // ============================================
-// ✅ EXECUTIVE DASHBOARD (CONNECT-CHAT)
+// ✅ CONNECT CHAT ENDPOINT
 // ============================================
 app.get('/connect-chat/:chatId', async (req, res) => {
   const { chatId } = req.params;
   const { token } = req.query;
   
   if (!verifyToken(chatId, token)) {
-    return res.status(403).send(`
-      <html>
-        <head><title>Unauthorized</title></head>
-        <body style="font-family: Arial; padding: 30px;">
-          <h2 style="color: #dc3545;">🔒 Unauthorized Access</h2>
-          <p>Invalid access token</p>
-        </body>
-      </html>
-    `);
+    return res.status(403).send('<h2>🔒 Unauthorized Access</h2>');
   }
   
   const patient = await patientsCollection.findOne({ chatId });
@@ -645,50 +632,23 @@ app.get('/connect-chat/:chatId', async (req, res) => {
   
   res.send(`
     <html>
-      <head>
-        <title>Patient Details</title>
-        <style>
-          body { font-family: Arial; padding: 20px; background: #f5f5f5; }
-          .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }
-          .detail-row { margin: 15px 0; padding: 10px; background: #f8f9fa; border-radius: 5px; }
-          .btn { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
-          .btn-convert { background: #28a745; color: white; }
-          .btn-waiting { background: #ffc107; color: black; }
-          .btn-notconvert { background: #dc3545; color: white; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>👤 Patient Details</h1>
-          <div class="detail-row"><strong>Patient:</strong> ${patient.patientName || 'N/A'}</div>
-          <div class="detail-row"><strong>Phone:</strong> ${patient.patientPhone || 'N/A'}</div>
-          <div class="detail-row"><strong>Branch:</strong> ${patient.branch || 'N/A'}</div>
-          <div class="detail-row"><strong>Tests:</strong> ${patient.testNames || patient.tests || 'N/A'}</div>
-          <div class="detail-row"><strong>Status:</strong> ${patient.status || 'pending'}</div>
-          <div class="detail-row"><strong>Stage:</strong> ${patient.currentStage || 'pending'}</div>
-          <div class="detail-row"><strong>Miss Calls:</strong> ${patient.missCallCount || 1}</div>
-          <a href="https://wa.me/${patient.patientPhone}" target="_blank" style="display: inline-block; background: #25D366; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin: 10px 0;">💬 Chat on WhatsApp</a>
-          <div style="margin-top: 20px;">
-            <button class="btn btn-convert" onclick="updateStatus('convert')">✅ Convert</button>
-            <button class="btn btn-waiting" onclick="updateStatus('waiting')">⏳ Waiting</button>
-            <button class="btn btn-notconvert" onclick="updateStatus('notconvert')">❌ Not Convert</button>
-          </div>
-        </div>
-        <script>
-          function updateStatus(action) {
-            fetch('/exec-action?action=' + action + '&chat=${patient.chatId}')
-              .then(response => response.text())
-              .then(data => alert(data))
-              .then(() => setTimeout(() => location.reload(), 1000));
-          }
-        </script>
+      <head><title>Patient Details</title></head>
+      <body style="font-family: Arial; padding: 20px;">
+        <h1>👤 Patient Details</h1>
+        <p><strong>Name:</strong> ${patient.patientName || 'N/A'}</p>
+        <p><strong>Phone:</strong> ${patient.patientPhone || 'N/A'}</p>
+        <p><strong>Branch:</strong> ${patient.branch || 'N/A'}</p>
+        <p><strong>Tests:</strong> ${patient.testNames || patient.tests || 'N/A'}</p>
+        <p><strong>Status:</strong> ${patient.status || 'pending'}</p>
+        <p><strong>Miss Calls:</strong> ${patient.missCallCount || 1}</p>
+        <a href="https://wa.me/${patient.patientPhone}" target="_blank">💬 Chat on WhatsApp</a>
       </body>
     </html>
   `);
 });
 
 // ============================================
-// ✅ EXECUTIVE ACTION HANDLER
+// ✅ EXECUTIVE ACTION
 // ============================================
 app.get('/exec-action', async (req, res) => {
   const { action, chat } = req.query;
@@ -710,13 +670,11 @@ app.get('/exec-action', async (req, res) => {
 app.get('/health', async (req, res) => {
   try {
     const patientCount = await patientsCollection?.countDocuments() || 0;
-    const missCallCount = await missCallsCollection?.countDocuments() || 0;
     res.json({
       success: true,
       uptime: process.uptime(),
       mongodb: 'connected',
       patients: patientCount,
-      missCalls: missCallCount,
       time: new Date().toISOString()
     });
   } catch (error) {
@@ -748,11 +706,10 @@ app.get('/', (req, res) => {
 });
 
 // ============================================
-// ✅ DASHBOARD ROUTES - FIXED
+// ✅ DASHBOARD ROUTE
 // ============================================
 const dashboardRouter = require('./dashboard');
 
-// Both /admin and /dashboard work
 app.use('/admin', (req, res, next) => {
   if (!patientsCollection || !processedCollection) {
     return res.status(503).send(`
@@ -774,8 +731,7 @@ app.use('/admin', (req, res, next) => {
   next();
 }, dashboardRouter);
 
-// Also support /dashboard for backward compatibility
-app.use('/dashboard', (req, res, next) => {
+app.get('/dashboard', (req, res) => {
   res.redirect('/admin');
 });
 
@@ -792,8 +748,6 @@ async function startServer() {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
-      console.log(`📍 API Stats: http://localhost:${PORT}/api/stats`);
-      console.log(`📍 Health Check: http://localhost:${PORT}/health`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
