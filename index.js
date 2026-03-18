@@ -6,6 +6,7 @@ const cron = require('node-cron');
 const OpenAI = require('openai');
 const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
+const path = require('path');
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -22,7 +23,7 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const HMAC_SECRET = process.env.HMAC_SECRET || 'your_hmac_secret_key';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
-const DEDUPE_WINDOW_MS = 0; // ✅ 0 means no deduplication - हर miss call पर template जाएगा
+const DEDUPE_WINDOW_MS = 0; // 0 means no deduplication - हर miss call पर template जाएगा
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2';
 
@@ -72,6 +73,7 @@ async function connectDB() {
     await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
     await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
     await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
+    await patientsCollection.createIndex({ missCallCount: -1 });
     
     console.log('✅ Indexes created');
     return true;
@@ -350,7 +352,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
     
-    // ✅ MISS CALL TRACKING - हर miss call track करो
+    // MISS CALL TRACKING - हर miss call track करो
     await missCallsCollection.insertOne({
       phoneNumber: whatsappNumber,
       calledNumber: calledNumber,
@@ -360,7 +362,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     const chatId = `${whatsappNumber}_${branch.name}`;
     
-    // ✅ Patient check - अगर exists तो update, नहीं तो create
+    // Patient check - अगर exists तो update, नहीं तो create
     const existingPatient = await patientsCollection.findOne({ 
       patientPhone: whatsappNumber
     });
@@ -376,9 +378,10 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
             status: 'awaiting_branch',
             currentStage: STAGES.AWAITING_BRANCH
           },
-          $inc: { missCallCount: 1 } // ✅ Miss call count बढ़ाओ
+          $inc: { missCallCount: 1 } // Miss call count बढ़ाओ
         }
       );
+      console.log(`✅ Patient updated, total miss calls: ${(existingPatient.missCallCount || 0) + 1}`);
     } else {
       await patientsCollection.insertOne({
         chatId,
@@ -398,9 +401,10 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         currentStage: STAGES.AWAITING_BRANCH,
         stageHistory: { [STAGES.AWAITING_BRANCH]: new Date() }
       });
+      console.log(`✅ New patient created`);
     }
     
-    // ✅ हर miss call पर template भेजो
+    // हर miss call पर template भेजो
     try {
       await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
         { name: '1', value: branch.name }
@@ -472,6 +476,7 @@ app.post('/wati-webhook', async (req, res) => {
           stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
         });
         patient = { _id: result.insertedId };
+        console.log(`✅ New patient created from DONE_ message`);
       } else {
         await patientsCollection.updateOne(
           { _id: patient._id },
@@ -486,6 +491,7 @@ app.post('/wati-webhook', async (req, res) => {
             $push: { stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() } }
           }
         );
+        console.log(`✅ Patient updated from DONE_ message`);
       }
       
       // Send executive notification
@@ -505,6 +511,8 @@ app.post('/wati-webhook', async (req, res) => {
         if (notified) {
           console.log(`✅✅ EXECUTIVE NOTIFICATION SENT`);
           await updatePatientStage(patient._id, STAGES.EXECUTIVE_NOTIFIED);
+        } else {
+          console.log(`ℹ️ Notification already sent previously`);
         }
       } catch (notifError) {
         console.error(`❌ Notification failed:`, notifError.message);
@@ -574,6 +582,9 @@ app.get('/api/stats', async (req, res) => {
       { $group: { _id: '$branch', count: { $sum: 1 } } }
     ]).toArray();
     
+    const branchMissCallMap = {};
+    branchStats.forEach(b => { branchMissCallMap[b._id] = b.count; });
+    
     const recentPatients = await patientsCollection.find()
       .sort({ createdAt: -1 })
       .limit(20)
@@ -582,6 +593,11 @@ app.get('/api/stats', async (req, res) => {
     const recentMissCalls = await missCallsCollection.find()
       .sort({ createdAt: -1 })
       .limit(20)
+      .toArray();
+    
+    const topMissCallPatients = await patientsCollection.find()
+      .sort({ missCallCount: -1 })
+      .limit(5)
       .toArray();
     
     res.json({
@@ -593,32 +609,87 @@ app.get('/api/stats', async (req, res) => {
       stageStats,
       missCallTotal,
       missCallToday,
-      branchStats,
+      branchMissCallMap,
       recentPatients,
-      recentMissCalls
+      recentMissCalls,
+      topMissCallPatients,
+      uptime: process.uptime()
     });
   } catch (error) {
+    console.error('API Stats Error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // ============================================
-// ✅ EXECUTIVE DASHBOARD
+// ✅ EXECUTIVE DASHBOARD (CONNECT-CHAT)
 // ============================================
 app.get('/connect-chat/:chatId', async (req, res) => {
   const { chatId } = req.params;
   const { token } = req.query;
   
   if (!verifyToken(chatId, token)) {
-    return res.status(403).send('Unauthorized');
+    return res.status(403).send(`
+      <html>
+        <head><title>Unauthorized</title></head>
+        <body style="font-family: Arial; padding: 30px;">
+          <h2 style="color: #dc3545;">🔒 Unauthorized Access</h2>
+          <p>Invalid access token</p>
+        </body>
+      </html>
+    `);
   }
   
   const patient = await patientsCollection.findOne({ chatId });
-  if (!patient) return res.send('Patient not found');
+  if (!patient) return res.send('<h2>❌ Patient not found</h2>');
   
-  res.json(patient);
+  res.send(`
+    <html>
+      <head>
+        <title>Patient Details</title>
+        <style>
+          body { font-family: Arial; padding: 20px; background: #f5f5f5; }
+          .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }
+          .detail-row { margin: 15px 0; padding: 10px; background: #f8f9fa; border-radius: 5px; }
+          .btn { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
+          .btn-convert { background: #28a745; color: white; }
+          .btn-waiting { background: #ffc107; color: black; }
+          .btn-notconvert { background: #dc3545; color: white; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>👤 Patient Details</h1>
+          <div class="detail-row"><strong>Patient:</strong> ${patient.patientName || 'N/A'}</div>
+          <div class="detail-row"><strong>Phone:</strong> ${patient.patientPhone || 'N/A'}</div>
+          <div class="detail-row"><strong>Branch:</strong> ${patient.branch || 'N/A'}</div>
+          <div class="detail-row"><strong>Tests:</strong> ${patient.testNames || patient.tests || 'N/A'}</div>
+          <div class="detail-row"><strong>Status:</strong> ${patient.status || 'pending'}</div>
+          <div class="detail-row"><strong>Stage:</strong> ${patient.currentStage || 'pending'}</div>
+          <div class="detail-row"><strong>Miss Calls:</strong> ${patient.missCallCount || 1}</div>
+          <a href="https://wa.me/${patient.patientPhone}" target="_blank" style="display: inline-block; background: #25D366; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin: 10px 0;">💬 Chat on WhatsApp</a>
+          <div style="margin-top: 20px;">
+            <button class="btn btn-convert" onclick="updateStatus('convert')">✅ Convert</button>
+            <button class="btn btn-waiting" onclick="updateStatus('waiting')">⏳ Waiting</button>
+            <button class="btn btn-notconvert" onclick="updateStatus('notconvert')">❌ Not Convert</button>
+          </div>
+        </div>
+        <script>
+          function updateStatus(action) {
+            fetch('/exec-action?action=' + action + '&chat=${patient.chatId}')
+              .then(response => response.text())
+              .then(data => alert(data))
+              .then(() => setTimeout(() => location.reload(), 1000));
+          }
+        </script>
+      </body>
+    </html>
+  `);
 });
 
+// ============================================
+// ✅ EXECUTIVE ACTION HANDLER
+// ============================================
 app.get('/exec-action', async (req, res) => {
   const { action, chat } = req.query;
   
@@ -637,30 +708,75 @@ app.get('/exec-action', async (req, res) => {
 // ✅ HEALTH CHECK
 // ============================================
 app.get('/health', async (req, res) => {
-  res.json({
-    success: true,
-    uptime: process.uptime(),
-    mongodb: 'connected',
-    time: new Date().toISOString()
-  });
+  try {
+    const patientCount = await patientsCollection?.countDocuments() || 0;
+    const missCallCount = await missCallsCollection?.countDocuments() || 0;
+    res.json({
+      success: true,
+      uptime: process.uptime(),
+      mongodb: 'connected',
+      patients: patientCount,
+      missCalls: missCallCount,
+      time: new Date().toISOString()
+    });
+  } catch (error) {
+    res.json({
+      success: true,
+      uptime: process.uptime(),
+      mongodb: 'error',
+      time: new Date().toISOString()
+    });
+  }
 });
 
+// ============================================
+// ✅ HOME ROUTE
+// ============================================
 app.get('/', (req, res) => {
   res.json({
-    message: 'Tata-WATI Webhook Server',
+    message: '🚀 Tata-WATI Executive System',
+    version: '2.0.0',
     endpoints: {
-      dashboard: '/dashboard',
-      stats: '/api/stats',
-      test: '/test-executive-direct'
+      admin_dashboard: '/admin',
+      api_stats: '/api/stats',
+      test_executive: '/test-executive-direct',
+      health: '/health',
+      webhook_wati: '/wati-webhook',
+      webhook_tata: '/tata-misscall-whatsapp'
     }
   });
 });
 
 // ============================================
-// ✅ DASHBOARD HTML ROUTE
+// ✅ DASHBOARD ROUTES - FIXED
 // ============================================
-app.get('/dashboard', (req, res) => {
-  res.sendFile(__dirname + '/dashboard.html');
+const dashboardRouter = require('./dashboard');
+
+// Both /admin and /dashboard work
+app.use('/admin', (req, res, next) => {
+  if (!patientsCollection || !processedCollection) {
+    return res.status(503).send(`
+      <html>
+        <head><title>Dashboard Unavailable</title></head>
+        <body style="font-family: Arial; padding: 30px;">
+          <h2 style="color: #dc3545;">⏳ Dashboard Initializing</h2>
+          <p>Database connection is being established. Please refresh in a few seconds.</p>
+          <button onclick="location.reload()" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">Refresh Page</button>
+        </body>
+      </html>
+    `);
+  }
+  req.patientsCollection = patientsCollection;
+  req.processedCollection = processedCollection;
+  req.missCallsCollection = missCallsCollection;
+  req.STAGES = STAGES;
+  req.PORT = PORT;
+  next();
+}, dashboardRouter);
+
+// Also support /dashboard for backward compatibility
+app.use('/dashboard', (req, res, next) => {
+  res.redirect('/admin');
 });
 
 // ============================================
@@ -675,8 +791,9 @@ async function startServer() {
     app.listen(PORT, HOST, () => {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
-      console.log(`📍 Dashboard: http://localhost:${PORT}/dashboard`);
+      console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
       console.log(`📍 API Stats: http://localhost:${PORT}/api/stats`);
+      console.log(`📍 Health Check: http://localhost:${PORT}/health`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
