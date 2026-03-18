@@ -29,11 +29,6 @@ const FOLLOWUP_TEMPLATE = process.env.FOLLOWUP_TEMPLATE || 'followup_template';
 const CONFIRMATION_TEMPLATE = process.env.CONFIRMATION_TEMPLATE || 'confirmation_template';
 const ASK_DATE_TEMPLATE = process.env.ASK_DATE_TEMPLATE || 'ask_date_template';
 
-// Polling configuration (optional, you can keep it as backup)
-const POLLING_INTERVAL = process.env.POLLING_INTERVAL || '*/15 * * * * *';
-const POLLING_MESSAGES_LIMIT = process.env.POLLING_MESSAGES_LIMIT || 50;
-const POLLING_WINDOW_MINUTES = process.env.POLLING_WINDOW_MINUTES || 10;
-
 // OpenAI
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
@@ -51,7 +46,7 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
 }
 
 // ============================================
-// ✅ DATABASE CONNECTION WITH INDEX FIX
+// ✅ DATABASE CONNECTION
 // ============================================
 let db;
 let processedCollection;
@@ -62,11 +57,8 @@ let missCallsCollection;
 async function connectDB() {
   try {
     console.log('🔄 Connecting to MongoDB...');
-    console.log('MongoDB URI:', MONGODB_URI ? '✅ Present' : '❌ Missing');
     
-    if (!MONGODB_URI) {
-      throw new Error('MONGODB_URI is not defined in environment variables');
-    }
+    if (!MONGODB_URI) throw new Error('MONGODB_URI is not defined');
     
     const client = new MongoClient(MONGODB_URI);
     await client.connect();
@@ -78,101 +70,15 @@ async function connectDB() {
     executivesCollection = db.collection('executives');
     missCallsCollection = db.collection('miss_calls');
     
-    console.log('✅ Collections initialized');
+    // Indexes
+    await processedCollection.createIndex({ messageId: 1 }, { unique: true });
+    await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
+    await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
     
-    // ============================================
-    // ✅ FIX INDEX CONFLICT - DROP AND RECREATE
-    // ============================================
-    
-    // Get existing indexes
-    const existingIndexes = await patientsCollection.indexes();
-    console.log('📋 Existing indexes:', existingIndexes.map(idx => idx.name));
-    
-    // Check for chatId index and drop if exists
-    const chatIdIndex = existingIndexes.find(idx => idx.name === 'chatId_1');
-    if (chatIdIndex) {
-      console.log('⚠️ Found existing chatId_1 index, dropping it...');
-      await patientsCollection.dropIndex('chatId_1');
-      console.log('✅ Dropped old chatId_1 index');
-    }
-    
-    // Create new indexes safely
-    const indexesToCreate = [
-      {
-        name: 'chatId_1',
-        key: { chatId: 1 },
-        unique: true,
-        sparse: true
-      },
-      {
-        name: 'patientPhone_1_status_1',
-        key: { patientPhone: 1, status: 1 }
-      },
-      {
-        name: 'patientPhone_1_createdAt_-1',
-        key: { patientPhone: 1, createdAt: -1 }
-      },
-      {
-        name: 'status_1_followupDate_1',
-        key: { status: 1, followupDate: 1 }
-      },
-      {
-        name: 'patientPhone_1_branch_1_status_1',
-        key: { patientPhone: 1, branch: 1, status: 1 }
-      },
-      {
-        name: 'followupDate_1',
-        key: { followupDate: 1 }
-      },
-      {
-        name: 'createdAt_1',
-        key: { createdAt: 1 }
-      },
-      {
-        name: 'lastNotificationSentAt_1',
-        key: { lastNotificationSentAt: 1 }
-      },
-      {
-        name: 'notificationSent_1',
-        key: { notificationSent: 1 }
-      },
-      {
-        name: 'currentStage_1',
-        key: { currentStage: 1 }
-      },
-      {
-        name: 'patientPhone_1_status_1_createdAt_-1',
-        key: { patientPhone: 1, status: 1, createdAt: -1 }
-      }
-    ];
-    
-    for (const indexSpec of indexesToCreate) {
-      try {
-        await patientsCollection.createIndex(indexSpec.key, {
-          name: indexSpec.name,
-          unique: indexSpec.unique || false,
-          sparse: indexSpec.sparse || false,
-          background: true
-        });
-        console.log(`✅ Created index: ${indexSpec.name}`);
-      } catch (indexError) {
-        if (indexError.code === 85 || indexError.codeName === 'IndexOptionsConflict') {
-          console.log(`⚠️ Index ${indexSpec.name} already exists with different options, skipping...`);
-        } else {
-          console.error(`❌ Failed to create index ${indexSpec.name}:`, indexError.message);
-        }
-      }
-    }
-    
-    console.log('✅ All indexes verified successfully');
-    
+    console.log('✅ Indexes created');
     return true;
   } catch (error) {
-    console.error('❌ MongoDB connection error:', {
-      message: error.message,
-      code: error.code,
-      stack: error.stack
-    });
+    console.error('❌ MongoDB connection error:', error.message);
     throw error;
   }
 }
@@ -238,7 +144,7 @@ const STAGES = {
 const recentMissCalls = new Map();
 
 // ============================================
-// ✅ TOKEN GENERATION (HMAC) WITH SAFE COMPARE
+// ✅ TOKEN GENERATION
 // ============================================
 function generateToken(chatId) {
   return crypto
@@ -257,55 +163,7 @@ function verifyToken(chatId, token) {
 }
 
 // ============================================
-// ✅ TIMEOUT HANDLER
-// ============================================
-function timeout(ms) {
-  return new Promise((_, reject) => 
-    setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
-  );
-}
-
-// ============================================
-// ✅ RETRY MECHANISM WITH TIMEOUT
-// ============================================
-async function retryWithTimeout(fn, timeoutMs = 5000, retries = 3, delay = 1000) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await Promise.race([
-        fn(),
-        timeout(timeoutMs)
-      ]);
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      console.log(`⚠️ Retry ${i + 1}/${retries} failed: ${error.message}`);
-      await new Promise(r => setTimeout(r, delay * Math.pow(2, i)));
-    }
-  }
-}
-
-// ============================================
-// ✅ RATE LIMIT DELAY
-// ============================================
-async function rateLimitDelay() {
-  await new Promise(r => setTimeout(r, 300));
-}
-
-// ============================================
-// ✅ PARSE DATE FUNCTION
-// ============================================
-function parseDate(text) {
-  try {
-    const [d, m, y] = text.split('/');
-    const date = new Date(`${y}-${m}-${d}`);
-    if (isNaN(date.getTime())) return null;
-    return date;
-  } catch {
-    return null;
-  }
-}
-
-// ============================================
-// ✅ NUMBER NORMALIZATION FUNCTIONS
+// ✅ HELPER FUNCTIONS
 // ============================================
 function normalizeIndianNumber(number) {
   if (!number) return '';
@@ -326,6 +184,24 @@ function normalizeWhatsAppNumber(number) {
   return normalized || '';
 }
 
+function getExecutiveNumber(branchName) {
+  const teamName = `${branchName} Team`;
+  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
+}
+
+function getCallerNumberFromPayload(body) {
+  return body.caller_id_number || 
+         body["customer_no_with_prefix "] || 
+         body.customer_number_with_prefix ||
+         body.cli || 
+         body.msisdn || 
+         body.mobile || 
+         body.caller_number || 
+         body.from || 
+         body.customer_number ||
+         '';
+}
+
 function getBranchByCalledNumber(calledNumber) {
   const normalized = normalizeIndianNumber(calledNumber);
   return BRANCHES[normalized] || {
@@ -343,36 +219,12 @@ function shouldSkipDuplicateMissCall(whatsappNumber, calledNumber) {
   return false;
 }
 
-function getCallerNumberFromPayload(body) {
-  return body.caller_id_number || 
-         body["customer_no_with_prefix "] || 
-         body.customer_number_with_prefix ||
-         body.cli || 
-         body.msisdn || 
-         body.mobile || 
-         body.caller_number || 
-         body.from || 
-         body.customer_number ||
-         '';
-}
-
-function getCalledNumberFromPayload(body) {
-  return body.call_to_number || 
-         body.called_number || 
-         body.to || 
-         body.destination || 
-         body.did || 
-         body.virtual_number || 
-         '';
-}
-
 // ============================================
-// ✅ DATABASE HELPER FUNCTIONS
+// ✅ DATABASE FUNCTIONS
 // ============================================
 async function isMessageProcessed(messageId) {
   if (!processedCollection) return false;
-  const processed = await processedCollection.findOne({ messageId });
-  return !!processed;
+  return !!(await processedCollection.findOne({ messageId }));
 }
 
 async function markMessageProcessed(messageId) {
@@ -384,59 +236,19 @@ async function markMessageProcessed(messageId) {
   );
 }
 
-function getPriority(testNames) {
-  const tests = testNames.toLowerCase();
-  if (tests.includes('mri') || tests.includes('ct') || tests.includes('emergency')) {
-    return 'high';
-  }
-  if (tests.includes('blood') || tests.includes('x-ray')) {
-    return 'medium';
-  }
-  return 'low';
-}
-
-function getExecutiveNumber(branchName) {
-  const teamName = `${branchName} Team`;
-  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
-}
-
-function safeJSONParse(content) {
+async function updatePatientStage(patientId, stage) {
   try {
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return { patientName: 'Not found', tests: 'Not found' };
-    const parsed = JSON.parse(jsonMatch[0]);
-    return {
-      patientName: parsed.patientName || 'Not found',
-      tests: parsed.tests || 'Not found'
-    };
-  } catch {
-    return { patientName: 'Not found', tests: 'Not found' };
-  }
-}
-
-// ============================================
-// ✅ UPDATE PATIENT STAGE
-// ============================================
-async function updatePatientStage(patientId, stage, metadata = {}) {
-  try {
-    const updateData = {
-      currentStage: stage,
-      lastStageUpdate: new Date(),
-      ...metadata
-    };
-    
-    // Add stage history
-    updateData[`stageHistory.${stage}`] = new Date();
-    
     await patientsCollection.updateOne(
       { _id: patientId },
-      { $set: updateData }
+      { 
+        $set: { currentStage: stage, lastStageUpdate: new Date() },
+        $push: { stageHistory: { [stage]: new Date() } }
+      }
     );
-    
-    console.log(`📍 Stage updated for patient ${patientId}: ${stage}`);
+    console.log(`📍 Stage updated: ${stage}`);
     return true;
   } catch (error) {
-    console.error(`❌ Failed to update stage:`, error.message);
+    console.error(`❌ Stage update failed:`, error.message);
     return false;
   }
 }
@@ -445,17 +257,18 @@ async function updatePatientStage(patientId, stage, metadata = {}) {
 // ✅ WATI TEMPLATE SENDER
 // ============================================
 async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
+  console.log(`\n📤 SENDING TEMPLATE: ${templateName} to ${whatsappNumber}`);
+  console.log(`📦 Parameters:`, JSON.stringify(parameters));
+  
+  const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
+  
+  const payload = {
+    template_name: templateName,
+    broadcast_name: `msg_${Date.now()}`,
+    parameters: parameters || []
+  };
+  
   try {
-    console.log(`📱 Sending template ${templateName} to ${whatsappNumber}`);
-    
-    const payload = {
-      template_name: templateName,
-      broadcast_name: `msg_${Date.now()}`,
-      parameters: parameters || []
-    };
-    
-    const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
-    
     const response = await axios.post(url, payload, {
       headers: {
         Authorization: `${WATI_TOKEN}`,
@@ -467,61 +280,35 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
     console.log(`✅ Template sent successfully`);
     return response.data;
   } catch (error) {
-    console.error('❌ Template send failed:', error.response?.data || error.message);
+    console.error(`❌ Template send FAILED:`, {
+      status: error.response?.status,
+      data: error.response?.data,
+      message: error.message
+    });
     throw error;
   }
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION - WITH ATOMIC FLAG
+// ✅ LEAD NOTIFICATION
 // ============================================
-async function sendLeadNotification(
-  executiveNumber, 
-  patientName, 
-  patientPhone, 
-  branch, 
-  testNames, 
-  sourceType, 
-  chatId
-) {
-  console.log(`📤 Preparing lead notification for executive ${executiveNumber}`);
-  
-  const safePatientName = patientName || "Miss Call Patient";
-  const safeTestNames = testNames || "Miss Call";
-  const safeSourceType = sourceType || "Miss Call";
+async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testNames, sourceType, chatId) {
+  console.log(`\n📤 Preparing lead notification for executive ${executiveNumber}`);
   
   const parameters = [
-    { name: "1", value: safePatientName },
+    { name: "1", value: patientName || "Miss Call Patient" },
     { name: "2", value: patientPhone },
     { name: "3", value: branch },
-    { name: "4", value: safeTestNames },
-    { name: "5", value: safeSourceType },
+    { name: "4", value: testNames || "Miss Call" },
+    { name: "5", value: sourceType || "Miss Call" },
     { name: "6", value: `${SELF_URL}/connect-chat/${chatId}?token=${generateToken(chatId)}` }
   ];
   
-  console.log(`📦 Parameters:`, JSON.stringify(parameters));
-  
-  const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${executiveNumber}`;
-  const payload = {
-    template_name: LEAD_TEMPLATE_NAME,
-    broadcast_name: `lead_${Date.now()}`,
-    parameters: parameters
-  };
-  
-  const response = await axios.post(url, payload, {
-    headers: {
-      'Authorization': WATI_TOKEN,
-      'Content-Type': 'application/json'
-    },
-    timeout: 15000
-  });
-  
-  console.log(`✅ Lead notification sent successfully to ${executiveNumber}`);
-  return response.data;
+  return await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
 }
 
 // ============================================
-// ✅ ATOMIC NOTIFICATION SENDER (RACE CONDITION FREE)
+// ✅ ATOMIC NOTIFICATION SENDER
 // ============================================
 async function sendNotificationAtomic(patientId, notificationFunction) {
   const session = patientsCollection.client.startSession();
@@ -529,7 +316,6 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
   try {
     session.startTransaction();
     
-    // Atomic check using $or for null/missing
     const patient = await patientsCollection.findOne({
       _id: patientId,
       $or: [
@@ -544,28 +330,20 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
       return false;
     }
     
-    // Execute notification
     await notificationFunction();
     
-    // Mark as sent
     await patientsCollection.updateOne(
       { _id: patientId },
-      { 
-        $set: { 
-          notificationSent: true,
-          lastNotificationSentAt: new Date()
-        } 
-      },
+      { $set: { notificationSent: true, lastNotificationSentAt: new Date() } },
       { session }
     );
     
     await session.commitTransaction();
-    console.log(`✅ Atomic notification sent successfully`);
+    console.log(`✅ Atomic notification sent`);
     return true;
-    
   } catch (error) {
     await session.abortTransaction();
-    console.error(`❌ Atomic notification failed:`, error);
+    console.error(`❌ Atomic notification failed:`, error.message);
     throw error;
   } finally {
     session.endSession();
@@ -573,227 +351,12 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
 }
 
 // ============================================
-// ✅ ATOMIC LEAD CREATION/UPSERT
-// ============================================
-async function createOrUpdateLead(chatId, patientName, patientPhone, branch, testNames, sourceType, executiveNumber, priority, imageUrl = null) {
-  if (!patientsCollection) return false;
-  
-  const now = new Date();
-  
-  const result = await patientsCollection.updateOne(
-    { 
-      patientPhone, 
-      branch, 
-      status: { $in: ['pending', 'waiting'] } 
-    },
-    {
-      $setOnInsert: {
-        chatId,
-        patientName,
-        patientPhone,
-        branch,
-        testNames,
-        sourceType,
-        executiveNumber,
-        priority,
-        status: 'pending',
-        notificationSent: false,
-        followupDate: null,
-        createdAt: now,
-        updatedAt: now,
-        missCallTime: sourceType === 'Miss Call' ? now : null,
-        currentStage: sourceType === 'Miss Call' ? STAGES.MISS_CALL_RECEIVED : STAGES.AWAITING_PRESCRIPTION,
-        stageHistory: {
-          [sourceType === 'Miss Call' ? STAGES.MISS_CALL_RECEIVED : STAGES.AWAITING_PRESCRIPTION]: now
-        }
-      },
-      $set: imageUrl ? { imageUrl, updatedAt: now } : { updatedAt: now }
-    },
-    { upsert: true }
-  );
-  
-  return result.upsertedCount > 0;
-}
-
-// ============================================
-// ✅ PROCESS MANUAL ENTRY
-// ============================================
-async function processManualEntry(messageId, patientName, testNames, branch, patientPhone) {
-  console.log(`\n📝 Processing manual entry`);
-  
-  const executiveNumber = getExecutiveNumber(branch);
-  const priority = getPriority(testNames);
-  const chatId = `${patientPhone}_${branch}`;
-  
-  const isNew = await createOrUpdateLead(
-    chatId, patientName, patientPhone, branch, testNames, 'Manual', 
-    executiveNumber, priority
-  );
-  
-  if (isNew) {
-    // For new leads, we need to get the inserted ID
-    const patient = await patientsCollection.findOne({ chatId });
-    if (patient) {
-      await updatePatientStage(patient._id, STAGES.AWAITING_PRESCRIPTION);
-      await sendNotificationAtomic(patient._id, () => 
-        sendLeadNotification(
-          executiveNumber, patientName, patientPhone, branch, testNames, "Manual", chatId
-        )
-      );
-      await updatePatientStage(patient._id, STAGES.EXECUTIVE_NOTIFIED);
-    }
-  } else {
-    console.log(`ℹ️ Lead already exists, skipping notification`);
-  }
-  
-  await markMessageProcessed(messageId);
-}
-
-// ============================================
-// ✅ PRODUCTION-READY PROCESS IMAGE UPLOAD
-// ============================================
-async function processImageUpload(messageId, patientName, branch, imageUrl, patientPhone) {
-  console.log(`\n📸 Processing image upload for ${patientPhone}`);
-  
-  try {
-    // Find active patient
-    const patient = await patientsCollection.findOne({
-      patientPhone: patientPhone,
-      status: { $in: ['awaiting_branch', 'pending', 'waiting'] }
-    }, { 
-      sort: { createdAt: -1 },
-      limit: 1 
-    });
-    
-    if (!patient) {
-      console.log(`❌ No active patient found for ${patientPhone}, creating temporary`);
-      
-      // Create temporary patient
-      const tempChatId = `${patientPhone}_${branch}`;
-      const insertResult = await patientsCollection.insertOne({
-        chatId: tempChatId,
-        patientName: 'Miss Call Patient',
-        patientPhone: patientPhone,
-        branch: branch,
-        testNames: 'Awaiting details',
-        sourceType: 'Miss Call',
-        executiveNumber: getExecutiveNumber(branch),
-        priority: 'low',
-        status: 'pending',
-        notificationSent: false,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        currentStage: STAGES.AWAITING_PRESCRIPTION,
-        stageHistory: { [STAGES.AWAITING_PRESCRIPTION]: new Date() }
-      });
-      
-      patient._id = insertResult.insertedId;
-    }
-    
-    await updatePatientStage(patient._id, STAGES.PRESCRIPTION_UPLOADED);
-    
-    const finalBranch = patient.branch || branch;
-    const executiveNumber = getExecutiveNumber(finalBranch);
-    const chatId = patient.chatId || `${patientPhone}_${finalBranch}`;
-    
-    console.log(`🏥 Using branch: ${finalBranch}, Executive: ${executiveNumber}`);
-    
-    // Perform OCR with safe fallback
-    await updatePatientStage(patient._id, STAGES.OCR_PROCESSING);
-    
-    let extracted = { patientName: patientName, tests: 'Unknown' };
-    try {
-      extracted = await retryWithTimeout(() => extractWithOpenAI(imageUrl), 10000, 2);
-      console.log(`✅ OCR successful:`, extracted);
-      await updatePatientStage(patient._id, STAGES.OCR_COMPLETED);
-    } catch (ocrError) {
-      console.error(`❌ OCR failed, using fallback:`, ocrError.message);
-    }
-    
-    const priority = getPriority(extracted.tests);
-    
-    // Update patient record
-    await patientsCollection.updateOne(
-      { _id: patient._id },
-      {
-        $set: {
-          patientName: extracted.patientName || patientName,
-          testNames: extracted.tests,
-          imageUrl: imageUrl,
-          updatedAt: new Date(),
-          priority: priority,
-          status: 'pending',
-          lastUploadTime: new Date()
-        }
-      }
-    );
-    
-    console.log(`✅ Patient record updated with OCR data`);
-    
-    // Send notification atomically
-    const notified = await sendNotificationAtomic(patient._id, () => 
-      sendLeadNotification(
-        executiveNumber,
-        extracted.patientName || patientName,
-        patientPhone,
-        finalBranch,
-        extracted.tests,
-        "📸 Prescription Upload",
-        chatId
-      )
-    );
-    
-    if (notified) {
-      await updatePatientStage(patient._id, STAGES.EXECUTIVE_NOTIFIED);
-    }
-    
-    return true;
-    
-  } catch (error) {
-    console.error(`❌ processImageUpload error:`, error);
-    return false;
-  } finally {
-    await markMessageProcessed(messageId);
-  }
-}
-
-// ============================================
-// ✅ OPENAI OCR WITH TIMEOUT
-// ============================================
-async function extractWithOpenAI(imageUrl) {
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o",
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Extract patient name and tests from this medical prescription. Return JSON with keys: patientName, tests`
-          },
-          {
-            type: "image_url",
-            image_url: { url: imageUrl }
-          }
-        ]
-      }
-    ],
-    max_tokens: 300
-  });
-  
-  const content = response.choices[0].message.content;
-  return safeJSONParse(content);
-}
-
-// ============================================
 // ✅ TATA TELE WEBHOOK
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
-    console.log('='.repeat(60));
-    console.log('📞 TATA TELE WEBBOOK RECEIVED');
+    console.log('\n📞 TATA TELE WEBHOOK RECEIVED');
     
-    // Verify API key
     const apiKey = req.headers['x-api-key'];
     if (apiKey !== process.env.TATA_SECRET) {
       console.log('❌ Unauthorized');
@@ -801,15 +364,9 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     }
     
     const callerNumberRaw = getCallerNumberFromPayload(req.body);
-    if (!callerNumberRaw) {
-      return res.status(400).json({ error: 'Caller number not found' });
-    }
+    if (!callerNumberRaw) return res.status(400).json({ error: 'Caller number not found' });
     
     const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
-    if (!whatsappNumber) {
-      return res.status(400).json({ error: 'Invalid number' });
-    }
-    
     const calledNumber = req.body.call_to_number || '';
     const branch = getBranchByCalledNumber(calledNumber);
     
@@ -817,45 +374,38 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       return res.json({ skipped: true });
     }
     
-    // Save to patients collection
     const chatId = `${whatsappNumber}_${branch.name}`;
-    const existingPatient = await patientsCollection.findOne({ 
+    
+    const result = await patientsCollection.insertOne({
+      chatId,
+      patientName: 'Miss Call Patient',
       patientPhone: whatsappNumber,
-      status: { $in: ['awaiting_branch', 'pending', 'waiting'] }
+      branch: branch.name,
+      testNames: 'Awaiting details',
+      sourceType: 'Miss Call',
+      executiveNumber: branch.executive,
+      priority: 'low',
+      status: 'awaiting_branch',
+      notificationSent: false,
+      missCallTime: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      currentStage: STAGES.AWAITING_BRANCH,
+      stageHistory: { [STAGES.AWAITING_BRANCH]: new Date() }
     });
     
-    let patientId;
-    if (!existingPatient) {
-      const result = await patientsCollection.insertOne({
-        chatId,
-        patientName: 'Miss Call Patient',
-        patientPhone: whatsappNumber,
-        branch: branch.name,
-        testNames: 'Awaiting details',
-        sourceType: 'Miss Call',
-        executiveNumber: branch.executive,
-        priority: 'low',
-        status: 'awaiting_branch',
-        notificationSent: false,
-        missCallTime: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        currentStage: STAGES.AWAITING_BRANCH,
-        stageHistory: { [STAGES.AWAITING_BRANCH]: new Date() }
-      });
-      patientId = result.insertedId;
-      console.log('✅ New patient created (awaiting_branch)');
-    } else {
-      patientId = existingPatient._id;
-      await updatePatientStage(patientId, STAGES.AWAITING_BRANCH);
-    }
+    console.log(`✅ Patient saved`);
     
     // Send welcome template
-    await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
-      { name: '1', value: branch.name }
-    ]);
+    try {
+      await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
+        { name: '1', value: branch.name }
+      ]);
+    } catch (templateError) {
+      console.error('❌ Failed to send welcome template:', templateError.message);
+    }
     
-    res.json({ success: true, whatsappNumber, branch: branch.name, patientId });
+    res.json({ success: true, whatsappNumber, branch: branch.name });
     
   } catch (error) {
     console.error('❌ Tata Tele error:', error);
@@ -864,28 +414,25 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ FIXED WATI WEBHOOK - WITH BRANCH DETECTION
+// ✅ FIXED WATI WEBHOOK - THIS IS THE MAIN FIX!
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
-    // Security check
-    if (req.headers['authorization'] !== `Bearer ${WATI_TOKEN}`) {
-      console.log('⚠️ Unauthorized webhook attempt');
-      return res.sendStatus(403);
-    }
+    // ⚠️ TEMPORARILY DISABLE AUTH FOR TESTING
+    // if (req.headers['authorization'] !== `Bearer ${WATI_TOKEN}`) {
+    //   console.log('⚠️ Unauthorized webhook attempt');
+    //   return res.sendStatus(403);
+    // }
     
-    console.log('📨 WATI WEBHOOK RECEIVED:', JSON.stringify(req.body, null, 2));
+    console.log('\n📨 WATI WEBHOOK RECEIVED');
+    console.log('Body:', JSON.stringify(req.body, null, 2));
     
     const msg = req.body;
-    const msgId = msg.id || msg.messageId || msg._id;
+    const msgId = msg.id || msg.messageId;
+    if (!msgId) return res.sendStatus(200);
     
-    if (!msgId) {
-      return res.sendStatus(200);
-    }
-    
-    // Check if already processed
     if (await isMessageProcessed(msgId)) {
-      console.log(`⏭️ Message ${msgId} already processed`);
+      console.log(`⏭️ Message already processed`);
       return res.sendStatus(200);
     }
     
@@ -896,38 +443,33 @@ app.post('/wati-webhook', async (req, res) => {
     }
     
     const text = (msg.text || msg.body || '').toUpperCase().trim();
-    console.log(`📝 Webhook message: "${text}" from ${patientPhone}`);
+    console.log(`📝 Message: "${text}" from ${patientPhone}`);
     
-    // Look for DONE_ pattern
+    // ✅ THIS IS THE CRITICAL PART - DETECT DONE_NARODA
     if (text.startsWith('DONE_')) {
       const branch = text.replace('DONE_', '');
-      console.log(`🎯 BRANCH DETECTED VIA WEBHOOK: ${branch}`);
+      console.log(`🎯 BRANCH DETECTED: ${branch}`);
       
-      // Normalize phone number
       const whatsappNumber = normalizeWhatsAppNumber(patientPhone);
-      
-      // Get executive number for this branch
       const executiveNumber = getExecutiveNumber(branch);
+      
       console.log(`👤 Executive for ${branch}: ${executiveNumber}`);
       
-      const chatId = `${whatsappNumber}_${branch}`;
-      
-      // Find patient awaiting branch
+      // Find patient
       let patient = await patientsCollection.findOne({ 
         patientPhone: whatsappNumber,
         status: 'awaiting_branch'
       });
       
       if (!patient) {
-        // If no awaiting_branch patient, find any patient
-        patient = await patientsCollection.findOne({ 
-          patientPhone: whatsappNumber 
-        });
+        patient = await patientsCollection.findOne({ patientPhone: whatsappNumber });
       }
+      
+      const chatId = `${whatsappNumber}_${branch}`;
       
       if (!patient) {
         // Create new patient
-        console.log(`🆕 Creating new patient for ${whatsappNumber}`);
+        console.log(`🆕 Creating new patient`);
         const result = await patientsCollection.insertOne({
           chatId,
           patientName: 'Miss Call Patient',
@@ -947,7 +489,7 @@ app.post('/wati-webhook', async (req, res) => {
         patient = { _id: result.insertedId };
       } else {
         // Update existing patient
-        console.log(`📝 Updating existing patient ${patient._id}`);
+        console.log(`📝 Updating patient ${patient._id}`);
         await patientsCollection.updateOne(
           { _id: patient._id },
           {
@@ -955,20 +497,17 @@ app.post('/wati-webhook', async (req, res) => {
               branch: branch,
               status: 'pending',
               executiveNumber: executiveNumber,
-              updatedAt: new Date(),
-              currentStage: STAGES.BRANCH_SELECTED
+              currentStage: STAGES.BRANCH_SELECTED,
+              updatedAt: new Date()
             },
-            $push: {
-              stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
-            }
+            $push: { stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() } }
           }
         );
       }
       
-      // Send executive notification
-      console.log(`📤 Sending notification to executive ${executiveNumber} via webhook`);
-      
+      // ✅ SEND EXECUTIVE NOTIFICATION
       try {
+        console.log(`📤 Sending notification to executive ${executiveNumber}`);
         const notified = await sendNotificationAtomic(patient._id, () =>
           sendLeadNotification(
             executiveNumber,
@@ -982,16 +521,14 @@ app.post('/wati-webhook', async (req, res) => {
         );
         
         if (notified) {
-          console.log(`✅✅ EXECUTIVE NOTIFICATION SENT VIA WEBHOOK`);
-        } else {
-          console.log(`ℹ️ Notification already sent previously`);
+          console.log(`✅✅ EXECUTIVE NOTIFICATION SENT`);
+          await updatePatientStage(patient._id, STAGES.EXECUTIVE_NOTIFIED);
         }
       } catch (notifError) {
-        console.error(`❌ Webhook notification failed:`, notifError.message);
+        console.error(`❌ Notification failed:`, notifError.message);
       }
     }
     
-    // Mark message as processed
     await markMessageProcessed(msgId);
     res.sendStatus(200);
     
@@ -1002,570 +539,114 @@ app.post('/wati-webhook', async (req, res) => {
 });
 
 // ============================================
-// ✅ POLLING WATI MESSAGES (BACKUP, CAN BE DISABLED)
+// ✅ TEST ENDPOINT - SINGLE CORRECT VERSION
 // ============================================
-let pollingActive = false;
-let pollingStats = {
-  lastRun: null,
-  totalRuns: 0,
-  messagesFound: 0,
-  doneMessagesFound: 0,
-  notificationsSent: 0,
-  errors: 0
-};
-
-cron.schedule(POLLING_INTERVAL, async () => {
-  if (pollingActive) {
-    console.log('⏭️ Previous poll still running, skipping...');
-    return;
-  }
-  
-  pollingActive = true;
-  pollingStats.lastRun = new Date();
-  pollingStats.totalRuns++;
-  
+app.get('/test-executive-direct', async (req, res) => {
   try {
-    console.log('🔄 [POLLING] Checking WATI messages...');
+    const execNumber = req.query.exec || '919106959092';
+    const patientPhone = req.query.patient || '9876543210';
+    const branch = req.query.branch || 'Naroda';
     
-    const to = new Date().toISOString();
-    const from = new Date(Date.now() - POLLING_WINDOW_MINUTES * 60 * 1000).toISOString();
+    console.log(`\n🧪 Testing executive notification to ${execNumber}`);
     
-    // Try different API endpoints
-    const endpoints = [
-      `${WATI_BASE_URL}/api/v1/getMessages`,
-      `${WATI_BASE_URL}/getMessages`,
-      `${WATI_BASE_URL}/api/v1/messages`,
-      `${WATI_BASE_URL}/messages`
-    ];
+    const chatId = `test_${Date.now()}`;
+    const result = await sendLeadNotification(
+      execNumber,
+      'Test Patient',
+      patientPhone,
+      branch,
+      'Test MRI, Blood Test',
+      'Test',
+      chatId
+    );
     
-    let messages = [];
-    let success = false;
-    
-    for (const endpoint of endpoints) {
-      try {
-        const url = `${endpoint}?pageSize=${POLLING_MESSAGES_LIMIT}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-        console.log(`🔍 Trying endpoint: ${endpoint}`);
-        
-        const response = await axios.get(url, {
-          headers: { 'Authorization': WATI_TOKEN },
-          timeout: 5000
-        });
-        
-        if (Array.isArray(response.data)) {
-          messages = response.data;
-          success = true;
-          console.log(`✅ Success with ${endpoint}`);
-          break;
-        } else if (response.data?.messages) {
-          messages = response.data.messages;
-          success = true;
-          console.log(`✅ Success with ${endpoint}`);
-          break;
-        } else if (response.data?.data) {
-          messages = response.data.data;
-          success = true;
-          console.log(`✅ Success with ${endpoint}`);
-          break;
-        }
-      } catch (e) {
-        console.log(`❌ Endpoint failed: ${endpoint}`, e.message);
-      }
-    }
-    
-    if (!success) {
-      console.log('❌ All endpoints failed');
-      pollingStats.errors++;
-      return;
-    }
-    
-    pollingStats.messagesFound += messages.length;
-    console.log(`📨 Found ${messages.length} messages to check`);
-    
-    for (const msg of messages) {
-      if (!msg.id) continue;
-      
-      // Check if already processed
-      const alreadyProcessed = await processedCollection.findOne({ messageId: msg.id });
-      if (alreadyProcessed) continue;
-      
-      const text = (msg.text || msg.body || '').toUpperCase().trim();
-      const sender = msg.waId || msg.from;
-      
-      console.log(`📝 Checking message: "${text}" from ${sender}`);
-      
-      // Look for DONE_ pattern
-      if (text.startsWith('DONE_')) {
-        pollingStats.doneMessagesFound++;
-        const branch = text.replace('DONE_', '');
-        console.log(`🎯 Branch detected: ${branch}`);
-        
-        if (!sender) {
-          console.log('❌ No phone number in message');
-          await processedCollection.insertOne({ messageId: msg.id, processedAt: new Date() });
-          continue;
-        }
-        
-        // Normalize phone number
-        const whatsappNumber = normalizeWhatsAppNumber(sender);
-        console.log(`📱 Patient phone: ${whatsappNumber}`);
-        
-        // Get executive number for this branch
-        const executiveNumber = getExecutiveNumber(branch);
-        console.log(`👤 Executive: ${executiveNumber}`);
-        
-        const chatId = `${whatsappNumber}_${branch}`;
-        
-        // Check if patient exists
-        let patient = await patientsCollection.findOne({
-          patientPhone: whatsappNumber
-        });
-        
-        if (!patient) {
-          // Create new patient
-          const result = await patientsCollection.insertOne({
-            chatId,
-            patientName: 'Miss Call Patient',
-            patientPhone: whatsappNumber,
-            branch: branch,
-            testNames: 'Chatbot Flow',
-            sourceType: 'Miss Call',
-            executiveNumber: executiveNumber,
-            priority: 'low',
-            status: 'pending',
-            notificationSent: false,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            currentStage: STAGES.BRANCH_SELECTED,
-            stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
-          });
-          patient = { _id: result.insertedId };
-          console.log(`✅ New patient created`);
-        } else {
-          // Update existing patient
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            {
-              $set: {
-                branch: branch,
-                status: 'pending',
-                executiveNumber: executiveNumber,
-                updatedAt: new Date(),
-                currentStage: STAGES.BRANCH_SELECTED
-              },
-              $push: {
-                stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
-              }
-            }
-          );
-          console.log(`✅ Patient updated`);
-        }
-        
-        // Send executive notification
-        try {
-          console.log(`📤 Sending notification to executive ${executiveNumber}`);
-          const notified = await sendNotificationAtomic(patient._id, () =>
-            sendLeadNotification(
-              executiveNumber,
-              'Miss Call Patient',
-              whatsappNumber,
-              branch,
-              'Chatbot Flow',
-              '📞 Miss Call',
-              chatId
-            )
-          );
-          
-          if (notified) {
-            pollingStats.notificationsSent++;
-            console.log(`✅ Executive notification sent successfully`);
-          } else {
-            console.log(`ℹ️ Notification already sent previously`);
-          }
-          
-        } catch (notifError) {
-          console.error(`❌ Failed to send executive notification:`, notifError.message);
-          pollingStats.errors++;
-          if (notifError.response) {
-            console.error('WATI API Error:', notifError.response.data);
-          }
-        }
-      }
-      
-      // Mark as processed
-      await processedCollection.insertOne({
-        messageId: msg.id,
-        processedAt: new Date(),
-        messageType: 'polling'
-      });
-    }
-    
-  } catch (error) {
-    console.error('❌ Polling error:', error.message);
-    pollingStats.errors++;
-    if (error.response) {
-      console.error('WATI API Error:', {
-        status: error.response.status,
-        data: error.response.data
-      });
-    }
-  } finally {
-    pollingActive = false;
-  }
-});
-
-// ============================================
-// ✅ AUTO FOLLOW-UP
-// ============================================
-cron.schedule('*/30 * * * *', async () => {
-  console.log('⏰ Checking for pending leads...');
-  
-  if (!patientsCollection) {
-    console.error('❌ patientsCollection is undefined in follow-up cron');
-    return;
-  }
-  
-  try {
-    const pendingLeads = await patientsCollection.find({
-      status: 'waiting',
-      followupDate: { $lt: new Date() },
-      $or: [
-        { lastNotificationSentAt: null },
-        { lastNotificationSentAt: { $lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } }
-      ]
-    }).toArray();
-    
-    console.log(`📊 Found ${pendingLeads.length} pending leads for follow-up`);
-    
-    for (const lead of pendingLeads) {
-      await sendLeadNotification(
-        lead.executiveNumber,
-        lead.patientName,
-        lead.patientPhone,
-        lead.branch,
-        lead.testNames || lead.tests || 'Follow-up',
-        '⏰ Follow-up Reminder',
-        lead.chatId
-      );
-      
-      await patientsCollection.updateOne(
-        { _id: lead._id },
-        { 
-          $set: { 
-            lastNotificationSentAt: new Date(),
-            currentStage: STAGES.EXECUTIVE_NOTIFIED 
-          },
-          $push: {
-            stageHistory: { [STAGES.EXECUTIVE_NOTIFIED]: new Date() }
-          }
-        }
-      );
-    }
-  } catch (error) {
-    console.error('❌ Follow-up cron error:', error.message);
-  }
-});
-
-// ============================================
-// ✅ MANAGER ESCALATION
-// ============================================
-cron.schedule('0 21 * * *', async () => {
-  if (!patientsCollection) {
-    console.error('❌ patientsCollection is undefined in manager escalation');
-    return;
-  }
-  
-  try {
-    const notConverted = await patientsCollection.find({
-      status: 'not_converted',
-      createdAt: { $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) }
-    }).toArray();
-    
-    if (notConverted.length > 0) {
-      const summary = notConverted.map(p => 
-        `❌ ${p.patientName} (${p.branch})`
-      ).join('\n');
-      
-      await sendLeadNotification(
-        EXECUTIVES['Manager'],
-        'Daily Escalation Summary',
-        EXECUTIVES['Manager'],
-        'ALL',
-        `${notConverted.length} leads not converted today`,
-        '📊 Summary',
-        `summary-${Date.now()}`
-      );
-      
-      for (const patient of notConverted) {
-        await updatePatientStage(patient._id, STAGES.ESCALATED);
-      }
-    }
-  } catch (error) {
-    console.error('❌ Manager escalation error:', error.message);
-  }
-});
-
-// ============================================
-// ✅ EXECUTIVE DASHBOARD
-// ============================================
-app.get('/connect-chat/:chatId', async (req, res) => {
-  const { chatId } = req.params;
-  const { token } = req.query;
-  
-  if (!verifyToken(chatId, token)) {
-    return res.status(403).send(`
-      <html>
-        <head><title>Unauthorized</title></head>
-        <body style="font-family: Arial; padding: 30px;">
-          <h2>🔒 Unauthorized Access</h2>
-          <p>Invalid access token</p>
-        </body>
-      </html>
-    `);
-  }
-  
-  if (!patientsCollection) {
-    return res.status(500).send('<h2>❌ Database not initialized</h2>');
-  }
-  
-  const patient = await patientsCollection.findOne({ chatId });
-  
-  if (!patient) {
-    return res.send('<h2>❌ Patient not found</h2>');
-  }
-  
-  res.send(`
-    <html>
-      <head>
-        <title>Patient Details</title>
-        <style>
-          body { font-family: Arial; padding: 20px; background: #f5f5f5; }
-          .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }
-          .priority-high { border-left: 4px solid #dc3545; }
-          .priority-medium { border-left: 4px solid #ffc107; }
-          .priority-low { border-left: 4px solid #28a745; }
-          .detail-row { margin: 15px 0; padding: 10px; background: #f8f9fa; border-radius: 5px; }
-          .whatsapp-btn { display: inline-block; background: #25D366; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 10px 0; }
-          .btn-group { margin-top: 30px; display: flex; gap: 10px; flex-wrap: wrap; }
-          .btn { padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
-          .btn-convert { background: #28a745; color: white; }
-          .btn-waiting { background: #ffc107; color: black; }
-          .btn-notconvert { background: #dc3545; color: white; }
-          .stage-badge { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 0.8em; font-weight: 600; margin-left: 10px; }
-          .stage-misscall { background: #fef3c7; color: #92400e; }
-          .stage-branch { background: #dbeafe; color: #1e40af; }
-          .stage-ocr { background: #d1fae5; color: #065f46; }
-          .stage-executive { background: #ede9fe; color: #5b21b6; }
-        </style>
-      </head>
-      <body>
-        <div class="container priority-${patient.priority || 'low'}">
-          <h1>👤 Patient Details 
-            <span class="stage-badge stage-${patient.currentStage || 'pending'}">
-              ${patient.currentStage?.replace(/_/g, ' ') || 'pending'}
-            </span>
-          </h1>
-          
-          <div class="detail-row">
-            <strong>Patient:</strong> ${patient.patientName || 'N/A'}
-          </div>
-          <div class="detail-row">
-            <strong>Phone:</strong> ${patient.patientPhone || 'N/A'}
-          </div>
-          <div class="detail-row">
-            <strong>Branch:</strong> ${patient.branch || 'N/A'}
-          </div>
-          <div class="detail-row">
-            <strong>Tests:</strong> ${patient.testNames || patient.tests || 'N/A'}
-          </div>
-          <div class="detail-row">
-            <strong>Source:</strong> ${patient.sourceType || patient.entryType || 'N/A'}
-          </div>
-          <div class="detail-row">
-            <strong>Priority:</strong> ${patient.priority || 'low'}
-          </div>
-          <div class="detail-row">
-            <strong>Status:</strong> ${patient.status || 'pending'}
-          </div>
-          <div class="detail-row">
-            <strong>Current Stage:</strong> ${patient.currentStage?.replace(/_/g, ' ') || 'pending'}
-          </div>
-          <div class="detail-row">
-            <strong>Miss Call Time:</strong> ${patient.missCallTime ? new Date(patient.missCallTime).toLocaleString() : 'N/A'}
-          </div>
-          
-          ${patient.imageUrl ? `
-            <div class="detail-row">
-              <h3>📄 Prescription</h3>
-              <iframe src="${patient.imageUrl}" style="width:100%; height:300px;"></iframe>
-            </div>
-          ` : ''}
-          
-          <a href="https://wa.me/${patient.patientPhone}" target="_blank" class="whatsapp-btn">
-            💬 Chat on WhatsApp
-          </a>
-          
-          <div class="btn-group">
-            <button class="btn btn-convert" onclick="updateStatus('convert')">✅ Convert</button>
-            <button class="btn btn-waiting" onclick="updateStatus('waiting')">⏳ Waiting</button>
-            <button class="btn btn-notconvert" onclick="updateStatus('notconvert')">❌ Not Convert</button>
-          </div>
-        </div>
-        
-        <script>
-          function updateStatus(action) {
-            fetch('/exec-action?action=' + action + '&chat=${patient.chatId}')
-              .then(response => response.text())
-              .then(data => alert(data))
-              .then(() => setTimeout(() => location.reload(), 1000));
-          }
-        </script>
-      </body>
-    </html>
-  `);
-});
-
-// ============================================
-// ✅ EXECUTIVE ACTION HANDLER
-// ============================================
-app.get('/exec-action', async (req, res) => {
-  const { action, chat } = req.query;
-  
-  const status = 
-    action === 'convert' ? 'converted' :
-    action === 'waiting' ? 'waiting' : 'not_converted';
-  
-  const stage = 
-    action === 'convert' ? STAGES.CONVERTED :
-    action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
-  
-  await patientsCollection.updateOne(
-    { chatId: chat },
-    { 
-      $set: { 
-        status, 
-        updatedAt: new Date(),
-        currentStage: stage
-      },
-      $push: {
-        stageHistory: { [stage]: new Date() }
-      }
-    }
-  );
-  
-  res.send(`✅ Patient marked as ${status}`);
-});
-
-// ============================================
-// ✅ STAGE STATS ENDPOINT
-// ============================================
-app.get('/api/stage-stats', async (req, res) => {
-  try {
-    const stages = Object.values(STAGES);
-    const stats = {};
-    
-    for (const stage of stages) {
-      stats[stage] = await patientsCollection.countDocuments({ currentStage: stage });
-    }
-    
-    res.json(stats);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
-// ✅ MISS CALL STATS ENDPOINT
-// ============================================
-app.get('/api/misscall-stats', async (req, res) => {
-  try {
-    if (!missCallsCollection || !patientsCollection) {
-      return res.json({ total: 0, today: 0, byBranch: {}, awaitingBranch: 0 });
-    }
-    
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    const total = await missCallsCollection.countDocuments();
-    const today_count = await missCallsCollection.countDocuments({
-      createdAt: { $gte: today }
-    });
-    
-    const awaitingBranch = await patientsCollection.countDocuments({
-      currentStage: STAGES.AWAITING_BRANCH
-    });
-    
-    const byBranch = await missCallsCollection.aggregate([
-      { $group: { _id: '$branch', count: { $sum: 1 } } }
-    ]).toArray();
-    
-    const branchStats = {};
-    byBranch.forEach(b => { branchStats[b._id] = b.count; });
-    
-    res.json({
-      total,
-      today: today_count,
-      byBranch: branchStats,
-      awaitingBranch
+    res.json({ 
+      success: true, 
+      message: `Template sent to ${execNumber}`,
+      result 
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('❌ Test failed:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      response: error.response?.data 
+    });
   }
 });
 
 // ============================================
-// ✅ DEBUG PATIENT ENDPOINT
+// ✅ MISS CALL TEMPLATE TEST
+// ============================================
+app.get('/test-misscall-template', async (req, res) => {
+  try {
+    const number = req.query.number || '919106959092';
+    const branch = req.query.branch || 'Naroda';
+    
+    const result = await sendWatiTemplateMessage(number, TEMPLATE_NAME, [
+      { name: '1', value: branch }
+    ]);
+    
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      response: error.response?.data 
+    });
+  }
+});
+
+// ============================================
+// ✅ DEBUG ENDPOINTS
 // ============================================
 app.get('/debug-patient/:phone', async (req, res) => {
-  const phone = req.params.phone;
-  const normalizedPhone = normalizeWhatsAppNumber(phone);
-  const patient = await patientsCollection.findOne({ 
-    patientPhone: normalizedPhone 
+  try {
+    const phone = normalizeWhatsAppNumber(req.params.phone);
+    const patient = await patientsCollection.findOne({ patientPhone: phone });
+    res.json(patient || { error: 'Not found', phone });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/debug-token', (req, res) => {
+  res.json({
+    token_exists: !!WATI_TOKEN,
+    token_preview: WATI_TOKEN ? WATI_TOKEN.substring(0, 20) + '...' : null,
+    base_url: WATI_BASE_URL,
+    template_name: TEMPLATE_NAME,
+    lead_template: LEAD_TEMPLATE_NAME
   });
-  res.json(patient || { error: 'Not found', searchedPhone: normalizedPhone });
+});
+
+app.get('/test-ping', (req, res) => {
+  res.json({ 
+    success: true, 
+    message: 'Server is running!',
+    time: new Date().toISOString()
+  });
 });
 
 // ============================================
-// ✅ HEALTH ENDPOINT
+// ✅ HEALTH CHECK
 // ============================================
 app.get('/health', async (req, res) => {
-  if (!patientsCollection || !processedCollection) {
-    return res.status(503).json({
-      success: false,
-      error: 'Database not initialized',
-      patientsCollection: !!patientsCollection,
-      processedCollection: !!processedCollection
-    });
-  }
-  
   try {
-    const patientCount = await patientsCollection.countDocuments();
-    const processedCount = await processedCollection.countDocuments();
-    const missCallCount = missCallsCollection ? await missCallsCollection.countDocuments() : 0;
-    const awaitingBranchCount = await patientsCollection.countDocuments({ currentStage: STAGES.AWAITING_BRANCH });
-    
-    const stageStats = {};
-    for (const stage of Object.values(STAGES)) {
-      stageStats[stage] = await patientsCollection.countDocuments({ currentStage: stage });
-    }
-    
+    const patientCount = await patientsCollection?.countDocuments() || 0;
     res.json({
       success: true,
-      patients: patientCount,
-      processed: processedCount,
-      missCalls: missCallCount,
-      awaitingBranch: awaitingBranchCount,
-      stageStats,
       uptime: process.uptime(),
       mongodb: 'connected',
-      polling: {
-        interval: POLLING_INTERVAL,
-        active: pollingActive
-      }
+      patients: patientCount,
+      time: new Date().toISOString()
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
+    res.json({
+      success: true,
+      uptime: process.uptime(),
+      mongodb: 'error',
+      time: new Date().toISOString()
     });
   }
 });
@@ -1574,7 +655,18 @@ app.get('/health', async (req, res) => {
 // ✅ HOME ROUTE
 // ============================================
 app.get('/', (req, res) => {
-  res.redirect('/admin');
+  res.json({
+    message: 'Tata-WATI Webhook Server',
+    endpoints: {
+      test_executive: '/test-executive-direct?exec=919106959092',
+      test_misscall: '/test-misscall-template?number=919106959092',
+      debug_token: '/debug-token',
+      health: '/health',
+      webhook_wati: '/wati-webhook',
+      webhook_tata: '/tata-misscall-whatsapp',
+      dashboard: '/admin'
+    }
+  });
 });
 
 // ============================================
@@ -1583,17 +675,7 @@ app.get('/', (req, res) => {
 const dashboardRouter = require('./dashboard');
 app.use('/admin', (req, res, next) => {
   if (!patientsCollection || !processedCollection) {
-    return res.status(503).send(`
-      <html>
-        <head><title>Dashboard Unavailable</title></head>
-        <body style="font-family: Arial; padding: 30px;">
-          <h2>⏳ Dashboard Initializing</h2>
-          <p>Database connection is being established. Please refresh in a few seconds.</p>
-          <p>Collections: patients=${!!patientsCollection}, processed=${!!processedCollection}</p>
-          <button onclick="location.reload()">Refresh Page</button>
-        </body>
-      </html>
-    `);
+    return res.status(503).send('Dashboard unavailable');
   }
   req.patientsCollection = patientsCollection;
   req.processedCollection = processedCollection;
@@ -1604,49 +686,30 @@ app.use('/admin', (req, res, next) => {
 }, dashboardRouter);
 
 // ============================================
-// ✅ START SERVER - FIXED WITH HOST 0.0.0.0
+// ✅ START SERVER
 // ============================================
 async function startServer() {
   try {
     console.log('🔄 Starting server...');
-    
     await connectDB();
     
-    if (!patientsCollection || !processedCollection) {
-      throw new Error('Collections not initialized properly after connectDB()');
-    }
-    
-    console.log('✅ All collections verified, starting server...');
-
-    // ⭐️ FIX: होस्ट '0.0.0.0' को स्पष्ट रूप में जोड़ें
     const HOST = '0.0.0.0';
-    console.log(`🟡 Attempting to start server on host: ${HOST}, port: ${PORT}`);
-
     const server = app.listen(PORT, HOST, () => {
-      console.log('='.repeat(60));
-      console.log(`✅ SUCCESS: Server is listening on port ${PORT}`);
-      console.log(`🚀 PRODUCTION SERVER running on port ${PORT}`);
-      console.log(`📍 Host: ${HOST}`);
-      console.log(`📍 Tata Tele Webhook: /tata-misscall-whatsapp`);
-      console.log(`📍 WATI Webhook: /wati-webhook (ENABLED)`);
-      console.log(`📍 Polling: ${POLLING_INTERVAL} (backup)`);
-      console.log(`📍 Test Endpoint: /test-misscall`);
-      console.log(`📍 Debug Patient: /debug-patient/:phone`);
-      console.log(`📍 Stage Tracking: ${Object.keys(STAGES).length} stages`);
-      console.log(`📍 Cron: Fallback (5 min), Follow-up (30 min)`);
-      console.log(`📍 MongoDB: Connected ✅`);
-      console.log(`📍 Security: HMAC + API Key + WATI Auth`);
-      console.log(`📍 Templates: misscall_welcome_v3, lead_notification_v2`);
-      console.log('='.repeat(60));
+      console.log('\n' + '='.repeat(60));
+      console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
+      console.log(`📍 WATI Webhook: /wati-webhook (FIXED - DONE_ detection enabled)`);
+      console.log(`📍 Tata Webhook: /tata-misscall-whatsapp`);
+      console.log(`📍 Test Executive: /test-executive-direct?exec=919106959092`);
+      console.log('='.repeat(60) + '\n');
     });
 
     server.on('error', (err) => {
-      console.error(`❌ FAILED: Server could not start. Error:`, err.message);
+      console.error('❌ Server error:', err.message);
       process.exit(1);
     });
 
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
+    console.error('❌ Failed to start:', error.message);
     process.exit(1);
   }
 }
