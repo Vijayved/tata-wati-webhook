@@ -94,7 +94,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ✅ getDashboardHTML function
+// ✅ getDashboardHTML function (paste your existing HTML here)
 function getDashboardHTML(data) {
   const { 
     patientCount, 
@@ -120,6 +120,7 @@ function getDashboardHTML(data) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Executive System Dashboard</title>
     <style>
+      /* आपका existing CSS यहाँ */
       * {
         margin: 0;
         padding: 0;
