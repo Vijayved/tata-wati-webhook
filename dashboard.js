@@ -94,7 +94,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ✅ getDashboardHTML function (आपका पहले का HTML यहाँ डालें)
+// ✅ getDashboardHTML function
 function getDashboardHTML(data) {
   const { 
     patientCount, 
