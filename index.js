@@ -22,7 +22,7 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const HMAC_SECRET = process.env.HMAC_SECRET || 'your_hmac_secret_key';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
-const DEDUPE_WINDOW_MS = (parseInt(process.env.DEDUPE_WINDOW_SECONDS || '600', 10)) * 1000;
+const DEDUPE_WINDOW_MS = 0; // ✅ 0 means no deduplication - हर miss call पर template जाएगा
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2';
 
@@ -133,7 +133,7 @@ const STAGES = {
 };
 
 // ============================================
-// ✅ IN-MEMORY STORAGE
+// ✅ IN-MEMORY STORAGE (DISABLED)
 // ============================================
 const recentMissCalls = new Map();
 
@@ -239,10 +239,8 @@ async function updatePatientStage(patientId, stage) {
         $push: { stageHistory: { [stage]: new Date() } }
       }
     );
-    console.log(`📍 Stage updated: ${stage}`);
     return true;
   } catch (error) {
-    console.error(`❌ Stage update failed:`, error.message);
     return false;
   }
 }
@@ -251,9 +249,6 @@ async function updatePatientStage(patientId, stage) {
 // ✅ WATI TEMPLATE SENDER
 // ============================================
 async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
-  console.log(`\n📤 SENDING TEMPLATE: ${templateName} to ${whatsappNumber}`);
-  console.log(`📦 Parameters:`, JSON.stringify(parameters));
-  
   const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
   
   const payload = {
@@ -271,14 +266,9 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
       timeout: 15000
     });
     
-    console.log(`✅ Template sent successfully`);
     return response.data;
   } catch (error) {
-    console.error(`❌ Template send FAILED:`, {
-      status: error.response?.status,
-      data: error.response?.data,
-      message: error.message
-    });
+    console.error(`❌ Template send FAILED:`, error.message);
     throw error;
   }
 }
@@ -287,8 +277,6 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 // ✅ LEAD NOTIFICATION
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testNames, sourceType, chatId) {
-  console.log(`\n📤 Preparing lead notification for executive ${executiveNumber}`);
-  
   const parameters = [
     { name: "1", value: patientName || "Miss Call Patient" },
     { name: "2", value: patientPhone },
@@ -319,7 +307,6 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
     }, { session });
     
     if (!patient) {
-      console.log(`⏭️ Notification already sent, skipping`);
       await session.abortTransaction();
       return false;
     }
@@ -333,19 +320,17 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
     );
     
     await session.commitTransaction();
-    console.log(`✅ Atomic notification sent`);
     return true;
   } catch (error) {
     await session.abortTransaction();
-    console.error(`❌ Atomic notification failed:`, error.message);
-    throw error;
+    return false;
   } finally {
     session.endSession();
   }
 }
 
 // ============================================
-// ✅ FIXED TATA TELE WEBHOOK - WITH DUPLICATE HANDLING
+// ✅ TATA TELE WEBHOOK - FIXED WITH DEDUPE OFF
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -353,7 +338,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     const apiKey = req.headers['x-api-key'];
     if (apiKey !== process.env.TATA_SECRET) {
-      console.log('❌ Unauthorized');
       return res.status(403).json({ error: 'Unauthorized' });
     }
     
@@ -366,33 +350,37 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
     
-    if (shouldSkipDuplicateMissCall(whatsappNumber, calledNumber)) {
-      console.log('⏭️ Skipping duplicate miss call');
-      return res.json({ skipped: true });
-    }
+    // ✅ MISS CALL TRACKING - हर miss call track करो
+    await missCallsCollection.insertOne({
+      phoneNumber: whatsappNumber,
+      calledNumber: calledNumber,
+      branch: branch.name,
+      createdAt: new Date()
+    });
     
     const chatId = `${whatsappNumber}_${branch.name}`;
     
-    // Check if patient already exists
+    // ✅ Patient check - अगर exists तो update, नहीं तो create
     const existingPatient = await patientsCollection.findOne({ 
-      patientPhone: whatsappNumber,
-      status: 'awaiting_branch'
+      patientPhone: whatsappNumber
     });
     
     if (existingPatient) {
-      console.log('ℹ️ Patient already exists, updating...');
       await patientsCollection.updateOne(
         { _id: existingPatient._id },
         { 
           $set: { 
             missCallTime: new Date(),
-            updatedAt: new Date()
-          }
+            updatedAt: new Date(),
+            branch: branch.name,
+            status: 'awaiting_branch',
+            currentStage: STAGES.AWAITING_BRANCH
+          },
+          $inc: { missCallCount: 1 } // ✅ Miss call count बढ़ाओ
         }
       );
     } else {
-      // Create new patient
-      const result = await patientsCollection.insertOne({
+      await patientsCollection.insertOne({
         chatId,
         patientName: 'Miss Call Patient',
         patientPhone: whatsappNumber,
@@ -403,20 +391,21 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         priority: 'low',
         status: 'awaiting_branch',
         notificationSent: false,
+        missCallCount: 1,
         missCallTime: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
         currentStage: STAGES.AWAITING_BRANCH,
         stageHistory: { [STAGES.AWAITING_BRANCH]: new Date() }
       });
-      console.log(`✅ New patient created`);
     }
     
-    // Send welcome template
+    // ✅ हर miss call पर template भेजो
     try {
       await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
         { name: '1', value: branch.name }
       ]);
+      console.log(`✅ Welcome template sent to ${whatsappNumber}`);
     } catch (templateError) {
       console.error('❌ Failed to send welcome template:', templateError.message);
     }
@@ -430,26 +419,17 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ FIXED WATI WEBHOOK - WITH BRANCH DETECTION
+// ✅ WATI WEBHOOK - WITH BRANCH DETECTION
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
-    // TEMPORARILY DISABLE AUTH FOR TESTING
-    // if (req.headers['authorization'] !== `Bearer ${WATI_TOKEN}`) {
-    //   console.log('⚠️ Unauthorized webhook attempt');
-    //   return res.sendStatus(403);
-    // }
-    
     console.log('\n📨 WATI WEBHOOK RECEIVED');
     
     const msg = req.body;
     const msgId = msg.id || msg.messageId;
     if (!msgId) return res.sendStatus(200);
     
-    if (await isMessageProcessed(msgId)) {
-      console.log(`⏭️ Message already processed`);
-      return res.sendStatus(200);
-    }
+    if (await isMessageProcessed(msgId)) return res.sendStatus(200);
     
     const patientPhone = msg.whatsappNumber || msg.from || msg.waId;
     if (!patientPhone) {
@@ -460,7 +440,6 @@ app.post('/wati-webhook', async (req, res) => {
     const text = (msg.text || msg.body || '').toUpperCase().trim();
     console.log(`📝 Message: "${text}" from ${patientPhone}`);
     
-    // DETECT DONE_ MESSAGES
     if (text.startsWith('DONE_')) {
       const branch = text.replace('DONE_', '');
       console.log(`🎯 BRANCH DETECTED: ${branch}`);
@@ -468,23 +447,14 @@ app.post('/wati-webhook', async (req, res) => {
       const whatsappNumber = normalizeWhatsAppNumber(patientPhone);
       const executiveNumber = getExecutiveNumber(branch);
       
-      console.log(`👤 Executive for ${branch}: ${executiveNumber}`);
-      
-      // Find patient - first try awaiting_branch, then any
+      // Find or create patient
       let patient = await patientsCollection.findOne({ 
-        patientPhone: whatsappNumber,
-        status: 'awaiting_branch'
+        patientPhone: whatsappNumber
       });
-      
-      if (!patient) {
-        patient = await patientsCollection.findOne({ patientPhone: whatsappNumber });
-      }
       
       const chatId = `${whatsappNumber}_${branch}`;
       
       if (!patient) {
-        // Create new patient
-        console.log(`🆕 Creating new patient`);
         const result = await patientsCollection.insertOne({
           chatId,
           patientName: 'Miss Call Patient',
@@ -503,8 +473,6 @@ app.post('/wati-webhook', async (req, res) => {
         });
         patient = { _id: result.insertedId };
       } else {
-        // Update existing patient
-        console.log(`📝 Updating patient ${patient._id}`);
         await patientsCollection.updateOne(
           { _id: patient._id },
           {
@@ -520,9 +488,8 @@ app.post('/wati-webhook', async (req, res) => {
         );
       }
       
-      // SEND EXECUTIVE NOTIFICATION
+      // Send executive notification
       try {
-        console.log(`📤 Sending notification to executive ${executiveNumber}`);
         const notified = await sendNotificationAtomic(patient._id, () =>
           sendLeadNotification(
             executiveNumber,
@@ -562,8 +529,6 @@ app.get('/test-executive-direct', async (req, res) => {
     const patientPhone = req.query.patient || '9876543210';
     const branch = req.query.branch || 'Naroda';
     
-    console.log(`\n🧪 Testing executive notification to ${execNumber}`);
-    
     const chatId = `test_${Date.now()}`;
     const result = await sendLeadNotification(
       execNumber,
@@ -575,223 +540,128 @@ app.get('/test-executive-direct', async (req, res) => {
       chatId
     );
     
-    res.json({ 
-      success: true, 
-      message: `Template sent to ${execNumber}`,
-      result 
-    });
-  } catch (error) {
-    console.error('❌ Test failed:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message,
-      response: error.response?.data 
-    });
-  }
-});
-
-// ============================================
-// ✅ DEBUG ENDPOINTS
-// ============================================
-app.get('/debug-patient/:phone', async (req, res) => {
-  try {
-    const phone = normalizeWhatsAppNumber(req.params.phone);
-    const patient = await patientsCollection.findOne({ patientPhone: phone });
-    res.json(patient || { error: 'Not found', phone });
+    res.json({ success: true, result });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/debug-token', (req, res) => {
-  res.json({
-    token_exists: !!WATI_TOKEN,
-    token_preview: WATI_TOKEN ? WATI_TOKEN.substring(0, 20) + '...' : null,
-    base_url: WATI_BASE_URL,
-    template_name: TEMPLATE_NAME,
-    lead_template: LEAD_TEMPLATE_NAME
-  });
-});
-
-app.get('/test-ping', (req, res) => {
-  res.json({ 
-    success: true, 
-    message: 'Server is running!',
-    time: new Date().toISOString()
-  });
-});
-
 // ============================================
-// ✅ HEALTH CHECK
+// ✅ API ENDPOINTS FOR DASHBOARD
 // ============================================
-app.get('/health', async (req, res) => {
+app.get('/api/stats', async (req, res) => {
   try {
-    const patientCount = await patientsCollection?.countDocuments() || 0;
+    const totalPatients = await patientsCollection.countDocuments();
+    const pendingCount = await patientsCollection.countDocuments({ status: 'pending' });
+    const convertedCount = await patientsCollection.countDocuments({ status: 'converted' });
+    const waitingCount = await patientsCollection.countDocuments({ status: 'waiting' });
+    const notConvertedCount = await patientsCollection.countDocuments({ status: 'not_converted' });
+    
+    const stageStats = {};
+    for (const stage of Object.values(STAGES)) {
+      stageStats[stage] = await patientsCollection.countDocuments({ currentStage: stage }) || 0;
+    }
+    
+    const missCallTotal = await missCallsCollection.countDocuments();
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const missCallToday = await missCallsCollection.countDocuments({
+      createdAt: { $gte: today }
+    });
+    
+    const branchStats = await missCallsCollection.aggregate([
+      { $group: { _id: '$branch', count: { $sum: 1 } } }
+    ]).toArray();
+    
+    const recentPatients = await patientsCollection.find()
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .toArray();
+    
+    const recentMissCalls = await missCallsCollection.find()
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .toArray();
+    
     res.json({
-      success: true,
-      uptime: process.uptime(),
-      mongodb: 'connected',
-      patients: patientCount,
-      time: new Date().toISOString()
+      totalPatients,
+      pendingCount,
+      convertedCount,
+      waitingCount,
+      notConvertedCount,
+      stageStats,
+      missCallTotal,
+      missCallToday,
+      branchStats,
+      recentPatients,
+      recentMissCalls
     });
   } catch (error) {
-    res.json({
-      success: true,
-      uptime: process.uptime(),
-      mongodb: 'error',
-      time: new Date().toISOString()
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
 // ============================================
-// ✅ EXECUTIVE DASHBOARD (CONNECT-CHAT)
+// ✅ EXECUTIVE DASHBOARD
 // ============================================
 app.get('/connect-chat/:chatId', async (req, res) => {
   const { chatId } = req.params;
   const { token } = req.query;
   
   if (!verifyToken(chatId, token)) {
-    return res.status(403).send('<h2>🔒 Unauthorized Access</h2>');
-  }
-  
-  if (!patientsCollection) {
-    return res.status(500).send('<h2>❌ Database not initialized</h2>');
+    return res.status(403).send('Unauthorized');
   }
   
   const patient = await patientsCollection.findOne({ chatId });
+  if (!patient) return res.send('Patient not found');
   
-  if (!patient) {
-    return res.send('<h2>❌ Patient not found</h2>');
-  }
-  
-  res.send(`
-    <html>
-      <head>
-        <title>Patient Details</title>
-        <style>
-          body { font-family: Arial; padding: 20px; background: #f5f5f5; }
-          .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }
-          .detail-row { margin: 15px 0; padding: 10px; background: #f8f9fa; border-radius: 5px; }
-          .btn { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; }
-          .btn-convert { background: #28a745; color: white; }
-          .btn-waiting { background: #ffc107; color: black; }
-          .btn-notconvert { background: #dc3545; color: white; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>👤 Patient Details</h1>
-          <div class="detail-row"><strong>Patient:</strong> ${patient.patientName || 'N/A'}</div>
-          <div class="detail-row"><strong>Phone:</strong> ${patient.patientPhone || 'N/A'}</div>
-          <div class="detail-row"><strong>Branch:</strong> ${patient.branch || 'N/A'}</div>
-          <div class="detail-row"><strong>Tests:</strong> ${patient.testNames || patient.tests || 'N/A'}</div>
-          <div class="detail-row"><strong>Status:</strong> ${patient.status || 'pending'}</div>
-          <div class="detail-row"><strong>Stage:</strong> ${patient.currentStage || 'pending'}</div>
-          <a href="https://wa.me/${patient.patientPhone}" target="_blank">Chat on WhatsApp</a>
-        </div>
-      </body>
-    </html>
-  `);
+  res.json(patient);
 });
 
-// ============================================
-// ✅ EXECUTIVE ACTION HANDLER
-// ============================================
 app.get('/exec-action', async (req, res) => {
   const { action, chat } = req.query;
   
-  const status = 
-    action === 'convert' ? 'converted' :
-    action === 'waiting' ? 'waiting' : 'not_converted';
-  
-  const stage = 
-    action === 'convert' ? STAGES.CONVERTED :
-    action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
+  const status = action === 'convert' ? 'converted' : action === 'waiting' ? 'waiting' : 'not_converted';
+  const stage = action === 'convert' ? STAGES.CONVERTED : action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
   
   await patientsCollection.updateOne(
     { chatId: chat },
-    { 
-      $set: { 
-        status, 
-        updatedAt: new Date(),
-        currentStage: stage
-      },
-      $push: {
-        stageHistory: { [stage]: new Date() }
-      }
-    }
+    { $set: { status, currentStage: stage, updatedAt: new Date() } }
   );
   
   res.send(`✅ Patient marked as ${status}`);
 });
 
 // ============================================
-// ✅ API ENDPOINTS
+// ✅ HEALTH CHECK
 // ============================================
-app.get('/api/stage-stats', async (req, res) => {
-  try {
-    const stages = Object.values(STAGES);
-    const stats = {};
-    for (const stage of stages) {
-      stats[stage] = await patientsCollection.countDocuments({ currentStage: stage });
-    }
-    res.json(stats);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+app.get('/health', async (req, res) => {
+  res.json({
+    success: true,
+    uptime: process.uptime(),
+    mongodb: 'connected',
+    time: new Date().toISOString()
+  });
 });
 
-app.get('/api/misscall-stats', async (req, res) => {
-  try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    const total = await missCallsCollection?.countDocuments() || 0;
-    const today_count = await missCallsCollection?.countDocuments({
-      createdAt: { $gte: today }
-    }) || 0;
-    
-    res.json({ total, today: today_count });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
-// ✅ HOME ROUTE
-// ============================================
 app.get('/', (req, res) => {
   res.json({
     message: 'Tata-WATI Webhook Server',
     endpoints: {
-      test_executive: '/test-executive-direct?exec=919106959092',
-      test_ping: '/test-ping',
-      health: '/health',
-      webhook_wati: '/wati-webhook',
-      webhook_tata: '/tata-misscall-whatsapp',
-      dashboard: '/admin',
-      stage_stats: '/api/stage-stats',
-      misscall_stats: '/api/misscall-stats'
+      dashboard: '/dashboard',
+      stats: '/api/stats',
+      test: '/test-executive-direct'
     }
   });
 });
 
 // ============================================
-// ✅ DASHBOARD ROUTE
+// ✅ DASHBOARD HTML ROUTE
 // ============================================
-const dashboardRouter = require('./dashboard');
-app.use('/admin', (req, res, next) => {
-  if (!patientsCollection || !processedCollection) {
-    return res.status(503).send('Dashboard unavailable');
-  }
-  req.patientsCollection = patientsCollection;
-  req.processedCollection = processedCollection;
-  req.missCallsCollection = missCallsCollection;
-  req.STAGES = STAGES;
-  req.PORT = PORT;
-  next();
-}, dashboardRouter);
+app.get('/dashboard', (req, res) => {
+  res.sendFile(__dirname + '/dashboard.html');
+});
 
 // ============================================
 // ✅ START SERVER
@@ -802,21 +672,13 @@ async function startServer() {
     await connectDB();
     
     const HOST = '0.0.0.0';
-    const server = app.listen(PORT, HOST, () => {
+    app.listen(PORT, HOST, () => {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
-      console.log(`📍 WATI Webhook: /wati-webhook`);
-      console.log(`📍 Tata Webhook: /tata-misscall-whatsapp`);
-      console.log(`📍 Dashboard: /admin`);
-      console.log(`📍 Test Executive: /test-executive-direct?exec=919106959092`);
+      console.log(`📍 Dashboard: http://localhost:${PORT}/dashboard`);
+      console.log(`📍 API Stats: http://localhost:${PORT}/api/stats`);
       console.log('='.repeat(60) + '\n');
     });
-
-    server.on('error', (err) => {
-      console.error('❌ Server error:', err.message);
-      process.exit(1);
-    });
-
   } catch (error) {
     console.error('❌ Failed to start:', error.message);
     process.exit(1);
