@@ -430,11 +430,12 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     } else {
       await patientsCollection.insertOne({
         chatId,
-        patientName: 'Miss Call Patient',
+        patientName: 'Miss Call Patient', // Default name
         patientPhone: whatsappNumber,
         branch: branch.name,
         testName: null,
         testType: null,
+        typedTestName: null, // Separate field for typed test names
         patientMessages: [],
         sourceType: 'Miss Call',
         executiveNumber: branch.executive,
@@ -552,6 +553,7 @@ app.post('/wati-webhook', async (req, res) => {
           patientMessages: [],
           testName: null,
           testType: null,
+          typedTestName: null,
           createdAt: new Date(),
           updatedAt: new Date()
         });
@@ -577,44 +579,43 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Stored patient message: "${messageText}"`);
         
         // ============================================
-        // ✅ PATIENT NAME DETECTION
+        // ✅ PATIENT NAME DETECTION - NEVER OVERWRITE EXISTING NAME
         // ============================================
         const lowerMsg = messageText.toLowerCase();
         
-        // Check for explicit name introduction
-        if (lowerMsg.includes('my name is') || lowerMsg.includes('i am') || lowerMsg.includes('call me') || lowerMsg.includes('name:')) {
-          
-          let extractedName = messageText;
-          
-          if (lowerMsg.includes('my name is')) {
-            extractedName = messageText.substring(lowerMsg.indexOf('my name is') + 11).trim();
-          } else if (lowerMsg.includes('i am')) {
-            extractedName = messageText.substring(lowerMsg.indexOf('i am') + 5).trim();
-          } else if (lowerMsg.includes('call me')) {
-            extractedName = messageText.substring(lowerMsg.indexOf('call me') + 8).trim();
-          } else if (lowerMsg.includes('name:')) {
-            extractedName = messageText.substring(lowerMsg.indexOf('name:') + 5).trim();
-          }
-          
-          // Clean up - remove extra words and punctuation
-          extractedName = extractedName.split(' ')[0].replace(/[.,!?]/g, '');
-          
-          if (extractedName && extractedName.length > 2) {
-            await patientsCollection.updateOne(
-              { _id: patient._id },
-              { $set: { patientName: extractedName } }
-            );
-            console.log(`✅ Patient name explicitly set to: ${extractedName}`);
-          }
-        } 
-        // Also check for single word messages that might be names
-        else if (messageText.length > 2 && messageText.length < 15 && !messageText.includes(' ')) {
-          // Only update if we don't already have a name or current name is default
-          const currentPatient = await patientsCollection.findOne({ _id: patient._id });
-          if (!currentPatient.patientName || currentPatient.patientName === 'Miss Call Patient') {
+        // Check for explicit name introduction - ONLY set if current name is default
+        if (patient.patientName === 'Miss Call Patient' || !patient.patientName) {
+          if (lowerMsg.includes('my name is') || lowerMsg.includes('i am') || lowerMsg.includes('call me') || lowerMsg.includes('name:')) {
+            
+            let extractedName = messageText;
+            
+            if (lowerMsg.includes('my name is')) {
+              extractedName = messageText.substring(lowerMsg.indexOf('my name is') + 11).trim();
+            } else if (lowerMsg.includes('i am')) {
+              extractedName = messageText.substring(lowerMsg.indexOf('i am') + 5).trim();
+            } else if (lowerMsg.includes('call me')) {
+              extractedName = messageText.substring(lowerMsg.indexOf('call me') + 8).trim();
+            } else if (lowerMsg.includes('name:')) {
+              extractedName = messageText.substring(lowerMsg.indexOf('name:') + 5).trim();
+            }
+            
+            // Clean up - remove extra words and punctuation
+            extractedName = extractedName.split(' ')[0].replace(/[.,!?]/g, '');
+            
+            if (extractedName && extractedName.length > 2) {
+              await patientsCollection.updateOne(
+                { _id: patient._id },
+                { $set: { patientName: extractedName } }
+              );
+              console.log(`✅ Patient name explicitly set to: ${extractedName}`);
+            }
+          } 
+          // Also check for single word messages that might be names - but ONLY if current name is default
+          else if (messageText.length > 2 && messageText.length < 15 && !messageText.includes(' ')) {
             const upperText = messageText.toUpperCase();
-            // Make sure it's not a test name
-            if (!upperText.includes('MRI') && !upperText.includes('CT') && !upperText.includes('X-RAY') && !upperText.includes('USG')) {
+            // Make sure it's not a test keyword
+            const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY'];
+            if (!testKeywords.includes(upperText)) {
               await patientsCollection.updateOne(
                 { _id: patient._id },
                 { $set: { patientName: messageText } }
@@ -627,39 +628,38 @@ app.post('/wati-webhook', async (req, res) => {
         // ============================================
         // ✅ TEST TYPE DETECTION (MRI, CT, USG, X-RAY)
         // ============================================
-        if (!messageText.toUpperCase().includes('CHANGE BRANCH') && !messageText.toUpperCase().includes('DONE')) {
-          const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY'];
-          const upperText = messageText.toUpperCase();
-          let isTestKeyword = false;
-          
-          for (const keyword of testKeywords) {
-            if (upperText.includes(keyword) || upperText === keyword) {
-              isTestKeyword = true;
-              await patientsCollection.updateOne(
-                { _id: patient._id },
-                { 
-                  $set: { 
-                    testType: keyword,
-                    lastTestTypeDetected: messageText
-                  }
-                }
-              );
-              console.log(`✅ Detected test type: ${keyword} from patient message`);
-              break;
-            }
-          }
-          
-          // ============================================
-          // ✅ TEST NAME DETECTION (Typed messages)
-          // ============================================
-          // If it's a longer message (more than 2 words) and not a command, consider it as test name
-          if (!isTestKeyword && messageText.split(' ').length > 1 && messageText.length > 5) {
+        const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY'];
+        const upperText = messageText.toUpperCase();
+        let detectedType = null;
+        
+        for (const keyword of testKeywords) {
+          if (upperText.includes(keyword) || upperText === keyword) {
+            detectedType = keyword;
             await patientsCollection.updateOne(
               { _id: patient._id },
-              { $set: { testName: messageText } }
+              { 
+                $set: { 
+                  testType: keyword,
+                  lastTestTypeDetected: messageText
+                }
+              }
             );
-            console.log(`✅ Stored test name: ${messageText}`);
+            console.log(`✅ Detected test type: ${keyword} from patient message`);
+            break;
           }
+        }
+        
+        // ============================================
+        // ✅ TEST NAME DETECTION (Typed messages)
+        // ============================================
+        // Store ANY message that's not a command as test name
+        // This preserves "Dummy Vijay" as test name even after "USG" comes
+        if (!detectedType && messageText.length > 2 && !messageText.toUpperCase().includes('CHANGE BRANCH')) {
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { typedTestName: messageText } }
+          );
+          console.log(`✅ Stored typed test name: ${messageText}`);
         }
       }
     }
@@ -702,8 +702,8 @@ app.post('/wati-webhook', async (req, res) => {
             patient.patientName || 'Patient',
             patient.patientPhone,
             patient.branch || 'Branch',
-            'Chat Session',
-            'Connect',
+            patient.typedTestName || 'Not specified',
+            patient.testType || 'Miss Call',
             existingSession.sessionToken
           );
           
@@ -727,8 +727,8 @@ app.post('/wati-webhook', async (req, res) => {
             patient.patientName || 'Patient',
             patient.patientPhone,
             patient.branch || 'Branch',
-            'Chat Session',
-            'Connect',
+            patient.typedTestName || 'Not specified',
+            patient.testType || 'Miss Call',
             sessionToken
           );
           
@@ -847,6 +847,7 @@ app.post('/wati-webhook', async (req, res) => {
           branch: branch,
           testName: null,
           testType: null,
+          typedTestName: null,
           patientMessages: [],
           sourceType: 'Miss Call',
           executiveNumber: executiveNumber,
@@ -886,41 +887,10 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Patient updated`);
       }
       
-      // Get the best patient name to send
+      // Prepare data for notification
       let patientNameToSend = patient.patientName || 'Miss Call Patient';
-      
-      // If we have patient messages, look for name-like messages
-      if (patient.patientMessages && patient.patientMessages.length > 0 && patientNameToSend === 'Miss Call Patient') {
-        // Look for single word messages that could be names
-        for (let i = patient.patientMessages.length - 1; i >= 0; i--) {
-          const msg = patient.patientMessages[i];
-          const msgText = msg.text;
-          if (msgText.length > 2 && msgText.length < 15 && !msgText.includes(' ')) {
-            const upperMsg = msgText.toUpperCase();
-            if (!upperMsg.includes('MRI') && !upperMsg.includes('CT') && !upperMsg.includes('X-RAY')) {
-              patientNameToSend = msgText;
-              break;
-            }
-          }
-        }
-      }
-      
-      // Prepare test name and type for notification
-      let testNameToSend = patient.testName || 'Not specified';
+      let testNameToSend = patient.typedTestName || 'Not specified';
       let testTypeToSend = patient.testType || 'Miss Call';
-      
-      // If we have patient messages, get the most recent meaningful one for test name
-      if (patient.patientMessages && patient.patientMessages.length > 0) {
-        // Get the most recent message that's not a command
-        const recentMessages = [...patient.patientMessages].reverse();
-        for (const msg of recentMessages) {
-          const msgUpper = msg.text.toUpperCase();
-          if (!msgUpper.includes('CHANGE BRANCH') && !msgUpper.includes('DONE') && msg.text.length > 3) {
-            testNameToSend = msg.text;
-            break;
-          }
-        }
-      }
       
       console.log(`📤 Sending notification with:`);
       console.log(`   Patient Name: "${patientNameToSend}"`);
@@ -933,11 +903,11 @@ app.post('/wati-webhook', async (req, res) => {
           const notified = await sendNotificationAtomic(patient._id, () =>
             sendLeadNotification(
               executiveNumber,
-              patientNameToSend,      // ⭐️ Proper patient name
+              patientNameToSend,      // ⭐️ Real patient name
               whatsappNumber,
               branch,
-              testNameToSend,         // ⭐️ Patient का टाइप किया हुआ text
-              testTypeToSend,         // ⭐️ Bot से select किया हुआ test type
+              testNameToSend,         // ⭐️ Typed test name (Dummy Vijay)
+              testTypeToSend,         // ⭐️ Test type (MRI, CT, USG)
               chatId
             )
           );
@@ -1485,8 +1455,8 @@ async function startServer() {
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
       console.log(`📍 Chat System: Active`);
       console.log(`📍 Executive Number Hidden: ✅`);
-      console.log(`📍 Patient Name Detection: ✅ Active`);
-      console.log(`📍 Test Name & Type: ✅ Fixed`);
+      console.log(`📍 Patient Name Detection: ✅ Never Overwrites`);
+      console.log(`📍 Test Name Storage: ✅ Separate Field`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
