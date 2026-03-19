@@ -84,13 +84,17 @@ async function connectDB() {
 }
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS MAPPING - HARDCODED
+// ✅ EXECUTIVE NUMBERS MAPPING - All branches with same number
 // ============================================
 const EXECUTIVES = {
   'Naroda Team': '917880261858',
   'Usmanpura Team': '917880261858',
   'Vadaj Team': '917880261858',
   'Satellite Team': '917880261858',
+  'Maninagar Team': '917880261858',
+  'Bapunagar Team': '917880261858',
+  'Juhapura Team': '917880261858',
+  'Gandhinagar Team': '917880261858',
   'Manager': '917880261858'
 };
 
@@ -100,8 +104,10 @@ console.log('✅ Executive numbers loaded (hardcoded):', EXECUTIVES);
 // ✅ HELPER FUNCTIONS
 // ============================================
 function getExecutiveNumber(branchName) {
-  // Always return 917880261858 for all branches
-  return '917880261858';
+  // Format branch name properly (e.g., NARODA -> Naroda)
+  const formattedBranch = branchName.charAt(0).toUpperCase() + branchName.slice(1).toLowerCase();
+  const teamName = `${formattedBranch} Team`;
+  return EXECUTIVES[teamName] || '917880261858';
 }
 
 // ============================================
@@ -123,6 +129,22 @@ const BRANCHES = {
   [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: {
     name: 'Satellite',
     executive: EXECUTIVES['Satellite Team']
+  },
+  [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: {
+    name: 'Maninagar',
+    executive: EXECUTIVES['Maninagar Team']
+  },
+  [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: {
+    name: 'Bapunagar',
+    executive: EXECUTIVES['Bapunagar Team']
+  },
+  [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: {
+    name: 'Juhapura',
+    executive: EXECUTIVES['Juhapura Team']
+  },
+  [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: {
+    name: 'Gandhinagar',
+    executive: EXECUTIVES['Gandhinagar Team']
   },
   [normalizeIndianNumber('917969690935')]: {
     name: 'Test Branch',
@@ -441,7 +463,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - DONE_ Message Handler
+// ✅ WATI WEBHOOK - _BRANCH Message Handler (Updated)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -462,13 +484,16 @@ app.post('/wati-webhook', async (req, res) => {
     const text = (msg.text || msg.body || '').toUpperCase().trim();
     console.log(`📝 Message: "${text}" from ${patientPhone}`);
     
-    // Handle DONE_ messages
-    if (text.startsWith('DONE_')) {
-      const branch = text.replace('DONE_', '');
+    // ✅ Handle _BRANCH messages (NARODA_BRANCH, USMANPURA_BRANCH, etc.)
+    if (text.endsWith('_BRANCH')) {
+      const branchUpper = text.replace('_BRANCH', ''); // NARODA, USMANPURA, etc.
+      // Format branch name properly (NARODA -> Naroda)
+      const branch = branchUpper.charAt(0).toUpperCase() + branchUpper.slice(1).toLowerCase();
+      
       console.log(`🎯 BRANCH DETECTED: ${branch}`);
       
       const whatsappNumber = normalizeWhatsAppNumber(patientPhone);
-      const executiveNumber = getExecutiveNumber(branch);
+      const executiveNumber = getExecutiveNumber(branchUpper); // Pass uppercase for matching
       
       let patient = await patientsCollection.findOne({ 
         patientPhone: whatsappNumber
@@ -601,7 +626,7 @@ app.get('/exec-action', async (req, res) => {
   
   if (result.modifiedCount > 0) {
     console.log(`✅ Executive action taken for chat ${chat}, executiveActionTaken set to true`);
-    res.send(`✅ Patient marked as ${status} (future DONE messages will be ignored)`);
+    res.send(`✅ Patient marked as ${status} (future _BRANCH messages will be ignored)`);
   } else {
     res.send(`✅ Patient marked as ${status}`);
   }
@@ -880,7 +905,7 @@ async function startServer() {
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
       console.log(`📍 Customer Template: ${TEMPLATE_NAME}`);
       console.log(`📍 Executive Template: ${LEAD_TEMPLATE_NAME}`);
-      console.log(`📍 Executive Number: 917880261858 (for all branches)`);
+      console.log(`📍 Branch Format: [BRANCH]_BRANCH (e.g., NARODA_BRANCH)`);
       console.log(`📍 Test Misscall: /test-misscall?phone=919106959092`);
       console.log('='.repeat(60) + '\n');
     });
