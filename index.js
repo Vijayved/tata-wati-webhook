@@ -300,17 +300,19 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION
+// ✅ LEAD NOTIFICATION - FIXED WITH CORRECT TEST NAME AND TYPE
 // ============================================
-async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testNames, sourceType, chatId) {
+async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testName, testType, chatId) {
   console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
+  console.log(`   Test Name: ${testName}`);
+  console.log(`   Test Type: ${testType}`);
   
   const parameters = [
     { name: "1", value: patientName || "Miss Call Patient" },
     { name: "2", value: patientPhone },
     { name: "3", value: branch },
-    { name: "4", value: testNames || "Miss Call" },
-    { name: "5", value: sourceType || "Miss Call" },
+    { name: "4", value: testName || "Not specified" },      // ⭐️ Patient का टाइप किया हुआ text
+    { name: "5", value: testType || "Miss Call" },          // ⭐️ Bot से select किया हुआ test type
     { name: "6", value: `${SELF_URL}/connect-chat/${chatId}?token=${generateToken(chatId)}` }
   ];
   
@@ -424,7 +426,9 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         patientName: 'Miss Call Patient',
         patientPhone: whatsappNumber,
         branch: branch.name,
-        testNames: 'Awaiting details',
+        testNames: null,
+        testType: null,
+        patientMessages: [],
         sourceType: 'Miss Call',
         executiveNumber: branch.executive,
         priority: 'low',
@@ -459,7 +463,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - COMPLETE WITH ALL HANDLERS
+// ✅ WATI WEBHOOK - COMPLETE WITH TEST NAME DETECTION
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -499,6 +503,64 @@ app.post('/wati-webhook', async (req, res) => {
     console.log(`📝 Processed message: "${text}" from ${senderNumber} (type: ${messageType})`);
     
     // ============================================
+    // ✅ STORE PATIENT MESSAGES AND DETECT TEST TYPES
+    // ============================================
+    if (!text.endsWith('_BRANCH') && !text.startsWith('CONNECT') && !text.startsWith('CONVERT') && !text.startsWith('WAITING') && !text.startsWith('NOT')) {
+      
+      // Find patient
+      const patient = await patientsCollection.findOne({ 
+        patientPhone: senderNumber 
+      });
+      
+      if (patient) {
+        // Store message in patient's history
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          {
+            $push: {
+              patientMessages: {
+                text: messageText,
+                type: messageType,
+                timestamp: new Date()
+              }
+            },
+            $set: { lastMessageAt: new Date() }
+          }
+        );
+        console.log(`✅ Stored patient message: "${messageText}"`);
+        
+        // Detect test type from bot selections
+        const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'BLOOD', 'SONOGRAPHY'];
+        const upperText = messageText.toUpperCase();
+        
+        for (const keyword of testKeywords) {
+          if (upperText.includes(keyword) || upperText === keyword) {
+            await patientsCollection.updateOne(
+              { _id: patient._id },
+              { 
+                $set: { 
+                  testType: keyword,
+                  lastTestTypeDetected: messageText
+                }
+              }
+            );
+            console.log(`✅ Detected test type: ${keyword} from patient message`);
+            break;
+          }
+        }
+        
+        // If it's a longer message (more than 3 words), consider it as test name
+        if (messageText.split(' ').length > 1 && !testKeywords.some(k => upperText.includes(k))) {
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { testName: messageText } }
+          );
+          console.log(`✅ Stored test name: ${messageText}`);
+        }
+      }
+    }
+    
+    // ============================================
     // ✅ HANDLE PATIENT REPLIES (for existing chat sessions)
     // ============================================
     const activeSession = await chatSessionsCollection.findOne({
@@ -524,12 +586,11 @@ app.post('/wati-webhook', async (req, res) => {
     }
     
     // ============================================
-    // ✅ HANDLE EXECUTIVE BUTTON CLICKS (Connect to Patient, Convert Done, etc.)
+    // ✅ HANDLE EXECUTIVE BUTTON CLICKS
     // ============================================
     if (text === 'CONNECT TO PATIENT' || text === 'CONVERT DONE' || text === 'WAITING' || text === 'NOT CONVERT') {
       console.log(`🔘 Executive button clicked: ${text} from ${senderNumber}`);
       
-      // Find patient assigned to this executive
       const patient = await patientsCollection.findOne({ 
         executiveNumber: senderNumber,
         status: { $in: ['pending', 'awaiting_branch', 'branch_selected'] }
@@ -546,18 +607,15 @@ app.post('/wati-webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
-      // Handle CONNECT TO PATIENT
       if (text === 'CONNECT TO PATIENT') {
         console.log(`🔗 Connecting executive ${senderNumber} with patient ${patient.patientPhone}`);
         
-        // Check if session already exists
         const existingSession = await chatSessionsCollection.findOne({
           patientPhone: patient.patientPhone,
           status: 'active'
         });
         
         if (existingSession) {
-          // Session already exists - send existing link
           const executiveChatLink = `${SELF_URL}/executive-chat/${existingSession.sessionToken}`;
           
           await sendWatiTemplateMessage(
@@ -575,7 +633,6 @@ app.post('/wati-webhook', async (req, res) => {
           
           console.log(`✅ Existing session link sent to executive`);
         } else {
-          // Create new session
           const sessionToken = crypto.randomBytes(16).toString('hex');
           
           await chatSessionsCollection.insertOne({
@@ -618,11 +675,7 @@ app.post('/wati-webhook', async (req, res) => {
           console.log(`✅ New chat session created: ${sessionToken}`);
         }
       }
-      
-      // Handle CONVERT DONE
       else if (text === 'CONVERT DONE') {
-        console.log(`✅ Executive marked patient as CONVERTED`);
-        
         await patientsCollection.updateOne(
           { _id: patient._id },
           { 
@@ -636,7 +689,6 @@ app.post('/wati-webhook', async (req, res) => {
           }
         );
         
-        // Close any active chat session
         await chatSessionsCollection.updateMany(
           { patientPhone: patient.patientPhone, status: 'active' },
           { $set: { status: 'closed', closedAt: new Date() } }
@@ -648,11 +700,7 @@ app.post('/wati-webhook', async (req, res) => {
           [{ name: "1", value: "✅ Patient marked as converted. Thank you!" }]
         );
       }
-      
-      // Handle WAITING
       else if (text === 'WAITING') {
-        console.log(`⏳ Executive marked patient as WAITING`);
-        
         await patientsCollection.updateOne(
           { _id: patient._id },
           { 
@@ -672,11 +720,7 @@ app.post('/wati-webhook', async (req, res) => {
           [{ name: "1", value: "⏳ Please send follow-up date (DD/MM/YYYY)" }]
         );
       }
-      
-      // Handle NOT CONVERT
       else if (text === 'NOT CONVERT') {
-        console.log(`❌ Executive marked patient as NOT CONVERTED`);
-        
         await patientsCollection.updateOne(
           { _id: patient._id },
           { 
@@ -690,7 +734,6 @@ app.post('/wati-webhook', async (req, res) => {
           }
         );
         
-        // Close any active chat session
         await chatSessionsCollection.updateMany(
           { patientPhone: patient.patientPhone, status: 'active' },
           { $set: { status: 'closed', closedAt: new Date() } }
@@ -728,7 +771,9 @@ app.post('/wati-webhook', async (req, res) => {
           patientName: 'Miss Call Patient',
           patientPhone: whatsappNumber,
           branch: branch,
-          testNames: 'Chatbot Flow',
+          testName: null,
+          testType: null,
+          patientMessages: [],
           sourceType: 'Miss Call',
           executiveNumber: executiveNumber,
           priority: 'low',
@@ -742,7 +787,7 @@ app.post('/wati-webhook', async (req, res) => {
           stageHistory: [{ stage: STAGES.BRANCH_SELECTED, timestamp: new Date() }]
         });
         patient = { _id: result.insertedId };
-        console.log(`✅ New patient created with executiveActionTaken=false`);
+        console.log(`✅ New patient created`);
       } else {
         if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
           await patientsCollection.updateOne(
@@ -764,8 +809,16 @@ app.post('/wati-webhook', async (req, res) => {
             $push: { stageHistory: { stage: STAGES.BRANCH_SELECTED, timestamp: new Date() } }
           }
         );
-        console.log(`✅ Patient updated, executiveActionTaken=${patient.executiveActionTaken || false}`);
+        console.log(`✅ Patient updated`);
       }
+      
+      // Prepare test name and type for notification
+      let testNameToSend = patient.testName || (patient.patientMessages && patient.patientMessages.length > 0 
+        ? patient.patientMessages[patient.patientMessages.length - 1].text 
+        : 'Not specified');
+      let testTypeToSend = patient.testType || 'Miss Call';
+      
+      console.log(`📤 Sending notification with Test Name: "${testNameToSend}", Test Type: "${testTypeToSend}"`);
       
       if (!patient.executiveActionTaken) {
         console.log(`📤 First time notification to executive ${executiveNumber}`);
@@ -773,11 +826,11 @@ app.post('/wati-webhook', async (req, res) => {
           const notified = await sendNotificationAtomic(patient._id, () =>
             sendLeadNotification(
               executiveNumber,
-              'Miss Call Patient',
+              patient.patientName || 'Miss Call Patient',
               whatsappNumber,
               branch,
-              'Chatbot Flow',
-              '📞 Miss Call',
+              testNameToSend,      // ⭐️ Patient का टाइप किया हुआ text
+              testTypeToSend,      // ⭐️ Bot से select किया हुआ test type
               chatId
             )
           );
@@ -904,6 +957,7 @@ app.get('/executive-chat/:token', async (req, res) => {
           <button class="quick-reply-btn" onclick="sendQuickReply('Thank you')">Thank you</button>
           <button class="quick-reply-btn" onclick="sendQuickReply('Please wait')">Please wait</button>
           <button class="quick-reply-btn" onclick="sendQuickReply('I will check')">I will check</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('Please send reports')">Send reports</button>
         </div>
         
         <div class="input-area">
@@ -921,23 +975,27 @@ app.get('/executive-chat/:token', async (req, res) => {
         setInterval(checkNewMessages, 2000);
         
         async function checkNewMessages() {
-          const response = await fetch('/api/chat-messages/' + sessionToken + '?since=' + lastMessageCount);
-          const data = await response.json();
-          
-          if (data.messages && data.messages.length > 0) {
-            data.messages.forEach(msg => {
-              const messageDiv = document.createElement('div');
-              messageDiv.className = 'message ' + (msg.sender === 'executive' ? 'executive' : 'patient');
-              messageDiv.innerHTML = \`
-                <div class="message-content">
-                  \${msg.text}
-                  <div class="message-time">\${new Date(msg.timestamp).toLocaleTimeString()}</div>
-                </div>
-              \`;
-              messagesDiv.appendChild(messageDiv);
-            });
-            lastMessageCount += data.messages.length;
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+          try {
+            const response = await fetch('/api/chat-messages/' + sessionToken + '?since=' + lastMessageCount);
+            const data = await response.json();
+            
+            if (data.messages && data.messages.length > 0) {
+              data.messages.forEach(msg => {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message ' + (msg.sender === 'executive' ? 'executive' : 'patient');
+                messageDiv.innerHTML = \`
+                  <div class="message-content">
+                    \${msg.text}
+                    <div class="message-time">\${new Date(msg.timestamp).toLocaleTimeString()}</div>
+                  </div>
+                \`;
+                messagesDiv.appendChild(messageDiv);
+              });
+              lastMessageCount += data.messages.length;
+              messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+          } catch (error) {
+            console.error('Error checking messages:', error);
           }
         }
         
@@ -970,9 +1028,12 @@ app.get('/executive-chat/:token', async (req, res) => {
               lastMessageCount++;
               messageInput.value = '';
               messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            } else {
+              alert('Failed to send message: ' + result.error);
             }
           } catch (error) {
-            alert('Failed to send message');
+            alert('Error sending message');
+            console.error(error);
           } finally {
             messageInput.disabled = false;
             document.getElementById('sendBtn').disabled = false;
@@ -1023,7 +1084,8 @@ app.post('/api/send-to-patient', async (req, res) => {
       headers: {
         'Authorization': WATI_TOKEN,
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: 10000
     });
     
     await chatMessagesCollection.insertOne({
@@ -1075,6 +1137,8 @@ app.get('/test-executive-direct', async (req, res) => {
     const execNumber = req.query.exec || '917880261858';
     const patientPhone = req.query.patient || '9876543210';
     const branch = req.query.branch || 'Naroda';
+    const testName = req.query.test || 'MRI Brain';
+    const testType = req.query.type || 'MRI';
     
     const chatId = `test_${Date.now()}`;
     const result = await sendLeadNotification(
@@ -1082,8 +1146,8 @@ app.get('/test-executive-direct', async (req, res) => {
       'Test Patient',
       patientPhone,
       branch,
-      'Test MRI, Blood Test',
-      'Test',
+      testName,
+      testType,
       chatId
     );
     
@@ -1308,6 +1372,7 @@ async function startServer() {
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
       console.log(`📍 Chat System: Active`);
       console.log(`📍 Executive Number Hidden: ✅`);
+      console.log(`📍 Test Name & Type: ✅ Fixed`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
