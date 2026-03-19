@@ -22,7 +22,7 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
-const DEDUPE_WINDOW_MS = (parseInt(process.env.DEDUPE_WINDOW_SECONDS || '600', 10)) * 1000;
+const DEDUPE_WINDOW_MS = 0;
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2';
 
@@ -50,6 +50,8 @@ let processedCollection;
 let patientsCollection;
 let executivesCollection;
 let missCallsCollection;
+let chatSessionsCollection;
+let chatMessagesCollection;
 
 async function connectDB() {
   try {
@@ -66,6 +68,8 @@ async function connectDB() {
     patientsCollection = db.collection('patients');
     executivesCollection = db.collection('executives');
     missCallsCollection = db.collection('miss_calls');
+    chatSessionsCollection = db.collection('chat_sessions');
+    chatMessagesCollection = db.collection('chat_messages');
     
     // Indexes
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
@@ -74,6 +78,9 @@ async function connectDB() {
     await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
     await patientsCollection.createIndex({ missCallCount: -1 });
     await patientsCollection.createIndex({ executiveActionTaken: 1 });
+    await chatSessionsCollection.createIndex({ sessionToken: 1 }, { unique: true });
+    await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
+    await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
     
     console.log('✅ Indexes created');
     return true;
@@ -84,7 +91,7 @@ async function connectDB() {
 }
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS MAPPING - All branches with same number
+// ✅ EXECUTIVE NUMBERS MAPPING
 // ============================================
 const EXECUTIVES = {
   'Naroda Team': '917880261858',
@@ -98,13 +105,9 @@ const EXECUTIVES = {
   'Manager': '917880261858'
 };
 
-console.log('✅ Executive numbers loaded (hardcoded):', EXECUTIVES);
+console.log('✅ Executive numbers loaded:', EXECUTIVES);
 
-// ============================================
-// ✅ HELPER FUNCTIONS
-// ============================================
 function getExecutiveNumber(branchName) {
-  // Format branch name properly (e.g., NARODA -> Naroda)
   const formattedBranch = branchName.charAt(0).toUpperCase() + branchName.slice(1).toLowerCase();
   const teamName = `${formattedBranch} Team`;
   return EXECUTIVES[teamName] || '917880261858';
@@ -160,35 +163,12 @@ const STAGES = {
   AWAITING_BRANCH: 'awaiting_branch',
   BRANCH_SELECTED: 'branch_selected',
   EXECUTIVE_NOTIFIED: 'executive_notified',
+  CONNECTED: 'connected',
   CONVERTED: 'converted',
   WAITING: 'waiting',
   NOT_CONVERTED: 'not_converted',
   ESCALATED: 'escalated'
 };
-
-// ============================================
-// ✅ IN-MEMORY STORAGE (DISABLED)
-// ============================================
-const recentMissCalls = new Map();
-
-// ============================================
-// ✅ TOKEN GENERATION
-// ============================================
-function generateToken(chatId) {
-  return crypto
-    .createHmac('sha256', HMAC_SECRET)
-    .update(chatId)
-    .digest('hex');
-}
-
-function verifyToken(chatId, token) {
-  const expectedToken = generateToken(chatId);
-  try {
-    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken));
-  } catch {
-    return false;
-  }
-}
 
 // ============================================
 // ✅ HELPER FUNCTIONS
@@ -245,6 +225,8 @@ function shouldSkipDuplicateMissCall(whatsappNumber, calledNumber) {
 // ============================================
 // ✅ DATABASE FUNCTIONS
 // ============================================
+const recentMissCalls = new Map();
+
 async function isMessageProcessed(messageId) {
   if (!processedCollection) return false;
   return !!(await processedCollection.findOne({ messageId }));
@@ -259,9 +241,6 @@ async function markMessageProcessed(messageId) {
   );
 }
 
-// ============================================
-// ✅ UPDATE PATIENT STAGE
-// ============================================
 async function updatePatientStage(patientId, stage) {
   try {
     const patient = await patientsCollection.findOne({ _id: patientId });
@@ -372,6 +351,25 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
 }
 
 // ============================================
+// ✅ TOKEN GENERATION
+// ============================================
+function generateToken(chatId) {
+  return crypto
+    .createHmac('sha256', HMAC_SECRET)
+    .update(chatId)
+    .digest('hex');
+}
+
+function verifyToken(chatId, token) {
+  const expectedToken = generateToken(chatId);
+  try {
+    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken));
+  } catch {
+    return false;
+  }
+}
+
+// ============================================
 // ✅ TATA TELE WEBHOOK
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
@@ -440,7 +438,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         currentStage: STAGES.AWAITING_BRANCH,
         stageHistory: [{ stage: STAGES.AWAITING_BRANCH, timestamp: new Date() }]
       });
-      console.log(`✅ New patient created with executiveActionTaken=false`);
+      console.log(`✅ New patient created`);
     }
     
     try {
@@ -461,7 +459,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - COMPLETE FIXED VERSION WITH INTERACTIVE SUPPORT
+// ✅ WATI WEBHOOK - COMPLETE WITH ALL HANDLERS
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -474,44 +472,249 @@ app.post('/wati-webhook', async (req, res) => {
     
     if (await isMessageProcessed(msgId)) return res.sendStatus(200);
     
-    const patientPhone = msg.whatsappNumber || msg.from || msg.waId;
-    if (!patientPhone) {
+    const senderNumber = msg.whatsappNumber || msg.from || msg.waId;
+    if (!senderNumber) {
       await markMessageProcessed(msgId);
       return res.sendStatus(200);
     }
     
-    // ✅ Get message text from different possible fields
+    // Get message text from different possible fields
     let messageText = '';
+    let messageType = msg.type || 'unknown';
     
     if (msg.text) {
       messageText = msg.text;
     } else if (msg.body) {
       messageText = msg.body;
     } else if (msg.type === 'interactive' && msg.listReply && msg.listReply.title) {
-      // Interactive button/list reply - यही आपके case में हो रहा है
       messageText = msg.listReply.title;
-      console.log(`📋 Interactive button clicked: ${messageText}`);
+      console.log(`📋 Interactive list reply: ${messageText}`);
     } else if (msg.interactiveButtonReply && msg.interactiveButtonReply.title) {
       messageText = msg.interactiveButtonReply.title;
     } else if (msg.buttonReply && msg.buttonReply.title) {
       messageText = msg.buttonReply.title;
-    } else if (msg.type === 'button' && msg.button && msg.button.text) {
-      messageText = msg.button.text;
     }
     
     const text = (messageText || '').toUpperCase().trim();
-    console.log(`📝 Processed message: "${text}" from ${patientPhone} (original type: ${msg.type})`);
+    console.log(`📝 Processed message: "${text}" from ${senderNumber} (type: ${messageType})`);
     
-    // ✅ Handle _BRANCH messages (NARODA_BRANCH, USMANPURA_BRANCH, etc.)
-    if (text.endsWith('_BRANCH')) {
-      const branchUpper = text.replace('_BRANCH', ''); // NARODA, USMANPURA, etc.
-      // Format branch name properly (NARODA -> Naroda)
+    // ============================================
+    // ✅ HANDLE PATIENT REPLIES (for existing chat sessions)
+    // ============================================
+    const activeSession = await chatSessionsCollection.findOne({
+      patientPhone: senderNumber,
+      status: 'active'
+    });
+    
+    if (activeSession && text && !text.endsWith('_BRANCH')) {
+      console.log(`📝 Storing patient reply for session ${activeSession.sessionToken}`);
+      
+      await chatMessagesCollection.insertOne({
+        sessionToken: activeSession.sessionToken,
+        sender: 'patient',
+        text: messageText,
+        timestamp: new Date(),
+        watiMessageId: msg.id
+      });
+      
+      await chatSessionsCollection.updateOne(
+        { sessionToken: activeSession.sessionToken },
+        { $set: { lastActivity: new Date() } }
+      );
+    }
+    
+    // ============================================
+    // ✅ HANDLE EXECUTIVE BUTTON CLICKS (Connect to Patient, Convert Done, etc.)
+    // ============================================
+    if (text === 'CONNECT TO PATIENT' || text === 'CONVERT DONE' || text === 'WAITING' || text === 'NOT CONVERT') {
+      console.log(`🔘 Executive button clicked: ${text} from ${senderNumber}`);
+      
+      // Find patient assigned to this executive
+      const patient = await patientsCollection.findOne({ 
+        executiveNumber: senderNumber,
+        status: { $in: ['pending', 'awaiting_branch', 'branch_selected'] }
+      });
+      
+      if (!patient) {
+        console.log(`❌ No patient found for executive ${senderNumber}`);
+        await sendWatiTemplateMessage(
+          senderNumber,
+          'text_message',
+          [{ name: "1", value: "❌ No patient assigned to you." }]
+        );
+        await markMessageProcessed(msgId);
+        return res.sendStatus(200);
+      }
+      
+      // Handle CONNECT TO PATIENT
+      if (text === 'CONNECT TO PATIENT') {
+        console.log(`🔗 Connecting executive ${senderNumber} with patient ${patient.patientPhone}`);
+        
+        // Check if session already exists
+        const existingSession = await chatSessionsCollection.findOne({
+          patientPhone: patient.patientPhone,
+          status: 'active'
+        });
+        
+        if (existingSession) {
+          // Session already exists - send existing link
+          const executiveChatLink = `${SELF_URL}/executive-chat/${existingSession.sessionToken}`;
+          
+          await sendWatiTemplateMessage(
+            senderNumber,
+            LEAD_TEMPLATE_NAME,
+            [
+              { name: "1", value: "🔄 Existing Chat Session" },
+              { name: "2", value: patient.patientName || "Patient" },
+              { name: "3", value: patient.branch },
+              { name: "4", value: "Click to continue chat" },
+              { name: "5", value: "Connect" },
+              { name: "6", value: executiveChatLink }
+            ]
+          );
+          
+          console.log(`✅ Existing session link sent to executive`);
+        } else {
+          // Create new session
+          const sessionToken = crypto.randomBytes(16).toString('hex');
+          
+          await chatSessionsCollection.insertOne({
+            sessionToken,
+            executiveNumber: senderNumber,
+            patientPhone: patient.patientPhone,
+            patientName: patient.patientName,
+            createdAt: new Date(),
+            lastActivity: new Date(),
+            status: 'active'
+          });
+          
+          const executiveChatLink = `${SELF_URL}/executive-chat/${sessionToken}`;
+          
+          await sendWatiTemplateMessage(
+            senderNumber,
+            LEAD_TEMPLATE_NAME,
+            [
+              { name: "1", value: "🔗 Chat Session Created" },
+              { name: "2", value: patient.patientName || "Patient" },
+              { name: "3", value: patient.branch },
+              { name: "4", value: "Click to start secure chat" },
+              { name: "5", value: "Connect" },
+              { name: "6", value: executiveChatLink }
+            ]
+          );
+          
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { 
+              $set: { 
+                chatSessionToken: sessionToken,
+                currentStage: STAGES.CONNECTED,
+                connectedAt: new Date()
+              },
+              $push: { stageHistory: { stage: STAGES.CONNECTED, timestamp: new Date() } }
+            }
+          );
+          
+          console.log(`✅ New chat session created: ${sessionToken}`);
+        }
+      }
+      
+      // Handle CONVERT DONE
+      else if (text === 'CONVERT DONE') {
+        console.log(`✅ Executive marked patient as CONVERTED`);
+        
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $set: { 
+              status: 'converted',
+              currentStage: STAGES.CONVERTED,
+              updatedAt: new Date(),
+              executiveActionTaken: true
+            },
+            $push: { stageHistory: { stage: STAGES.CONVERTED, timestamp: new Date() } }
+          }
+        );
+        
+        // Close any active chat session
+        await chatSessionsCollection.updateMany(
+          { patientPhone: patient.patientPhone, status: 'active' },
+          { $set: { status: 'closed', closedAt: new Date() } }
+        );
+        
+        await sendWatiTemplateMessage(
+          senderNumber,
+          'text_message',
+          [{ name: "1", value: "✅ Patient marked as converted. Thank you!" }]
+        );
+      }
+      
+      // Handle WAITING
+      else if (text === 'WAITING') {
+        console.log(`⏳ Executive marked patient as WAITING`);
+        
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $set: { 
+              status: 'waiting',
+              currentStage: STAGES.WAITING,
+              updatedAt: new Date(),
+              executiveActionTaken: true
+            },
+            $push: { stageHistory: { stage: STAGES.WAITING, timestamp: new Date() } }
+          }
+        );
+        
+        await sendWatiTemplateMessage(
+          senderNumber,
+          'text_message',
+          [{ name: "1", value: "⏳ Please send follow-up date (DD/MM/YYYY)" }]
+        );
+      }
+      
+      // Handle NOT CONVERT
+      else if (text === 'NOT CONVERT') {
+        console.log(`❌ Executive marked patient as NOT CONVERTED`);
+        
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $set: { 
+              status: 'not_converted',
+              currentStage: STAGES.NOT_CONVERTED,
+              updatedAt: new Date(),
+              executiveActionTaken: true
+            },
+            $push: { stageHistory: { stage: STAGES.NOT_CONVERTED, timestamp: new Date() } }
+          }
+        );
+        
+        // Close any active chat session
+        await chatSessionsCollection.updateMany(
+          { patientPhone: patient.patientPhone, status: 'active' },
+          { $set: { status: 'closed', closedAt: new Date() } }
+        );
+        
+        await sendWatiTemplateMessage(
+          senderNumber,
+          'text_message',
+          [{ name: "1", value: "❌ Patient marked as not converted." }]
+        );
+      }
+    }
+    
+    // ============================================
+    // ✅ HANDLE _BRANCH MESSAGES (NARODA_BRANCH, etc.)
+    // ============================================
+    else if (text.endsWith('_BRANCH')) {
+      const branchUpper = text.replace('_BRANCH', '');
       const branch = branchUpper.charAt(0).toUpperCase() + branchUpper.slice(1).toLowerCase();
       
       console.log(`🎯 BRANCH DETECTED: ${branch}`);
       
-      const whatsappNumber = normalizeWhatsAppNumber(patientPhone);
-      const executiveNumber = getExecutiveNumber(branchUpper); // Pass uppercase for matching
+      const whatsappNumber = normalizeWhatsAppNumber(senderNumber);
+      const executiveNumber = getExecutiveNumber(branchUpper);
       
       let patient = await patientsCollection.findOne({ 
         patientPhone: whatsappNumber
@@ -520,7 +723,6 @@ app.post('/wati-webhook', async (req, res) => {
       const chatId = `${whatsappNumber}_${branch}`;
       
       if (!patient) {
-        // New patient
         const result = await patientsCollection.insertOne({
           chatId,
           patientName: 'Miss Call Patient',
@@ -542,7 +744,6 @@ app.post('/wati-webhook', async (req, res) => {
         patient = { _id: result.insertedId };
         console.log(`✅ New patient created with executiveActionTaken=false`);
       } else {
-        // Update existing patient
         if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
           await patientsCollection.updateOne(
             { _id: patient._id },
@@ -566,7 +767,6 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Patient updated, executiveActionTaken=${patient.executiveActionTaken || false}`);
       }
       
-      // Send executive notification only if no action taken yet
       if (!patient.executiveActionTaken) {
         console.log(`📤 First time notification to executive ${executiveNumber}`);
         try {
@@ -609,8 +809,6 @@ app.post('/wati-webhook', async (req, res) => {
       } else {
         console.log(`⏭️ Executive already took action, skipping notification`);
       }
-    } else {
-      console.log(`ℹ️ Ignoring non-branch message: "${text}"`);
     }
     
     await markMessageProcessed(msgId);
@@ -623,40 +821,255 @@ app.post('/wati-webhook', async (req, res) => {
 });
 
 // ============================================
-// ✅ EXECUTIVE ACTION HANDLER
+// ✅ EXECUTIVE CHAT INTERFACE
 // ============================================
-app.get('/exec-action', async (req, res) => {
-  const { action, chat } = req.query;
+app.get('/executive-chat/:token', async (req, res) => {
+  const { token } = req.params;
   
-  const status = action === 'convert' ? 'converted' : action === 'waiting' ? 'waiting' : 'not_converted';
-  const stage = action === 'convert' ? STAGES.CONVERTED : action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
+  const session = await chatSessionsCollection.findOne({ 
+    sessionToken: token,
+    status: 'active'
+  });
   
-  const result = await patientsCollection.updateOne(
-    { chatId: chat },
-    { 
-      $set: { 
-        status, 
-        currentStage: stage, 
-        updatedAt: new Date(),
-        executiveActionTaken: true
-      },
-      $push: { stageHistory: { stage: stage, timestamp: new Date() } }
-    }
-  );
-  
-  if (result.modifiedCount > 0) {
-    console.log(`✅ Executive action taken for chat ${chat}, executiveActionTaken set to true`);
-    res.send(`✅ Patient marked as ${status} (future _BRANCH messages will be ignored)`);
-  } else {
-    res.send(`✅ Patient marked as ${status}`);
+  if (!session) {
+    return res.send(`
+      <html>
+        <head><title>Chat Session</title></head>
+        <body style="font-family: Arial; padding: 30px;">
+          <h2 style="color: #dc3545;">❌ Invalid or Expired Session</h2>
+          <p>Please request a new connection from WhatsApp.</p>
+        </body>
+      </html>
+    `);
   }
+  
+  const messages = await chatMessagesCollection
+    .find({ sessionToken: token })
+    .sort({ timestamp: 1 })
+    .toArray();
+  
+  const patient = await patientsCollection.findOne({ 
+    patientPhone: session.patientPhone 
+  });
+  
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Executive Chat - ${session.patientName || 'Patient'}</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; height: 100vh; }
+        .chat-container { max-width: 800px; margin: 0 auto; height: 100vh; display: flex; flex-direction: column; background: white; }
+        .chat-header { background: #075e54; color: white; padding: 15px; }
+        .patient-name { font-weight: bold; font-size: 1.2em; }
+        .patient-phone { font-size: 0.8em; opacity: 0.8; }
+        .messages-container { flex: 1; overflow-y: auto; padding: 20px; background: #e5ddd5; }
+        .message { margin: 10px 0; display: flex; }
+        .message.patient { justify-content: flex-start; }
+        .message.executive { justify-content: flex-end; }
+        .message-content { max-width: 70%; padding: 10px 15px; border-radius: 10px; position: relative; }
+        .message.patient .message-content { background: white; border-bottom-left-radius: 0; }
+        .message.executive .message-content { background: #dcf8c6; border-bottom-right-radius: 0; }
+        .message-time { font-size: 0.7em; color: #999; margin-top: 5px; text-align: right; }
+        .input-area { display: flex; padding: 15px; background: #f0f0f0; border-top: 1px solid #ddd; }
+        #messageInput { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 25px; outline: none; }
+        #sendBtn { width: 60px; height: 60px; border-radius: 50%; background: #075e54; color: white; border: none; margin-left: 10px; cursor: pointer; }
+        #sendBtn:hover { background: #128C7E; }
+        .quick-replies { display: flex; gap: 10px; padding: 10px 15px; background: white; border-top: 1px solid #eee; flex-wrap: wrap; }
+        .quick-reply-btn { background: #f0f0f0; border: 1px solid #ddd; padding: 8px 15px; border-radius: 20px; cursor: pointer; }
+        .quick-reply-btn:hover { background: #e0e0e0; }
+      </style>
+    </head>
+    <body>
+      <div class="chat-container">
+        <div class="chat-header">
+          <div class="patient-name">${session.patientName || 'Patient'}</div>
+          <div class="patient-phone">${session.patientPhone}</div>
+        </div>
+        
+        <div class="messages-container" id="messages">
+          ${messages.map(msg => `
+            <div class="message ${msg.sender === 'executive' ? 'executive' : 'patient'}">
+              <div class="message-content">
+                ${msg.text}
+                <div class="message-time">${new Date(msg.timestamp).toLocaleTimeString()}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+        
+        <div class="quick-replies">
+          <button class="quick-reply-btn" onclick="sendQuickReply('Thank you')">Thank you</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('Please wait')">Please wait</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('I will check')">I will check</button>
+        </div>
+        
+        <div class="input-area">
+          <input type="text" id="messageInput" placeholder="Type your message...">
+          <button id="sendBtn" onclick="sendMessage()">➤</button>
+        </div>
+      </div>
+      
+      <script>
+        const sessionToken = '${token}';
+        const messagesDiv = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        let lastMessageCount = ${messages.length};
+        
+        setInterval(checkNewMessages, 2000);
+        
+        async function checkNewMessages() {
+          const response = await fetch('/api/chat-messages/' + sessionToken + '?since=' + lastMessageCount);
+          const data = await response.json();
+          
+          if (data.messages && data.messages.length > 0) {
+            data.messages.forEach(msg => {
+              const messageDiv = document.createElement('div');
+              messageDiv.className = 'message ' + (msg.sender === 'executive' ? 'executive' : 'patient');
+              messageDiv.innerHTML = \`
+                <div class="message-content">
+                  \${msg.text}
+                  <div class="message-time">\${new Date(msg.timestamp).toLocaleTimeString()}</div>
+                </div>
+              \`;
+              messagesDiv.appendChild(messageDiv);
+            });
+            lastMessageCount += data.messages.length;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+          }
+        }
+        
+        async function sendMessage() {
+          const text = messageInput.value.trim();
+          if (!text) return;
+          
+          messageInput.disabled = true;
+          document.getElementById('sendBtn').disabled = true;
+          
+          try {
+            const response = await fetch('/api/send-to-patient', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionToken, text })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+              const messageDiv = document.createElement('div');
+              messageDiv.className = 'message executive';
+              messageDiv.innerHTML = \`
+                <div class="message-content">
+                  \${text}
+                  <div class="message-time">Just now</div>
+                </div>
+              \`;
+              messagesDiv.appendChild(messageDiv);
+              lastMessageCount++;
+              messageInput.value = '';
+              messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+          } catch (error) {
+            alert('Failed to send message');
+          } finally {
+            messageInput.disabled = false;
+            document.getElementById('sendBtn').disabled = false;
+            messageInput.focus();
+          }
+        }
+        
+        function sendQuickReply(reply) {
+          messageInput.value = reply;
+          sendMessage();
+        }
+        
+        messageInput.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') sendMessage();
+        });
+        
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// ============================================
+// ✅ SEND MESSAGE TO PATIENT
+// ============================================
+app.post('/api/send-to-patient', async (req, res) => {
+  try {
+    const { sessionToken, text } = req.body;
+    
+    const session = await chatSessionsCollection.findOne({ 
+      sessionToken,
+      status: 'active'
+    });
+    
+    if (!session) {
+      return res.status(404).json({ success: false, error: 'Session not found' });
+    }
+    
+    // Send via WATI session message API
+    const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${session.patientPhone}`;
+    
+    const payload = {
+      messageText: text
+    };
+    
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Authorization': WATI_TOKEN,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    await chatMessagesCollection.insertOne({
+      sessionToken,
+      sender: 'executive',
+      text: text,
+      timestamp: new Date(),
+      watiMessageId: response.data?.messageId
+    });
+    
+    await chatSessionsCollection.updateOne(
+      { sessionToken },
+      { $set: { lastActivity: new Date() } }
+    );
+    
+    res.json({ success: true, messageId: response.data?.messageId });
+    
+  } catch (error) {
+    console.error('❌ Send message error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// ✅ GET CHAT MESSAGES
+// ============================================
+app.get('/api/chat-messages/:token', async (req, res) => {
+  const { token } = req.params;
+  const since = parseInt(req.query.since) || 0;
+  
+  const messages = await chatMessagesCollection
+    .find({ sessionToken: token })
+    .sort({ timestamp: 1 })
+    .toArray();
+  
+  const newMessages = messages.slice(since);
+  
+  res.json({ 
+    messages: newMessages,
+    total: messages.length
+  });
 });
 
 // ============================================
 // ✅ TEST ENDPOINTS
 // ============================================
-
-// Test executive notification
 app.get('/test-executive-direct', async (req, res) => {
   try {
     const execNumber = req.query.exec || '917880261858';
@@ -680,30 +1093,39 @@ app.get('/test-executive-direct', async (req, res) => {
   }
 });
 
-// Test miss call template
 app.get('/test-misscall', async (req, res) => {
   try {
     const phone = req.query.phone || '919106959092';
     const branch = req.query.branch || 'Naroda';
     
-    console.log(`🧪 Testing misscall template to ${phone} for branch ${branch}`);
-    
     const result = await sendWatiTemplateMessage(phone, TEMPLATE_NAME, [
       { name: '1', value: branch }
     ]);
     
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/fix-database', async (req, res) => {
+  try {
+    const result1 = await patientsCollection.updateMany(
+      { stageHistory: { $type: "object" } },
+      { $set: { stageHistory: [] } }
+    );
+    
+    const result2 = await patientsCollection.updateMany(
+      { executiveActionTaken: { $exists: false } },
+      { $set: { executiveActionTaken: false } }
+    );
+    
     res.json({ 
       success: true, 
-      message: `Template ${TEMPLATE_NAME} sent to ${phone}`,
-      result 
+      message: `Fixed ${result1.modifiedCount} stageHistory, initialized ${result2.modifiedCount} executiveActionTaken` 
     });
   } catch (error) {
-    console.error('❌ Test failed:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message,
-      response: error.response?.data 
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -717,6 +1139,7 @@ app.get('/api/stats', async (req, res) => {
     const convertedCount = await patientsCollection.countDocuments({ status: 'converted' });
     const waitingCount = await patientsCollection.countDocuments({ status: 'waiting' });
     const notConvertedCount = await patientsCollection.countDocuments({ status: 'not_converted' });
+    const connectedCount = await patientsCollection.countDocuments({ currentStage: STAGES.CONNECTED });
     
     const actionTakenCount = await patientsCollection.countDocuments({ executiveActionTaken: true });
     const actionPendingCount = await patientsCollection.countDocuments({ executiveActionTaken: false });
@@ -756,12 +1179,15 @@ app.get('/api/stats', async (req, res) => {
       .limit(5)
       .toArray();
     
+    const activeChats = await chatSessionsCollection.countDocuments({ status: 'active' });
+    
     res.json({
       totalPatients,
       pendingCount,
       convertedCount,
       waitingCount,
       notConvertedCount,
+      connectedCount,
       actionTakenCount,
       actionPendingCount,
       stageStats,
@@ -771,34 +1197,11 @@ app.get('/api/stats', async (req, res) => {
       recentPatients,
       recentMissCalls,
       topMissCallPatients,
+      activeChats,
       uptime: process.uptime()
     });
   } catch (error) {
     console.error('API Stats Error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
-// ✅ FIX DATABASE ENDPOINT
-// ============================================
-app.get('/fix-database', async (req, res) => {
-  try {
-    const result1 = await patientsCollection.updateMany(
-      { stageHistory: { $type: "object" } },
-      { $set: { stageHistory: [] } }
-    );
-    
-    const result2 = await patientsCollection.updateMany(
-      { executiveActionTaken: { $exists: false } },
-      { $set: { executiveActionTaken: false } }
-    );
-    
-    res.json({ 
-      success: true, 
-      message: `Fixed ${result1.modifiedCount} stageHistory documents, initialized ${result2.modifiedCount} executiveActionTaken fields` 
-    });
-  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
@@ -817,47 +1220,41 @@ app.get('/connect-chat/:chatId', async (req, res) => {
   const patient = await patientsCollection.findOne({ chatId });
   if (!patient) return res.send('<h2>❌ Patient not found</h2>');
   
-  const actionStatus = patient.executiveActionTaken ? '✅ Action Taken' : '⏳ Pending';
+  res.json(patient);
+});
+
+app.get('/exec-action', async (req, res) => {
+  const { action, chat } = req.query;
   
-  res.send(`
-    <html>
-      <head><title>Patient Details</title></head>
-      <body style="font-family: Arial; padding: 20px;">
-        <h1>👤 Patient Details</h1>
-        <p><strong>Name:</strong> ${patient.patientName || 'N/A'}</p>
-        <p><strong>Phone:</strong> ${patient.patientPhone || 'N/A'}</p>
-        <p><strong>Branch:</strong> ${patient.branch || 'N/A'}</p>
-        <p><strong>Tests:</strong> ${patient.testNames || patient.tests || 'N/A'}</p>
-        <p><strong>Status:</strong> ${patient.status || 'pending'}</p>
-        <p><strong>Executive Action:</strong> ${actionStatus}</p>
-        <p><strong>Miss Calls:</strong> ${patient.missCallCount || 1}</p>
-        <a href="https://wa.me/${patient.patientPhone}" target="_blank">💬 Chat on WhatsApp</a>
-      </body>
-    </html>
-  `);
+  const status = action === 'convert' ? 'converted' : action === 'waiting' ? 'waiting' : 'not_converted';
+  const stage = action === 'convert' ? STAGES.CONVERTED : action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
+  
+  await patientsCollection.updateOne(
+    { chatId: chat },
+    { 
+      $set: { 
+        status, 
+        currentStage: stage, 
+        updatedAt: new Date(),
+        executiveActionTaken: true
+      },
+      $push: { stageHistory: { stage: stage, timestamp: new Date() } }
+    }
+  );
+  
+  res.send(`✅ Patient marked as ${status}`);
 });
 
 // ============================================
 // ✅ HEALTH CHECK
 // ============================================
 app.get('/health', async (req, res) => {
-  try {
-    const patientCount = await patientsCollection?.countDocuments() || 0;
-    res.json({
-      success: true,
-      uptime: process.uptime(),
-      mongodb: 'connected',
-      patients: patientCount,
-      time: new Date().toISOString()
-    });
-  } catch (error) {
-    res.json({
-      success: true,
-      uptime: process.uptime(),
-      mongodb: 'error',
-      time: new Date().toISOString()
-    });
-  }
+  res.json({
+    success: true,
+    uptime: process.uptime(),
+    mongodb: 'connected',
+    time: new Date().toISOString()
+  });
 });
 
 // ============================================
@@ -866,16 +1263,15 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 Tata-WATI Executive System',
-    version: '2.0.0',
+    version: '3.0.0',
     endpoints: {
       admin_dashboard: '/admin',
       api_stats: '/api/stats',
       test_executive: '/test-executive-direct',
       test_misscall: '/test-misscall',
-      health: '/health',
+      fix_database: '/fix-database',
       webhook_wati: '/wati-webhook',
-      webhook_tata: '/tata-misscall-whatsapp',
-      fix_database: '/fix-database'
+      webhook_tata: '/tata-misscall-whatsapp'
     }
   });
 });
@@ -884,31 +1280,18 @@ app.get('/', (req, res) => {
 // ✅ DASHBOARD ROUTE
 // ============================================
 const dashboardRouter = require('./dashboard');
-
 app.use('/admin', (req, res, next) => {
   if (!patientsCollection || !processedCollection) {
-    return res.status(503).send(`
-      <html>
-        <head><title>Dashboard Unavailable</title></head>
-        <body style="font-family: Arial; padding: 30px;">
-          <h2 style="color: #dc3545;">⏳ Dashboard Initializing</h2>
-          <p>Database connection is being established. Please refresh in a few seconds.</p>
-          <button onclick="location.reload()" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">Refresh Page</button>
-        </body>
-      </html>
-    `);
+    return res.status(503).send('Dashboard unavailable');
   }
   req.patientsCollection = patientsCollection;
   req.processedCollection = processedCollection;
   req.missCallsCollection = missCallsCollection;
+  req.chatSessionsCollection = chatSessionsCollection;
   req.STAGES = STAGES;
   req.PORT = PORT;
   next();
 }, dashboardRouter);
-
-app.get('/dashboard', (req, res) => {
-  res.redirect('/admin');
-});
 
 // ============================================
 // ✅ START SERVER
@@ -923,11 +1306,8 @@ async function startServer() {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
-      console.log(`📍 Customer Template: ${TEMPLATE_NAME}`);
-      console.log(`📍 Executive Template: ${LEAD_TEMPLATE_NAME}`);
-      console.log(`📍 Branch Format: [BRANCH]_BRANCH (e.g., NARODA_BRANCH)`);
-      console.log(`📍 Interactive Messages: ✅ Supported`);
-      console.log(`📍 Test Misscall: /test-misscall?phone=919106959092`);
+      console.log(`📍 Chat System: Active`);
+      console.log(`📍 Executive Number Hidden: ✅`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
