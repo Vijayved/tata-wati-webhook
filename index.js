@@ -300,7 +300,7 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION - CORRECT PARAMETER ORDER
+// ✅ LEAD NOTIFICATION
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
   console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
@@ -369,6 +369,102 @@ function verifyToken(chatId, token) {
     return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken));
   } catch {
     return false;
+  }
+}
+
+// ============================================
+// ✅ AI CLASSIFICATION FUNCTION USING OPENAI
+// ============================================
+async function classifyMessageWithAI(messageText, patientContext = {}) {
+  try {
+    const prompt = `
+You are an AI assistant for a medical executive system. You need to classify patient messages into one of three categories:
+
+1. PATIENT_NAME: The message contains the patient's name. Examples: "My name is Rajesh", "I am Priya", "Call me Ravi", "Sharma ji", "Rahul", "Parag dhaud".
+2. TEST_TYPE: The message is a medical test type (like MRI, CT, USG, X-RAY, Ultrasound, etc.) selected from a bot. This is usually a single word or abbreviation. Examples: "MRI", "CT", "USG", "X-RAY", "Ultrasound".
+3. TEST_DETAILS: The message describes the specific test details, like body part or instructions. Examples: "MRI KNEE", "CT abdomen", "X-ray chest", "Blood test for thyroid", "MRI KNEE MERI BRAIN".
+4. IGNORE: The message is a command or unrelated to patient data. Examples: "Upload Prescription", "Manual Entry", "Change Branch", "Connect to Patient", "Convert Done", "Waiting", "Not Convert".
+
+Also consider the context: the patient may have already provided some information. Current patient data:
+- Existing patient name: ${patientContext.patientName || 'Not set'}
+- Existing test type: ${patientContext.testType || 'Not set'}
+- Existing test details: ${patientContext.testDetails || 'Not set'}
+
+IMPORTANT RULES:
+1. If the message is a command like "Upload Prescription" or "Manual Entry", ALWAYS classify as IGNORE.
+2. If the message contains medical test keywords (MRI, CT, USG, X-RAY) and is short (1-3 words), classify as TEST_TYPE.
+3. If the message contains medical test keywords and is longer (describing body parts), classify as TEST_DETAILS.
+4. If the message looks like a name (single word or two words that don't contain test keywords), classify as PATIENT_NAME.
+5. Never overwrite existing patient name if it's already set.
+
+Return a JSON object with:
+{
+  "category": "PATIENT_NAME | TEST_TYPE | TEST_DETAILS | IGNORE",
+  "value": "the extracted relevant text (if applicable)",
+  "reason": "brief explanation"
+}
+`;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [
+        { role: "system", content: "You are a helpful assistant that classifies medical patient messages." },
+        { role: "user", content: prompt + "\n\nMessage: " + messageText }
+      ],
+      temperature: 0.3,
+      max_tokens: 150
+    });
+
+    const content = response.choices[0].message.content;
+    console.log('🤖 OpenAI Response:', content);
+    
+    // Extract JSON from response
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    } else {
+      console.error("❌ Could not parse AI response:", content);
+      return { category: "IGNORE", value: messageText, reason: "Parse failed" };
+    }
+  } catch (error) {
+    console.error("❌ OpenAI API error:", error.message);
+    // Fallback to basic rules
+    const upper = messageText.toUpperCase();
+    
+    // Command detection
+    const commands = ['UPLOAD PRESCRIPTION', 'MANUAL ENTRY', 'CHANGE BRANCH', 'CONNECT TO PATIENT', 'CONVERT DONE', 'WAITING', 'NOT CONVERT'];
+    for (const cmd of commands) {
+      if (upper.includes(cmd)) {
+        return { category: "IGNORE", value: messageText, reason: "Command detected" };
+      }
+    }
+    
+    // Test type detection (exact match)
+    const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND'];
+    for (const kw of testKeywords) {
+      if (upper === kw) {
+        return { category: "TEST_TYPE", value: kw, reason: "Exact test type match" };
+      }
+    }
+    
+    // Contains test keyword but longer - likely test details
+    for (const kw of testKeywords) {
+      if (upper.includes(kw)) {
+        return { category: "TEST_DETAILS", value: messageText, reason: "Contains test keyword" };
+      }
+    }
+    
+    // Single word, not a command - could be name
+    if (!messageText.includes(' ') && messageText.length < 20) {
+      return { category: "PATIENT_NAME", value: messageText, reason: "Single word name" };
+    }
+    
+    // Two words, not too long - could be name
+    if (messageText.split(' ').length <= 2 && messageText.length < 30) {
+      return { category: "PATIENT_NAME", value: messageText, reason: "Two word name" };
+    }
+    
+    return { category: "TEST_DETAILS", value: messageText, reason: "Default to test details" };
   }
 }
 
@@ -464,7 +560,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - COMPLETE FIXED VERSION
+// ✅ WATI WEBHOOK - AI-POWERED CLASSIFICATION
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -528,7 +624,7 @@ app.post('/wati-webhook', async (req, res) => {
     }
     
     // ============================================
-    // ✅ AI-POWERED INTELLIGENT CLASSIFICATION (FIXED)
+    // ✅ AI-POWERED CLASSIFICATION (ONLY IF NOT BRANCH/COMMAND)
     // ============================================
     if (!text.endsWith('_BRANCH') && !text.startsWith('CONNECT') && !text.startsWith('CONVERT') && !text.startsWith('WAITING') && !text.startsWith('NOT')) {
       
@@ -550,6 +646,7 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Created new patient record for ${senderNumber}`);
       }
       
+      // Store raw message
       await patientsCollection.updateOne(
         { _id: patient._id },
         {
@@ -565,105 +662,55 @@ app.post('/wati-webhook', async (req, res) => {
       );
       console.log(`✅ Stored raw patient message: "${messageText}"`);
       
-      // ============================================
-      // 🤖 FIXED INTELLIGENT CLASSIFICATION ALGORITHM
-      // ============================================
-      
-      // 1. PATIENT NAME DETECTION (HIGHEST PRIORITY - STOP AFTER SET)
-      if (patient.patientName === 'Miss Call Patient' || !patient.patientName) {
-        const lowerMsg = messageText.toLowerCase();
-        let extractedName = null;
-        let isNameMessage = false;
-        
-        // Check for explicit name introduction patterns
-        if (lowerMsg.includes('my name is')) {
-          extractedName = messageText.substring(lowerMsg.indexOf('my name is') + 11).trim();
-          isNameMessage = true;
-        } else if (lowerMsg.includes('i am')) {
-          extractedName = messageText.substring(lowerMsg.indexOf('i am') + 5).trim();
-          isNameMessage = true;
-        } else if (lowerMsg.includes('call me')) {
-          extractedName = messageText.substring(lowerMsg.indexOf('call me') + 8).trim();
-          isNameMessage = true;
-        } else if (lowerMsg.includes('name:')) {
-          extractedName = messageText.substring(lowerMsg.indexOf('name:') + 5).trim();
-          isNameMessage = true;
-        } 
-        // FIX 1: Name detection with space (e.g., "Sharma ji")
-        else if (messageText.length > 2 && messageText.length < 30 && 
-                 messageText.split(' ').length <= 3 && // max 3 words for name
-                 !messageText.toUpperCase().includes('MRI') &&
-                 !messageText.toUpperCase().includes('CT') &&
-                 !messageText.toUpperCase().includes('USG') &&
-                 !messageText.toUpperCase().includes('X-RAY')) {
-          extractedName = messageText;
-          isNameMessage = true;
-        }
-        
-        if (isNameMessage && extractedName) {
-          let cleanName = extractedName.replace(/[.,!?]/g, '').trim();
-          
-          if (cleanName.length > 2) {
-            await patientsCollection.updateOne(
-              { _id: patient._id },
-              { $set: { patientName: cleanName } }
-            );
-            console.log(`✅ PATIENT NAME SET TO: "${cleanName}"`);
-            
-            // FIX 3: STOP HERE - Don't process further for this message
-            await markMessageProcessed(msgId);
-            return res.sendStatus(200);
-          }
-        }
-      }
-      
-      // 2. TEST TYPE DETECTION - FIX 2: EXACT MATCH ONLY
-      const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY'];
-      const upperText = messageText.toUpperCase();
-      let detectedType = false;
-      
-      for (const keyword of testKeywords) {
-        // FIX 2: Exact match only - not includes()
-        if (upperText === keyword) {
-          detectedType = true;
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            { $set: { testType: keyword } }
-          );
-          console.log(`✅ TEST TYPE DETECTED: "${keyword}" (exact match)`);
+      // Check for command patterns first (quick ignore)
+      const upperMsg = messageText.toUpperCase();
+      const ignoreCommands = ['UPLOAD PRESCRIPTION', 'MANUAL ENTRY', 'CHANGE BRANCH', 'CONNECT TO PATIENT', 'CONVERT DONE', 'WAITING', 'NOT CONVERT'];
+      let isCommand = false;
+      for (const cmd of ignoreCommands) {
+        if (upperMsg.includes(cmd)) {
+          isCommand = true;
+          console.log(`⏭️ Command detected, ignoring: "${messageText}"`);
           break;
         }
       }
       
-      // 3. TEST DETAILS STORAGE (LOWEST PRIORITY)
-      if (!detectedType && messageText.length > 5) {
-        // FIX 4 & 5: Better filtering
-        const ignorePatterns = [
-          'CHANGE BRANCH',
-          'MANUAL ENTRY',
-          'UPLOAD',
-          'UPLOAD PRESCRIPTION',
-          'CONNECT',
-          'CONVERT',
-          'WAITING',
-          'NOT CONVERT',
-          'DONE'
-        ];
+      if (!isCommand) {
+        // Call AI to classify
+        const context = {
+          patientName: patient.patientName,
+          testType: patient.testType,
+          testDetails: patient.testDetails
+        };
         
-        let shouldIgnore = false;
-        for (const pattern of ignorePatterns) {
-          if (upperText.includes(pattern)) {
-            shouldIgnore = true;
-            break;
-          }
-        }
+        const aiResult = await classifyMessageWithAI(messageText, context);
+        console.log(`🤖 AI Classification:`, aiResult);
         
-        if (!shouldIgnore) {
+        // Apply classification with priority rules
+        if (aiResult.category === 'PATIENT_NAME' && (patient.patientName === 'Miss Call Patient' || !patient.patientName)) {
           await patientsCollection.updateOne(
             { _id: patient._id },
-            { $set: { testDetails: messageText } }
+            { $set: { patientName: aiResult.value } }
           );
-          console.log(`✅ TEST DETAILS STORED: "${messageText}"`);
+          console.log(`✅ PATIENT NAME UPDATED TO: "${aiResult.value}"`);
+        }
+        else if (aiResult.category === 'TEST_TYPE') {
+          // Only update test type if it's not already set or if it's different
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { testType: aiResult.value } }
+          );
+          console.log(`✅ TEST TYPE UPDATED TO: "${aiResult.value}"`);
+        }
+        else if (aiResult.category === 'TEST_DETAILS') {
+          // Always update test details with the latest
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { testDetails: aiResult.value } }
+          );
+          console.log(`✅ TEST DETAILS UPDATED TO: "${aiResult.value}"`);
+        }
+        else if (aiResult.category === 'IGNORE') {
+          console.log(`⏭️ AI ignored message: "${messageText}"`);
         }
       }
     }
@@ -885,6 +932,7 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Patient updated`);
       }
       
+      // Create or get session token
       let sessionTokenForLink = patient.chatSessionToken;
       if (!sessionTokenForLink) {
         sessionTokenForLink = crypto.randomBytes(16).toString('hex');
@@ -895,6 +943,7 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Created new session token for chat link: ${sessionTokenForLink}`);
       }
       
+      // Prepare final data
       let patientNameToSend = patient.patientName || 'Miss Call Patient';
       let testTypeToSend = patient.testType || 'Miss Call';
       let testDetailsToSend = patient.testDetails || 'Not specified';
@@ -1424,8 +1473,8 @@ app.get('/health', async (req, res) => {
 // ============================================
 app.get('/', (req, res) => {
   res.json({
-    message: '🚀 Tata-WATI Executive System',
-    version: '4.0.0',
+    message: '🚀 Tata-WATI Executive System (AI Powered)',
+    version: '5.0.0',
     endpoints: {
       admin_dashboard: '/admin',
       api_stats: '/api/stats',
@@ -1470,9 +1519,7 @@ async function startServer() {
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
       console.log(`📍 Chat System: Active`);
       console.log(`📍 Executive Number Hidden: ✅`);
-      console.log(`📍 AI Patient Name Detection: ✅ Space names supported`);
-      console.log(`📍 AI Test Type Detection: ✅ Exact match only`);
-      console.log(`📍 Priority Control: ✅ Name → Type → Details`);
+      console.log(`📍 AI Classification: ✅ Powered by OpenAI`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
