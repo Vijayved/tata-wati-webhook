@@ -20,9 +20,9 @@ const WATI_BASE_URL = process.env.WATI_BASE_URL;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
-const HMAC_SECRET = process.env.HMAC_SECRET || 'your_hmac_secret_key';
+const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
-const DEDUPE_WINDOW_MS = 0; // 0 means no deduplication - हर miss call पर template जाएगा
+const DEDUPE_WINDOW_MS = (parseInt(process.env.DEDUPE_WINDOW_SECONDS || '600', 10)) * 1000;
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2';
 
@@ -83,15 +83,17 @@ async function connectDB() {
 }
 
 // ============================================
-// EXECUTIVE NUMBERS MAPPING
+// ✅ EXECUTIVE NUMBERS MAPPING - FIXED (सभी 917880261858 पर सेट)
 // ============================================
 const EXECUTIVES = {
   'Naroda Team': process.env.NARODA_EXECUTIVE || '917880261858',
-  'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '919825086011',
-  'Vadaj Team': process.env.VADAJ_EXECUTIVE || '919825086011',
-  'Satellite Team': process.env.SATELLITE_EXECUTIVE || '919825086011',
-  'Manager': process.env.MANAGER_NUMBER || '919825086011'
+  'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '917880261858',
+  'Vadaj Team': process.env.VADAJ_EXECUTIVE || '917880261858',
+  'Satellite Team': process.env.SATELLITE_EXECUTIVE || '917880261858',
+  'Manager': process.env.MANAGER_NUMBER || '917880261858'
 };
+
+console.log('✅ Executive numbers loaded:', EXECUTIVES);
 
 // ============================================
 // BRANCH CONFIGURATION
@@ -232,15 +234,13 @@ async function markMessageProcessed(messageId) {
 }
 
 // ============================================
-// ✅ FIXED UPDATE PATIENT STAGE - Stage History को array में बदलता है
+// ✅ FIXED UPDATE PATIENT STAGE
 // ============================================
 async function updatePatientStage(patientId, stage) {
   try {
-    // पहले patient check करो
     const patient = await patientsCollection.findOne({ _id: patientId });
     
     if (patient) {
-      // अगर stageHistory object है या null है तो उसे array में बदलो
       if (!patient.stageHistory || typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
         await patientsCollection.updateOne(
           { _id: patientId },
@@ -248,7 +248,6 @@ async function updatePatientStage(patientId, stage) {
         );
       }
       
-      // अब array में stage add करो
       await patientsCollection.updateOne(
         { _id: patientId },
         { 
@@ -296,6 +295,8 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 // ✅ LEAD NOTIFICATION
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testNames, sourceType, chatId) {
+  console.log(`📤 Sending lead notification to ${executiveNumber}`);
+  
   const parameters = [
     { name: "1", value: patientName || "Miss Call Patient" },
     { name: "2", value: patientPhone },
@@ -369,7 +370,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
     
-    // MISS CALL TRACKING
     await missCallsCollection.insertOne({
       phoneNumber: whatsappNumber,
       calledNumber: calledNumber,
@@ -399,7 +399,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       );
       console.log(`✅ Patient updated, total miss calls: ${(existingPatient.missCallCount || 0) + 1}`);
     } else {
-      // New patient के लिए stageHistory array initialize करो
       await patientsCollection.insertOne({
         chatId,
         patientName: 'Miss Call Patient',
@@ -439,7 +438,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - FIXED WITH STAGE HISTORY HANDLING
+// ✅ WATI WEBHOOK
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -467,6 +466,8 @@ app.post('/wati-webhook', async (req, res) => {
       const whatsappNumber = normalizeWhatsAppNumber(patientPhone);
       const executiveNumber = getExecutiveNumber(branch);
       
+      console.log(`👤 Sending to executive: ${executiveNumber}`);
+      
       let patient = await patientsCollection.findOne({ 
         patientPhone: whatsappNumber
       });
@@ -474,7 +475,6 @@ app.post('/wati-webhook', async (req, res) => {
       const chatId = `${whatsappNumber}_${branch}`;
       
       if (!patient) {
-        // New patient create with array
         const result = await patientsCollection.insertOne({
           chatId,
           patientName: 'Miss Call Patient',
@@ -493,9 +493,8 @@ app.post('/wati-webhook', async (req, res) => {
           stageHistory: [{ stage: STAGES.BRANCH_SELECTED, timestamp: new Date() }]
         });
         patient = { _id: result.insertedId };
-        console.log(`✅ New patient created from DONE_ message`);
+        console.log(`✅ New patient created`);
       } else {
-        // Update existing patient - पहले stageHistory को array में बदलो अगर object है
         if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
           await patientsCollection.updateOne(
             { _id: patient._id },
@@ -516,10 +515,9 @@ app.post('/wati-webhook', async (req, res) => {
             $push: { stageHistory: { stage: STAGES.BRANCH_SELECTED, timestamp: new Date() } }
           }
         );
-        console.log(`✅ Patient updated from DONE_ message`);
+        console.log(`✅ Patient updated`);
       }
       
-      // Send executive notification
       try {
         console.log(`📤 Sending notification to executive ${executiveNumber}`);
         const notified = await sendNotificationAtomic(patient._id, () =>
@@ -535,9 +533,8 @@ app.post('/wati-webhook', async (req, res) => {
         );
         
         if (notified) {
-          console.log(`✅✅ EXECUTIVE NOTIFICATION SENT`);
+          console.log(`✅✅ EXECUTIVE NOTIFICATION SENT to ${executiveNumber}`);
           
-          // Update stage after notification
           if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
             await patientsCollection.updateOne(
               { _id: patient._id },
@@ -574,7 +571,6 @@ app.post('/wati-webhook', async (req, res) => {
 // ============================================
 app.get('/fix-database', async (req, res) => {
   try {
-    // सभी patients को ढूंढो जहाँ stageHistory object है
     const result = await patientsCollection.updateMany(
       { stageHistory: { $type: "object" } },
       { $set: { stageHistory: [] } }
@@ -594,7 +590,7 @@ app.get('/fix-database', async (req, res) => {
 // ============================================
 app.get('/test-executive-direct', async (req, res) => {
   try {
-    const execNumber = req.query.exec || '919106959092';
+    const execNumber = req.query.exec || '917880261858';
     const patientPhone = req.query.patient || '9876543210';
     const branch = req.query.branch || 'Naroda';
     
@@ -822,7 +818,7 @@ async function startServer() {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
-      console.log(`📍 Fix Database: http://localhost:${PORT}/fix-database`);
+      console.log(`📍 Executive Number: 917880261858 (for all branches)`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
