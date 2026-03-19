@@ -73,6 +73,7 @@ async function connectDB() {
     await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
     await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
     await patientsCollection.createIndex({ missCallCount: -1 });
+    await patientsCollection.createIndex({ executiveActionTaken: 1 }); // नया index
     
     console.log('✅ Indexes created');
     return true;
@@ -313,7 +314,7 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
 }
 
 // ============================================
-// ✅ ATOMIC NOTIFICATION SENDER
+// ✅ ATOMIC NOTIFICATION SENDER (UPDATED)
 // ============================================
 async function sendNotificationAtomic(patientId, notificationFunction) {
   const session = patientsCollection.client.startSession();
@@ -321,31 +322,25 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
   try {
     session.startTransaction();
     
+    // अब हम notificationSent की जगह executiveActionTaken check करेंगे
     const patient = await patientsCollection.findOne({
       _id: patientId,
-      $or: [
-        { notificationSent: { $ne: true } },
-        { notificationSent: { $exists: false } }
-      ]
+      executiveActionTaken: { $ne: true }  // सिर्फ तभी भेजो जब executive ने action नहीं लिया हो
     }, { session });
     
     if (!patient) {
+      console.log(`⏭️ Executive already took action, skipping notification`);
       await session.abortTransaction();
       return false;
     }
     
     await notificationFunction();
     
-    await patientsCollection.updateOne(
-      { _id: patientId },
-      { $set: { notificationSent: true, lastNotificationSentAt: new Date() } },
-      { session }
-    );
-    
     await session.commitTransaction();
     return true;
   } catch (error) {
     await session.abortTransaction();
+    console.error(`❌ Atomic notification failed:`, error.message);
     return false;
   } finally {
     session.endSession();
@@ -413,6 +408,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         priority: 'low',
         status: 'awaiting_branch',
         notificationSent: false,
+        executiveActionTaken: false, // ⭐️ नया field - false initially
         missCallCount: 1,
         missCallTime: new Date(),
         createdAt: new Date(),
@@ -420,7 +416,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         currentStage: STAGES.AWAITING_BRANCH,
         stageHistory: [{ stage: STAGES.AWAITING_BRANCH, timestamp: new Date() }]
       });
-      console.log(`✅ New patient created`);
+      console.log(`✅ New patient created with executiveActionTaken=false`);
     }
     
     try {
@@ -441,7 +437,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK
+// ✅ WATI WEBHOOK - FIXED WITH EXECUTIVE ACTION CHECK
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -469,8 +465,6 @@ app.post('/wati-webhook', async (req, res) => {
       const whatsappNumber = normalizeWhatsAppNumber(patientPhone);
       const executiveNumber = getExecutiveNumber(branch);
       
-      console.log(`👤 Sending to executive: ${executiveNumber}`);
-      
       let patient = await patientsCollection.findOne({ 
         patientPhone: whatsappNumber
       });
@@ -478,6 +472,7 @@ app.post('/wati-webhook', async (req, res) => {
       const chatId = `${whatsappNumber}_${branch}`;
       
       if (!patient) {
+        // New patient
         const result = await patientsCollection.insertOne({
           chatId,
           patientName: 'Miss Call Patient',
@@ -489,6 +484,7 @@ app.post('/wati-webhook', async (req, res) => {
           priority: 'low',
           status: 'pending',
           notificationSent: false,
+          executiveActionTaken: false, // ⭐️ नया field
           missCallCount: 1,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -496,8 +492,9 @@ app.post('/wati-webhook', async (req, res) => {
           stageHistory: [{ stage: STAGES.BRANCH_SELECTED, timestamp: new Date() }]
         });
         patient = { _id: result.insertedId };
-        console.log(`✅ New patient created`);
+        console.log(`✅ New patient created with executiveActionTaken=false`);
       } else {
+        // Update existing patient
         if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
           await patientsCollection.updateOne(
             { _id: patient._id },
@@ -514,49 +511,56 @@ app.post('/wati-webhook', async (req, res) => {
               executiveNumber: executiveNumber,
               currentStage: STAGES.BRANCH_SELECTED,
               updatedAt: new Date()
+              // ⭐️ executiveActionTaken को मत बदलो - यही key है
             },
             $push: { stageHistory: { stage: STAGES.BRANCH_SELECTED, timestamp: new Date() } }
           }
         );
-        console.log(`✅ Patient updated`);
+        console.log(`✅ Patient updated, executiveActionTaken=${patient.executiveActionTaken || false}`);
       }
       
-      try {
-        console.log(`📤 Sending notification to executive ${executiveNumber}`);
-        const notified = await sendNotificationAtomic(patient._id, () =>
-          sendLeadNotification(
-            executiveNumber,
-            'Miss Call Patient',
-            whatsappNumber,
-            branch,
-            'Chatbot Flow',
-            '📞 Miss Call',
-            chatId
-          )
-        );
-        
-        if (notified) {
-          console.log(`✅✅ EXECUTIVE NOTIFICATION SENT to ${executiveNumber}`);
+      // ⭐️ नया condition - सिर्फ तभी notification भेजो जब executive ने action नहीं लिया हो
+      if (!patient.executiveActionTaken) {
+        console.log(`📤 First time notification to executive ${executiveNumber}`);
+        try {
+          const notified = await sendNotificationAtomic(patient._id, () =>
+            sendLeadNotification(
+              executiveNumber,
+              'Miss Call Patient',
+              whatsappNumber,
+              branch,
+              'Chatbot Flow',
+              '📞 Miss Call',
+              chatId
+            )
+          );
           
-          if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
+          if (notified) {
+            console.log(`✅✅ EXECUTIVE NOTIFICATION SENT to ${executiveNumber}`);
+            
+            if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
+              await patientsCollection.updateOne(
+                { _id: patient._id },
+                { $set: { stageHistory: [] } }
+              );
+            }
+            
             await patientsCollection.updateOne(
               { _id: patient._id },
-              { $set: { stageHistory: [] } }
+              {
+                $set: { 
+                  currentStage: STAGES.EXECUTIVE_NOTIFIED, 
+                  lastStageUpdate: new Date() 
+                },
+                $push: { stageHistory: { stage: STAGES.EXECUTIVE_NOTIFIED, timestamp: new Date() } }
+              }
             );
           }
-          
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            {
-              $set: { currentStage: STAGES.EXECUTIVE_NOTIFIED, lastStageUpdate: new Date() },
-              $push: { stageHistory: { stage: STAGES.EXECUTIVE_NOTIFIED, timestamp: new Date() } }
-            }
-          );
-        } else {
-          console.log(`ℹ️ Notification already sent previously`);
+        } catch (notifError) {
+          console.error(`❌ Notification failed:`, notifError.message);
         }
-      } catch (notifError) {
-        console.error(`❌ Notification failed:`, notifError.message);
+      } else {
+        console.log(`⏭️ Executive already took action (${patient.executiveActionTaken}), skipping notification`);
       }
     }
     
@@ -570,18 +574,55 @@ app.post('/wati-webhook', async (req, res) => {
 });
 
 // ============================================
+// ✅ EXECUTIVE ACTION HANDLER - UPDATED
+// ============================================
+app.get('/exec-action', async (req, res) => {
+  const { action, chat } = req.query;
+  
+  const status = action === 'convert' ? 'converted' : action === 'waiting' ? 'waiting' : 'not_converted';
+  const stage = action === 'convert' ? STAGES.CONVERTED : action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
+  
+  // ⭐️ जैसे ही executive action ले, executiveActionTaken = true कर दो
+  const result = await patientsCollection.updateOne(
+    { chatId: chat },
+    { 
+      $set: { 
+        status, 
+        currentStage: stage, 
+        updatedAt: new Date(),
+        executiveActionTaken: true  // ⭐️ यही important line
+      },
+      $push: { stageHistory: { stage: stage, timestamp: new Date() } }
+    }
+  );
+  
+  if (result.modifiedCount > 0) {
+    console.log(`✅ Executive action taken for chat ${chat}, executiveActionTaken set to true`);
+    res.send(`✅ Patient marked as ${status} (future DONE messages will be ignored)`);
+  } else {
+    res.send(`✅ Patient marked as ${status}`);
+  }
+});
+
+// ============================================
 // ✅ EMERGENCY FIX - CLEAN STAGE HISTORY
 // ============================================
 app.get('/fix-database', async (req, res) => {
   try {
-    const result = await patientsCollection.updateMany(
+    const result1 = await patientsCollection.updateMany(
       { stageHistory: { $type: "object" } },
       { $set: { stageHistory: [] } }
     );
     
+    // नए executiveActionTaken field को initialize करो जहाँ missing हो
+    const result2 = await patientsCollection.updateMany(
+      { executiveActionTaken: { $exists: false } },
+      { $set: { executiveActionTaken: false } }
+    );
+    
     res.json({ 
       success: true, 
-      message: `Fixed ${result.modifiedCount} documents` 
+      message: `Fixed ${result1.modifiedCount} stageHistory documents, initialized ${result2.modifiedCount} executiveActionTaken fields` 
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -615,7 +656,7 @@ app.get('/test-executive-direct', async (req, res) => {
 });
 
 // ============================================
-// ✅ API STATS ENDPOINT
+// ✅ API STATS ENDPOINT (UPDATED)
 // ============================================
 app.get('/api/stats', async (req, res) => {
   try {
@@ -624,6 +665,10 @@ app.get('/api/stats', async (req, res) => {
     const convertedCount = await patientsCollection.countDocuments({ status: 'converted' });
     const waitingCount = await patientsCollection.countDocuments({ status: 'waiting' });
     const notConvertedCount = await patientsCollection.countDocuments({ status: 'not_converted' });
+    
+    // नए stats
+    const actionTakenCount = await patientsCollection.countDocuments({ executiveActionTaken: true });
+    const actionPendingCount = await patientsCollection.countDocuments({ executiveActionTaken: false });
     
     const stageStats = {};
     for (const stage of Object.values(STAGES)) {
@@ -666,6 +711,8 @@ app.get('/api/stats', async (req, res) => {
       convertedCount,
       waitingCount,
       notConvertedCount,
+      actionTakenCount,
+      actionPendingCount,
       stageStats,
       missCallTotal,
       missCallToday,
@@ -695,6 +742,8 @@ app.get('/connect-chat/:chatId', async (req, res) => {
   const patient = await patientsCollection.findOne({ chatId });
   if (!patient) return res.send('<h2>❌ Patient not found</h2>');
   
+  const actionStatus = patient.executiveActionTaken ? '✅ Action Taken' : '⏳ Pending';
+  
   res.send(`
     <html>
       <head><title>Patient Details</title></head>
@@ -705,35 +754,12 @@ app.get('/connect-chat/:chatId', async (req, res) => {
         <p><strong>Branch:</strong> ${patient.branch || 'N/A'}</p>
         <p><strong>Tests:</strong> ${patient.testNames || patient.tests || 'N/A'}</p>
         <p><strong>Status:</strong> ${patient.status || 'pending'}</p>
+        <p><strong>Executive Action:</strong> ${actionStatus}</p>
         <p><strong>Miss Calls:</strong> ${patient.missCallCount || 1}</p>
         <a href="https://wa.me/${patient.patientPhone}" target="_blank">💬 Chat on WhatsApp</a>
       </body>
     </html>
   `);
-});
-
-// ============================================
-// ✅ EXECUTIVE ACTION
-// ============================================
-app.get('/exec-action', async (req, res) => {
-  const { action, chat } = req.query;
-  
-  const status = action === 'convert' ? 'converted' : action === 'waiting' ? 'waiting' : 'not_converted';
-  const stage = action === 'convert' ? STAGES.CONVERTED : action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
-  
-  await patientsCollection.updateOne(
-    { chatId: chat },
-    { 
-      $set: { 
-        status, 
-        currentStage: stage, 
-        updatedAt: new Date() 
-      },
-      $push: { stageHistory: { stage: stage, timestamp: new Date() } }
-    }
-  );
-  
-  res.send(`✅ Patient marked as ${status}`);
 });
 
 // ============================================
@@ -822,6 +848,7 @@ async function startServer() {
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
       console.log(`📍 Executive Number: 917880261858 (for all branches)`);
+      console.log(`📍 New Feature: executiveActionTaken tracking enabled`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
