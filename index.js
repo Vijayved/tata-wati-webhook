@@ -23,8 +23,8 @@ const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
 const DEDUPE_WINDOW_MS = (parseInt(process.env.DEDUPE_WINDOW_SECONDS || '600', 10)) * 1000;
-const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
-const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2';
+const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3'; // Customer template
+const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2'; // Executive template
 
 // OpenAI
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -73,7 +73,7 @@ async function connectDB() {
     await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
     await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
     await patientsCollection.createIndex({ missCallCount: -1 });
-    await patientsCollection.createIndex({ executiveActionTaken: 1 }); // नया index
+    await patientsCollection.createIndex({ executiveActionTaken: 1 });
     
     console.log('✅ Indexes created');
     return true;
@@ -238,7 +238,7 @@ async function markMessageProcessed(messageId) {
 }
 
 // ============================================
-// ✅ FIXED UPDATE PATIENT STAGE
+// ✅ UPDATE PATIENT STAGE
 // ============================================
 async function updatePatientStage(patientId, stage) {
   try {
@@ -268,9 +268,11 @@ async function updatePatientStage(patientId, stage) {
 }
 
 // ============================================
-// ✅ WATI TEMPLATE SENDER
+// ✅ WATI TEMPLATE SENDER (Common function for all templates)
 // ============================================
 async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
+  console.log(`📤 Sending template ${templateName} to ${whatsappNumber}`);
+  
   const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
   
   const payload = {
@@ -288,18 +290,19 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
       timeout: 15000
     });
     
+    console.log(`✅ Template ${templateName} sent successfully`);
     return response.data;
   } catch (error) {
-    console.error(`❌ Template send FAILED:`, error.message);
+    console.error(`❌ Template ${templateName} send FAILED:`, error.message);
     throw error;
   }
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION
+// ✅ LEAD NOTIFICATION (Executive template)
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testNames, sourceType, chatId) {
-  console.log(`📤 Sending lead notification to ${executiveNumber}`);
+  console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
   
   const parameters = [
     { name: "1", value: patientName || "Miss Call Patient" },
@@ -314,7 +317,7 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
 }
 
 // ============================================
-// ✅ ATOMIC NOTIFICATION SENDER (UPDATED)
+// ✅ ATOMIC NOTIFICATION SENDER
 // ============================================
 async function sendNotificationAtomic(patientId, notificationFunction) {
   const session = patientsCollection.client.startSession();
@@ -322,10 +325,9 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
   try {
     session.startTransaction();
     
-    // अब हम notificationSent की जगह executiveActionTaken check करेंगे
     const patient = await patientsCollection.findOne({
       _id: patientId,
-      executiveActionTaken: { $ne: true }  // सिर्फ तभी भेजो जब executive ने action नहीं लिया हो
+      executiveActionTaken: { $ne: true }
     }, { session });
     
     if (!patient) {
@@ -348,7 +350,7 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK
+// ✅ TATA TELE WEBHOOK - Miss Call Handler
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -368,6 +370,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
     
+    // Track miss call
     await missCallsCollection.insertOne({
       phoneNumber: whatsappNumber,
       calledNumber: calledNumber,
@@ -408,7 +411,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         priority: 'low',
         status: 'awaiting_branch',
         notificationSent: false,
-        executiveActionTaken: false, // ⭐️ नया field - false initially
+        executiveActionTaken: false,
         missCallCount: 1,
         missCallTime: new Date(),
         createdAt: new Date(),
@@ -419,11 +422,12 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       console.log(`✅ New patient created with executiveActionTaken=false`);
     }
     
+    // Send customer template - MISSCALL_WELCOME_V3
     try {
       await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
         { name: '1', value: branch.name }
       ]);
-      console.log(`✅ Welcome template sent to ${whatsappNumber}`);
+      console.log(`✅ Welcome template sent to customer ${whatsappNumber}`);
     } catch (templateError) {
       console.error('❌ Failed to send welcome template:', templateError.message);
     }
@@ -437,7 +441,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - FIXED WITH EXECUTIVE ACTION CHECK
+// ✅ WATI WEBHOOK - DONE_ Message Handler
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -458,6 +462,7 @@ app.post('/wati-webhook', async (req, res) => {
     const text = (msg.text || msg.body || '').toUpperCase().trim();
     console.log(`📝 Message: "${text}" from ${patientPhone}`);
     
+    // Handle DONE_ messages
     if (text.startsWith('DONE_')) {
       const branch = text.replace('DONE_', '');
       console.log(`🎯 BRANCH DETECTED: ${branch}`);
@@ -484,7 +489,7 @@ app.post('/wati-webhook', async (req, res) => {
           priority: 'low',
           status: 'pending',
           notificationSent: false,
-          executiveActionTaken: false, // ⭐️ नया field
+          executiveActionTaken: false,
           missCallCount: 1,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -511,7 +516,6 @@ app.post('/wati-webhook', async (req, res) => {
               executiveNumber: executiveNumber,
               currentStage: STAGES.BRANCH_SELECTED,
               updatedAt: new Date()
-              // ⭐️ executiveActionTaken को मत बदलो - यही key है
             },
             $push: { stageHistory: { stage: STAGES.BRANCH_SELECTED, timestamp: new Date() } }
           }
@@ -519,7 +523,7 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Patient updated, executiveActionTaken=${patient.executiveActionTaken || false}`);
       }
       
-      // ⭐️ नया condition - सिर्फ तभी notification भेजो जब executive ने action नहीं लिया हो
+      // Send executive notification only if no action taken yet
       if (!patient.executiveActionTaken) {
         console.log(`📤 First time notification to executive ${executiveNumber}`);
         try {
@@ -560,7 +564,7 @@ app.post('/wati-webhook', async (req, res) => {
           console.error(`❌ Notification failed:`, notifError.message);
         }
       } else {
-        console.log(`⏭️ Executive already took action (${patient.executiveActionTaken}), skipping notification`);
+        console.log(`⏭️ Executive already took action, skipping notification`);
       }
     }
     
@@ -574,7 +578,7 @@ app.post('/wati-webhook', async (req, res) => {
 });
 
 // ============================================
-// ✅ EXECUTIVE ACTION HANDLER - UPDATED
+// ✅ EXECUTIVE ACTION HANDLER
 // ============================================
 app.get('/exec-action', async (req, res) => {
   const { action, chat } = req.query;
@@ -582,7 +586,6 @@ app.get('/exec-action', async (req, res) => {
   const status = action === 'convert' ? 'converted' : action === 'waiting' ? 'waiting' : 'not_converted';
   const stage = action === 'convert' ? STAGES.CONVERTED : action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
   
-  // ⭐️ जैसे ही executive action ले, executiveActionTaken = true कर दो
   const result = await patientsCollection.updateOne(
     { chatId: chat },
     { 
@@ -590,7 +593,7 @@ app.get('/exec-action', async (req, res) => {
         status, 
         currentStage: stage, 
         updatedAt: new Date(),
-        executiveActionTaken: true  // ⭐️ यही important line
+        executiveActionTaken: true
       },
       $push: { stageHistory: { stage: stage, timestamp: new Date() } }
     }
@@ -605,33 +608,10 @@ app.get('/exec-action', async (req, res) => {
 });
 
 // ============================================
-// ✅ EMERGENCY FIX - CLEAN STAGE HISTORY
+// ✅ TEST ENDPOINTS
 // ============================================
-app.get('/fix-database', async (req, res) => {
-  try {
-    const result1 = await patientsCollection.updateMany(
-      { stageHistory: { $type: "object" } },
-      { $set: { stageHistory: [] } }
-    );
-    
-    // नए executiveActionTaken field को initialize करो जहाँ missing हो
-    const result2 = await patientsCollection.updateMany(
-      { executiveActionTaken: { $exists: false } },
-      { $set: { executiveActionTaken: false } }
-    );
-    
-    res.json({ 
-      success: true, 
-      message: `Fixed ${result1.modifiedCount} stageHistory documents, initialized ${result2.modifiedCount} executiveActionTaken fields` 
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
-// ============================================
-// ✅ TEST ENDPOINT
-// ============================================
+// Test executive notification
 app.get('/test-executive-direct', async (req, res) => {
   try {
     const execNumber = req.query.exec || '917880261858';
@@ -655,8 +635,35 @@ app.get('/test-executive-direct', async (req, res) => {
   }
 });
 
+// Test miss call template (customer template)
+app.get('/test-misscall', async (req, res) => {
+  try {
+    const phone = req.query.phone || '919106959092';
+    const branch = req.query.branch || 'Naroda';
+    
+    console.log(`🧪 Testing misscall template to ${phone} for branch ${branch}`);
+    
+    const result = await sendWatiTemplateMessage(phone, TEMPLATE_NAME, [
+      { name: '1', value: branch }
+    ]);
+    
+    res.json({ 
+      success: true, 
+      message: `Template ${TEMPLATE_NAME} sent to ${phone}`,
+      result 
+    });
+  } catch (error) {
+    console.error('❌ Test failed:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      response: error.response?.data 
+    });
+  }
+});
+
 // ============================================
-// ✅ API STATS ENDPOINT (UPDATED)
+// ✅ API STATS ENDPOINT
 // ============================================
 app.get('/api/stats', async (req, res) => {
   try {
@@ -666,7 +673,6 @@ app.get('/api/stats', async (req, res) => {
     const waitingCount = await patientsCollection.countDocuments({ status: 'waiting' });
     const notConvertedCount = await patientsCollection.countDocuments({ status: 'not_converted' });
     
-    // नए stats
     const actionTakenCount = await patientsCollection.countDocuments({ executiveActionTaken: true });
     const actionPendingCount = await patientsCollection.countDocuments({ executiveActionTaken: false });
     
@@ -724,6 +730,30 @@ app.get('/api/stats', async (req, res) => {
     });
   } catch (error) {
     console.error('API Stats Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// ✅ FIX DATABASE ENDPOINT
+// ============================================
+app.get('/fix-database', async (req, res) => {
+  try {
+    const result1 = await patientsCollection.updateMany(
+      { stageHistory: { $type: "object" } },
+      { $set: { stageHistory: [] } }
+    );
+    
+    const result2 = await patientsCollection.updateMany(
+      { executiveActionTaken: { $exists: false } },
+      { $set: { executiveActionTaken: false } }
+    );
+    
+    res.json({ 
+      success: true, 
+      message: `Fixed ${result1.modifiedCount} stageHistory documents, initialized ${result2.modifiedCount} executiveActionTaken fields` 
+    });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
@@ -796,6 +826,7 @@ app.get('/', (req, res) => {
       admin_dashboard: '/admin',
       api_stats: '/api/stats',
       test_executive: '/test-executive-direct',
+      test_misscall: '/test-misscall',
       health: '/health',
       webhook_wati: '/wati-webhook',
       webhook_tata: '/tata-misscall-whatsapp',
@@ -847,8 +878,10 @@ async function startServer() {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
+      console.log(`📍 Customer Template: ${TEMPLATE_NAME}`);
+      console.log(`📍 Executive Template: ${LEAD_TEMPLATE_NAME}`);
       console.log(`📍 Executive Number: 917880261858 (for all branches)`);
-      console.log(`📍 New Feature: executiveActionTaken tracking enabled`);
+      console.log(`📍 Test Misscall: /test-misscall?phone=919106959092`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
