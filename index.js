@@ -231,17 +231,35 @@ async function markMessageProcessed(messageId) {
   );
 }
 
+// ============================================
+// ✅ FIXED UPDATE PATIENT STAGE - Stage History को array में बदलता है
+// ============================================
 async function updatePatientStage(patientId, stage) {
   try {
-    await patientsCollection.updateOne(
-      { _id: patientId },
-      { 
-        $set: { currentStage: stage, lastStageUpdate: new Date() },
-        $push: { stageHistory: { [stage]: new Date() } }
+    // पहले patient check करो
+    const patient = await patientsCollection.findOne({ _id: patientId });
+    
+    if (patient) {
+      // अगर stageHistory object है या null है तो उसे array में बदलो
+      if (!patient.stageHistory || typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
+        await patientsCollection.updateOne(
+          { _id: patientId },
+          { $set: { stageHistory: [] } }
+        );
       }
-    );
+      
+      // अब array में stage add करो
+      await patientsCollection.updateOne(
+        { _id: patientId },
+        { 
+          $set: { currentStage: stage, lastStageUpdate: new Date() },
+          $push: { stageHistory: { stage: stage, timestamp: new Date() } }
+        }
+      );
+    }
     return true;
   } catch (error) {
+    console.error('❌ Stage update failed:', error.message);
     return false;
   }
 }
@@ -381,6 +399,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       );
       console.log(`✅ Patient updated, total miss calls: ${(existingPatient.missCallCount || 0) + 1}`);
     } else {
+      // New patient के लिए stageHistory array initialize करो
       await patientsCollection.insertOne({
         chatId,
         patientName: 'Miss Call Patient',
@@ -397,7 +416,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         createdAt: new Date(),
         updatedAt: new Date(),
         currentStage: STAGES.AWAITING_BRANCH,
-        stageHistory: { [STAGES.AWAITING_BRANCH]: new Date() }
+        stageHistory: [{ stage: STAGES.AWAITING_BRANCH, timestamp: new Date() }]
       });
       console.log(`✅ New patient created`);
     }
@@ -420,7 +439,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK
+// ✅ WATI WEBHOOK - FIXED WITH STAGE HISTORY HANDLING
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -455,6 +474,7 @@ app.post('/wati-webhook', async (req, res) => {
       const chatId = `${whatsappNumber}_${branch}`;
       
       if (!patient) {
+        // New patient create with array
         const result = await patientsCollection.insertOne({
           chatId,
           patientName: 'Miss Call Patient',
@@ -466,14 +486,23 @@ app.post('/wati-webhook', async (req, res) => {
           priority: 'low',
           status: 'pending',
           notificationSent: false,
+          missCallCount: 1,
           createdAt: new Date(),
           updatedAt: new Date(),
           currentStage: STAGES.BRANCH_SELECTED,
-          stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() }
+          stageHistory: [{ stage: STAGES.BRANCH_SELECTED, timestamp: new Date() }]
         });
         patient = { _id: result.insertedId };
         console.log(`✅ New patient created from DONE_ message`);
       } else {
+        // Update existing patient - पहले stageHistory को array में बदलो अगर object है
+        if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { stageHistory: [] } }
+          );
+        }
+        
         await patientsCollection.updateOne(
           { _id: patient._id },
           {
@@ -484,13 +513,15 @@ app.post('/wati-webhook', async (req, res) => {
               currentStage: STAGES.BRANCH_SELECTED,
               updatedAt: new Date()
             },
-            $push: { stageHistory: { [STAGES.BRANCH_SELECTED]: new Date() } }
+            $push: { stageHistory: { stage: STAGES.BRANCH_SELECTED, timestamp: new Date() } }
           }
         );
         console.log(`✅ Patient updated from DONE_ message`);
       }
       
+      // Send executive notification
       try {
+        console.log(`📤 Sending notification to executive ${executiveNumber}`);
         const notified = await sendNotificationAtomic(patient._id, () =>
           sendLeadNotification(
             executiveNumber,
@@ -505,7 +536,22 @@ app.post('/wati-webhook', async (req, res) => {
         
         if (notified) {
           console.log(`✅✅ EXECUTIVE NOTIFICATION SENT`);
-          await updatePatientStage(patient._id, STAGES.EXECUTIVE_NOTIFIED);
+          
+          // Update stage after notification
+          if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
+            await patientsCollection.updateOne(
+              { _id: patient._id },
+              { $set: { stageHistory: [] } }
+            );
+          }
+          
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            {
+              $set: { currentStage: STAGES.EXECUTIVE_NOTIFIED, lastStageUpdate: new Date() },
+              $push: { stageHistory: { stage: STAGES.EXECUTIVE_NOTIFIED, timestamp: new Date() } }
+            }
+          );
         } else {
           console.log(`ℹ️ Notification already sent previously`);
         }
@@ -520,6 +566,26 @@ app.post('/wati-webhook', async (req, res) => {
   } catch (error) {
     console.error('❌ Webhook error:', error);
     res.sendStatus(200);
+  }
+});
+
+// ============================================
+// ✅ EMERGENCY FIX - CLEAN STAGE HISTORY
+// ============================================
+app.get('/fix-database', async (req, res) => {
+  try {
+    // सभी patients को ढूंढो जहाँ stageHistory object है
+    const result = await patientsCollection.updateMany(
+      { stageHistory: { $type: "object" } },
+      { $set: { stageHistory: [] } }
+    );
+    
+    res.json({ 
+      success: true, 
+      message: `Fixed ${result.modifiedCount} documents` 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -658,7 +724,14 @@ app.get('/exec-action', async (req, res) => {
   
   await patientsCollection.updateOne(
     { chatId: chat },
-    { $set: { status, currentStage: stage, updatedAt: new Date() } }
+    { 
+      $set: { 
+        status, 
+        currentStage: stage, 
+        updatedAt: new Date() 
+      },
+      $push: { stageHistory: { stage: stage, timestamp: new Date() } }
+    }
   );
   
   res.send(`✅ Patient marked as ${status}`);
@@ -700,7 +773,8 @@ app.get('/', (req, res) => {
       test_executive: '/test-executive-direct',
       health: '/health',
       webhook_wati: '/wati-webhook',
-      webhook_tata: '/tata-misscall-whatsapp'
+      webhook_tata: '/tata-misscall-whatsapp',
+      fix_database: '/fix-database'
     }
   });
 });
@@ -748,6 +822,7 @@ async function startServer() {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
+      console.log(`📍 Fix Database: http://localhost:${PORT}/fix-database`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
