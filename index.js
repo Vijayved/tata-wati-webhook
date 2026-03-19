@@ -23,8 +23,8 @@ const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
 const DEDUPE_WINDOW_MS = (parseInt(process.env.DEDUPE_WINDOW_SECONDS || '600', 10)) * 1000;
-const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3'; // Customer template
-const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2'; // Executive template
+const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
+const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2';
 
 // OpenAI
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -290,7 +290,7 @@ async function updatePatientStage(patientId, stage) {
 }
 
 // ============================================
-// ✅ WATI TEMPLATE SENDER (Common function for all templates)
+// ✅ WATI TEMPLATE SENDER
 // ============================================
 async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
   console.log(`📤 Sending template ${templateName} to ${whatsappNumber}`);
@@ -321,7 +321,7 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION (Executive template)
+// ✅ LEAD NOTIFICATION
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testNames, sourceType, chatId) {
   console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
@@ -372,7 +372,7 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK - Miss Call Handler
+// ✅ TATA TELE WEBHOOK
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -392,7 +392,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
     
-    // Track miss call
     await missCallsCollection.insertOne({
       phoneNumber: whatsappNumber,
       calledNumber: calledNumber,
@@ -444,7 +443,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       console.log(`✅ New patient created with executiveActionTaken=false`);
     }
     
-    // Send customer template - MISSCALL_WELCOME_V3
     try {
       await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
         { name: '1', value: branch.name }
@@ -463,11 +461,12 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - _BRANCH Message Handler (Updated)
+// ✅ WATI WEBHOOK - COMPLETE FIXED VERSION WITH INTERACTIVE SUPPORT
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
     console.log('\n📨 WATI WEBHOOK RECEIVED');
+    console.log('Full webhook body:', JSON.stringify(req.body, null, 2));
     
     const msg = req.body;
     const msgId = msg.id || msg.messageId;
@@ -481,8 +480,27 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
-    const text = (msg.text || msg.body || '').toUpperCase().trim();
-    console.log(`📝 Message: "${text}" from ${patientPhone}`);
+    // ✅ Get message text from different possible fields
+    let messageText = '';
+    
+    if (msg.text) {
+      messageText = msg.text;
+    } else if (msg.body) {
+      messageText = msg.body;
+    } else if (msg.type === 'interactive' && msg.listReply && msg.listReply.title) {
+      // Interactive button/list reply - यही आपके case में हो रहा है
+      messageText = msg.listReply.title;
+      console.log(`📋 Interactive button clicked: ${messageText}`);
+    } else if (msg.interactiveButtonReply && msg.interactiveButtonReply.title) {
+      messageText = msg.interactiveButtonReply.title;
+    } else if (msg.buttonReply && msg.buttonReply.title) {
+      messageText = msg.buttonReply.title;
+    } else if (msg.type === 'button' && msg.button && msg.button.text) {
+      messageText = msg.button.text;
+    }
+    
+    const text = (messageText || '').toUpperCase().trim();
+    console.log(`📝 Processed message: "${text}" from ${patientPhone} (original type: ${msg.type})`);
     
     // ✅ Handle _BRANCH messages (NARODA_BRANCH, USMANPURA_BRANCH, etc.)
     if (text.endsWith('_BRANCH')) {
@@ -591,6 +609,8 @@ app.post('/wati-webhook', async (req, res) => {
       } else {
         console.log(`⏭️ Executive already took action, skipping notification`);
       }
+    } else {
+      console.log(`ℹ️ Ignoring non-branch message: "${text}"`);
     }
     
     await markMessageProcessed(msgId);
@@ -660,7 +680,7 @@ app.get('/test-executive-direct', async (req, res) => {
   }
 });
 
-// Test miss call template (customer template)
+// Test miss call template
 app.get('/test-misscall', async (req, res) => {
   try {
     const phone = req.query.phone || '919106959092';
@@ -906,6 +926,7 @@ async function startServer() {
       console.log(`📍 Customer Template: ${TEMPLATE_NAME}`);
       console.log(`📍 Executive Template: ${LEAD_TEMPLATE_NAME}`);
       console.log(`📍 Branch Format: [BRANCH]_BRANCH (e.g., NARODA_BRANCH)`);
+      console.log(`📍 Interactive Messages: ✅ Supported`);
       console.log(`📍 Test Misscall: /test-misscall?phone=919106959092`);
       console.log('='.repeat(60) + '\n');
     });
