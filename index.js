@@ -22,11 +22,11 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
-const DEDUPE_WINDOW_MS = 0;
+const DEDUPE_WINDOW_MS = 5000; // ⭐ FIXED: 5 seconds dedupe
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2';
 
-// OpenAI
+// OpenAI - UPDATED MODEL
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // Keep-alive
@@ -78,6 +78,7 @@ async function connectDB() {
     await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
     await patientsCollection.createIndex({ missCallCount: -1 });
     await patientsCollection.createIndex({ executiveActionTaken: 1 });
+    await patientsCollection.createIndex({ currentStage: 1 });
     await chatSessionsCollection.createIndex({ sessionToken: 1 }, { unique: true });
     await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
     await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
@@ -91,18 +92,18 @@ async function connectDB() {
 }
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS MAPPING
+// ✅ EXECUTIVE NUMBERS MAPPING - MOVED TO ENV
 // ============================================
 const EXECUTIVES = {
-  'Naroda Team': '917880261858',
-  'Usmanpura Team': '917880261858',
-  'Vadaj Team': '917880261858',
-  'Satellite Team': '917880261858',
-  'Maninagar Team': '917880261858',
-  'Bapunagar Team': '917880261858',
-  'Juhapura Team': '917880261858',
-  'Gandhinagar Team': '917880261858',
-  'Manager': '917880261858'
+  'Naroda Team': process.env.NARODA_EXECUTIVE || '917880261858',
+  'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '917880261858',
+  'Vadaj Team': process.env.VADAJ_EXECUTIVE || '917880261858',
+  'Satellite Team': process.env.SATELLITE_EXECUTIVE || '917880261858',
+  'Maninagar Team': process.env.MANINAGAR_EXECUTIVE || '917880261858',
+  'Bapunagar Team': process.env.BAPUNAGAR_EXECUTIVE || '917880261858',
+  'Juhapura Team': process.env.JUHAPURA_EXECUTIVE || '917880261858',
+  'Gandhinagar Team': process.env.GANDHINAGAR_EXECUTIVE || '917880261858',
+  'Manager': process.env.MANAGER_NUMBER || '917880261858'
 };
 
 console.log('✅ Executive numbers loaded:', EXECUTIVES);
@@ -110,7 +111,7 @@ console.log('✅ Executive numbers loaded:', EXECUTIVES);
 function getExecutiveNumber(branchName) {
   const formattedBranch = branchName.charAt(0).toUpperCase() + branchName.slice(1).toLowerCase();
   const teamName = `${formattedBranch} Team`;
-  return EXECUTIVES[teamName] || '917880261858';
+  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
 }
 
 // ============================================
@@ -162,6 +163,9 @@ const STAGES = {
   MISS_CALL_RECEIVED: 'miss_call_received',
   AWAITING_BRANCH: 'awaiting_branch',
   BRANCH_SELECTED: 'branch_selected',
+  AWAITING_NAME: 'awaiting_name',
+  AWAITING_TEST_TYPE: 'awaiting_test_type',
+  AWAITING_TEST_DETAILS: 'awaiting_test_details',
   EXECUTIVE_NOTIFIED: 'executive_notified',
   CONNECTED: 'connected',
   CONVERTED: 'converted',
@@ -373,99 +377,105 @@ function verifyToken(chatId, token) {
 }
 
 // ============================================
-// ✅ AI CLASSIFICATION FUNCTION USING OPENAI
+// ✅ HYBRID CLASSIFICATION ENGINE
 // ============================================
-async function classifyMessageWithAI(messageText, patientContext = {}) {
-  try {
-    const prompt = `
-You are an AI assistant for a medical executive system. You need to classify patient messages into one of three categories:
-
-1. PATIENT_NAME: The message contains the patient's name. Examples: "My name is Rajesh", "I am Priya", "Call me Ravi", "Sharma ji", "Rahul", "Parag dhaud", "Rahul Modi".
-2. TEST_TYPE: The message is a medical test type (like MRI, CT, USG, X-RAY, Ultrasound, etc.) selected from a bot. This is usually a single word or abbreviation. Examples: "MRI", "CT", "USG", "X-RAY", "Ultrasound".
-3. TEST_DETAILS: The message describes the specific test details, like body part or instructions. Examples: "MRI KNEE", "CT abdomen", "X-ray chest", "Blood test for thyroid", "MRI KNEE MERI BRAIN", "MRI KNEE USG ABDOMEN".
-4. IGNORE: The message is a command or unrelated to patient data. Examples: "Upload Prescription", "Manual Entry", "Change Branch", "Connect to Patient", "Convert Done", "Waiting", "Not Convert".
-
-Also consider the context: the patient may have already provided some information. Current patient data:
-- Existing patient name: ${patientContext.patientName || 'Not set'}
-- Existing test type: ${patientContext.testType || 'Not set'}
-- Existing test details: ${patientContext.testDetails || 'Not set'}
-
-IMPORTANT RULES:
-1. If the message is a command like "Upload Prescription" or "Manual Entry", ALWAYS classify as IGNORE.
-2. If the message contains medical test keywords (MRI, CT, USG, X-RAY) and is short (1-3 words), classify as TEST_TYPE.
-3. If the message contains medical test keywords and is longer (describing body parts), classify as TEST_DETAILS.
-4. If the message looks like a name (single word or two words that don't contain test keywords), classify as PATIENT_NAME.
-5. Never overwrite existing patient name if it's already set.
-
-Return a JSON object with:
-{
-  "category": "PATIENT_NAME | TEST_TYPE | TEST_DETAILS | IGNORE",
-  "value": "the extracted relevant text (if applicable)",
-  "reason": "brief explanation"
-}
-`;
-
-    const response = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
-      messages: [
-        { role: "system", content: "You are a helpful assistant that classifies medical patient messages." },
-        { role: "user", content: prompt + "\n\nMessage: " + messageText }
-      ],
-      temperature: 0.3,
-      max_tokens: 150
-    });
-
-    const content = response.choices[0].message.content;
-    console.log('🤖 OpenAI Response:', content);
-    
-    // Extract JSON from response
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
-    } else {
-      console.error("❌ Could not parse AI response:", content);
-      return { category: "IGNORE", value: messageText, reason: "Parse failed" };
+async function classifyMessage(messageText, patientContext = {}) {
+  const upperMsg = messageText.toUpperCase();
+  const wordCount = messageText.split(' ').length;
+  
+  // COMMANDS - हमेशा IGNORE
+  const commands = ['UPLOAD PRESCRIPTION', 'MANUAL ENTRY', 'CHANGE BRANCH', 'CONNECT TO PATIENT', 'CONVERT DONE', 'WAITING', 'NOT CONVERT'];
+  for (const cmd of commands) {
+    if (upperMsg.includes(cmd)) {
+      return { category: 'IGNORE', value: messageText, confidence: 1.0, reason: 'Command detected' };
     }
-  } catch (error) {
-    console.error("❌ OpenAI API error:", error.message);
-    // Fallback to basic rules
-    const upper = messageText.toUpperCase();
-    
-    // Command detection
-    const commands = ['UPLOAD PRESCRIPTION', 'MANUAL ENTRY', 'CHANGE BRANCH', 'CONNECT TO PATIENT', 'CONVERT DONE', 'WAITING', 'NOT CONVERT'];
-    for (const cmd of commands) {
-      if (upper.includes(cmd)) {
-        return { category: "IGNORE", value: messageText, reason: "Command detected" };
-      }
-    }
-    
-    // Test type detection (exact match)
-    const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND'];
-    for (const kw of testKeywords) {
-      if (upper === kw) {
-        return { category: "TEST_TYPE", value: kw, reason: "Exact test type match" };
-      }
-    }
-    
-    // Contains test keyword but longer - likely test details
-    for (const kw of testKeywords) {
-      if (upper.includes(kw)) {
-        return { category: "TEST_DETAILS", value: messageText, reason: "Contains test keyword" };
-      }
-    }
-    
-    // Single word, not a command - could be name
-    if (!messageText.includes(' ') && messageText.length < 20) {
-      return { category: "PATIENT_NAME", value: messageText, reason: "Single word name" };
-    }
-    
-    // Two words, not too long - could be name
-    if (messageText.split(' ').length <= 2 && messageText.length < 30) {
-      return { category: "PATIENT_NAME", value: messageText, reason: "Two word name" };
-    }
-    
-    return { category: "TEST_DETAILS", value: messageText, reason: "Default to test details" };
   }
+  
+  // STAGE-BASED LOGIC (सबसे पहले)
+  if (patientContext.currentStage === STAGES.AWAITING_NAME) {
+    return { category: 'PATIENT_NAME', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_name' };
+  }
+  if (patientContext.currentStage === STAGES.AWAITING_TEST_TYPE) {
+    return { category: 'TEST_TYPE', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_test_type' };
+  }
+  if (patientContext.currentStage === STAGES.AWAITING_TEST_DETAILS) {
+    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_test_details' };
+  }
+  
+  // TEST KEYWORDS
+  const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY'];
+  const bodyParts = ['KNEE', 'SPINE', 'ABDOMEN', 'CHEST', 'BRAIN', 'HEAD', 'NECK', 'PELVIS', 'HIP', 'SHOULDER', 'WRIST', 'ANKLE'];
+  
+  let hasTestKeyword = false;
+  let hasBodyPart = false;
+  
+  for (const kw of testKeywords) {
+    if (upperMsg.includes(kw)) {
+      hasTestKeyword = true;
+      break;
+    }
+  }
+  
+  for (const bp of bodyParts) {
+    if (upperMsg.includes(bp)) {
+      hasBodyPart = true;
+      break;
+    }
+  }
+  
+  // NAME DETECTION - regex pattern
+  const nameRegex = /^[A-Za-z\s]{2,30}$/;
+  if (nameRegex.test(messageText) && !hasTestKeyword && wordCount <= 3) {
+    return { category: 'PATIENT_NAME', value: messageText, confidence: 0.9, reason: 'Name pattern match' };
+  }
+  
+  // TEST DETAILS - test keyword + body part
+  if (hasTestKeyword && hasBodyPart) {
+    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.98, reason: 'Test + body part' };
+  }
+  
+  // TEST DETAILS - just test keyword but longer message
+  if (hasTestKeyword && wordCount > 1) {
+    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.85, reason: 'Test keyword with details' };
+  }
+  
+  // TEST TYPE - single word test keyword
+  if (hasTestKeyword && wordCount === 1) {
+    return { category: 'TEST_TYPE', value: messageText, confidence: 0.99, reason: 'Single word test type' };
+  }
+  
+  // AI FALLBACK - only for uncertain cases
+  if (!hasTestKeyword && wordCount > 2) {
+    try {
+      const prompt = `Classify this patient message: "${messageText}"
+Categories: PATIENT_NAME, TEST_TYPE, TEST_DETAILS, IGNORE
+Return JSON with category and confidence (0-1).`;
+      
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini", // ⭐ UPDATED MODEL
+        messages: [
+          { role: "system", content: "You classify medical patient messages accurately." },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 100
+      });
+      
+      const content = response.choices[0].message.content;
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const result = JSON.parse(jsonMatch[0]);
+        if (result.confidence > 0.7) {
+          return result;
+        }
+      }
+    } catch (error) {
+      console.error('❌ AI fallback error:', error.message);
+    }
+  }
+  
+  // DEFAULT
+  return { category: 'IGNORE', value: messageText, confidence: 0.5, reason: 'Default ignore' };
 }
 
 // ============================================
@@ -560,12 +570,11 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - AI-POWERED CLASSIFICATION
+// ✅ WATI WEBHOOK - HYBRID CLASSIFICATION
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
     console.log('\n📨 WATI WEBHOOK RECEIVED');
-    console.log('Full webhook body:', JSON.stringify(req.body, null, 2));
     
     const msg = req.body;
     const msgId = msg.id || msg.messageId;
@@ -599,7 +608,7 @@ app.post('/wati-webhook', async (req, res) => {
     console.log(`📝 Processed message: "${text}" from ${senderNumber} (type: ${messageType})`);
     
     // ============================================
-    // ✅ HANDLE PATIENT REPLIES (for existing chat sessions)
+    // ✅ HANDLE PATIENT REPLIES
     // ============================================
     const activeSession = await chatSessionsCollection.findOne({
       patientPhone: senderNumber,
@@ -624,7 +633,7 @@ app.post('/wati-webhook', async (req, res) => {
     }
     
     // ============================================
-    // ✅ AI-POWERED CLASSIFICATION (ONLY IF NOT BRANCH/COMMAND)
+    // ✅ HYBRID CLASSIFICATION
     // ============================================
     if (!text.endsWith('_BRANCH') && !text.startsWith('CONNECT') && !text.startsWith('CONVERT') && !text.startsWith('WAITING') && !text.startsWith('NOT')) {
       
@@ -640,7 +649,8 @@ app.post('/wati-webhook', async (req, res) => {
           testType: null,
           testDetails: null,
           createdAt: new Date(),
-          updatedAt: new Date()
+          updatedAt: new Date(),
+          currentStage: STAGES.AWAITING_BRANCH
         });
         patient = { _id: result.insertedId };
         console.log(`✅ Created new patient record for ${senderNumber}`);
@@ -662,56 +672,57 @@ app.post('/wati-webhook', async (req, res) => {
       );
       console.log(`✅ Stored raw patient message: "${messageText}"`);
       
-      // Check for command patterns first (quick ignore)
-      const upperMsg = messageText.toUpperCase();
-      const ignoreCommands = ['UPLOAD PRESCRIPTION', 'MANUAL ENTRY', 'CHANGE BRANCH', 'CONNECT TO PATIENT', 'CONVERT DONE', 'WAITING', 'NOT CONVERT'];
-      let isCommand = false;
-      for (const cmd of ignoreCommands) {
-        if (upperMsg.includes(cmd)) {
-          isCommand = true;
-          console.log(`⏭️ Command detected, ignoring: "${messageText}"`);
-          break;
-        }
-      }
+      // Call hybrid classifier
+      const context = {
+        currentStage: patient.currentStage,
+        patientName: patient.patientName,
+        testType: patient.testType,
+        testDetails: patient.testDetails
+      };
       
-      if (!isCommand) {
-        // Call AI to classify
-        const context = {
-          patientName: patient.patientName,
-          testType: patient.testType,
-          testDetails: patient.testDetails
-        };
-        
-        const aiResult = await classifyMessageWithAI(messageText, context);
-        console.log(`🤖 AI Classification:`, aiResult);
-        
-        // Apply classification with priority rules
-        if (aiResult.category === 'PATIENT_NAME' && (patient.patientName === 'Miss Call Patient' || !patient.patientName)) {
+      const result = await classifyMessage(messageText, context);
+      console.log(`🧠 CLASSIFICATION:`, result);
+      
+      // Apply if confidence is high enough
+      if (result.confidence >= 0.8) {
+        if (result.category === 'PATIENT_NAME') {
           await patientsCollection.updateOne(
             { _id: patient._id },
-            { $set: { patientName: aiResult.value } }
+            { 
+              $set: { 
+                patientName: result.value,
+                currentStage: STAGES.AWAITING_TEST_TYPE
+              } 
+            }
           );
-          console.log(`✅ PATIENT NAME UPDATED TO: "${aiResult.value}"`);
+          console.log(`✅ NAME UPDATED TO: "${result.value}"`);
         }
-        else if (aiResult.category === 'TEST_TYPE') {
-          // Only update test type if it's not already set or if it's different
+        else if (result.category === 'TEST_TYPE') {
           await patientsCollection.updateOne(
             { _id: patient._id },
-            { $set: { testType: aiResult.value } }
+            { 
+              $set: { 
+                testType: result.value,
+                currentStage: STAGES.AWAITING_TEST_DETAILS
+              } 
+            }
           );
-          console.log(`✅ TEST TYPE UPDATED TO: "${aiResult.value}"`);
+          console.log(`✅ TEST TYPE UPDATED TO: "${result.value}"`);
         }
-        else if (aiResult.category === 'TEST_DETAILS') {
-          // Always update test details with the latest
+        else if (result.category === 'TEST_DETAILS') {
           await patientsCollection.updateOne(
             { _id: patient._id },
-            { $set: { testDetails: aiResult.value } }
+            { 
+              $set: { 
+                testDetails: result.value,
+                currentStage: STAGES.AWAITING_BRANCH // Reset to wait for branch
+              } 
+            }
           );
-          console.log(`✅ TEST DETAILS UPDATED TO: "${aiResult.value}"`);
+          console.log(`✅ TEST DETAILS UPDATED TO: "${result.value}"`);
         }
-        else if (aiResult.category === 'IGNORE') {
-          console.log(`⏭️ AI ignored message: "${messageText}"`);
-        }
+      } else {
+        console.log(`⏭️ Low confidence (${result.confidence}), skipping update`);
       }
     }
     
@@ -767,7 +778,8 @@ app.post('/wati-webhook', async (req, res) => {
             patientName: patient.patientName,
             createdAt: new Date(),
             lastActivity: new Date(),
-            status: 'active'
+            status: 'active',
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours expiry
           });
           
           await sendLeadNotification(
@@ -868,7 +880,7 @@ app.post('/wati-webhook', async (req, res) => {
     }
     
     // ============================================
-    // ✅ HANDLE _BRANCH MESSAGES - FIXED WITH REFRESH
+    // ✅ HANDLE _BRANCH MESSAGES
     // ============================================
     else if (text.endsWith('_BRANCH')) {
       const branchUpper = text.replace('_BRANCH', '');
@@ -903,11 +915,11 @@ app.post('/wati-webhook', async (req, res) => {
           missCallCount: 1,
           createdAt: new Date(),
           updatedAt: new Date(),
-          currentStage: STAGES.BRANCH_SELECTED,
+          currentStage: STAGES.AWAITING_NAME, // ⭐ After branch, wait for name
           stageHistory: [{ stage: STAGES.BRANCH_SELECTED, timestamp: new Date() }]
         });
         patient = { _id: result.insertedId };
-        console.log(`✅ New patient created`);
+        console.log(`✅ New patient created, waiting for name`);
       } else {
         if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
           await patientsCollection.updateOne(
@@ -923,13 +935,13 @@ app.post('/wati-webhook', async (req, res) => {
               branch: branch,
               status: 'pending',
               executiveNumber: executiveNumber,
-              currentStage: STAGES.BRANCH_SELECTED,
+              currentStage: STAGES.AWAITING_NAME, // ⭐ After branch, wait for name
               updatedAt: new Date()
             },
             $push: { stageHistory: { stage: STAGES.BRANCH_SELECTED, timestamp: new Date() } }
           }
         );
-        console.log(`✅ Patient updated`);
+        console.log(`✅ Patient updated, waiting for name`);
       }
       
       // Create or get session token
@@ -943,15 +955,15 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Created new session token for chat link: ${sessionTokenForLink}`);
       }
       
-      // ⭐️ FIX: Refresh patient data before notification
-      const updatedPatient = await patientsCollection.findOne({ _id: patient._id });
+      // ⭐⭐⭐ FRESH DATABASE READ BEFORE NOTIFICATION ⭐⭐⭐
+      const freshPatientData = await patientsCollection.findOne({ _id: patient._id });
       
-      // Prepare final data from refreshed patient
-      let patientNameToSend = updatedPatient.patientName || 'Miss Call Patient';
-      let testTypeToSend = updatedPatient.testType || 'Miss Call';
-      let testDetailsToSend = updatedPatient.testDetails || 'Not specified';
+      // अब FRESH data का use करो
+      let patientNameToSend = freshPatientData.patientName || 'Miss Call Patient';
+      let testTypeToSend = freshPatientData.testType || 'Miss Call';
+      let testDetailsToSend = freshPatientData.testDetails || 'Not specified';
       
-      console.log(`🤖 AI LOGIC - Final Data for Notification:`);
+      console.log(`🧠 FINAL DATA (FROM FRESH READ):`);
       console.log(`   Patient Name: "${patientNameToSend}"`);
       console.log(`   Test Type: "${testTypeToSend}"`);
       console.log(`   Test Details: "${testDetailsToSend}"`);
@@ -963,7 +975,7 @@ app.post('/wati-webhook', async (req, res) => {
           const notified = await sendNotificationAtomic(patient._id, () =>
             sendLeadNotification(
               executiveNumber,
-              patientNameToSend,        // ⭐️ Now using refreshed data
+              patientNameToSend,
               whatsappNumber,
               branch,
               testDetailsToSend,
@@ -975,23 +987,7 @@ app.post('/wati-webhook', async (req, res) => {
           if (notified) {
             console.log(`✅✅ EXECUTIVE NOTIFICATION SENT to ${executiveNumber}`);
             
-            if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
-              await patientsCollection.updateOne(
-                { _id: patient._id },
-                { $set: { stageHistory: [] } }
-              );
-            }
-            
-            await patientsCollection.updateOne(
-              { _id: patient._id },
-              {
-                $set: { 
-                  currentStage: STAGES.EXECUTIVE_NOTIFIED, 
-                  lastStageUpdate: new Date() 
-                },
-                $push: { stageHistory: { stage: STAGES.EXECUTIVE_NOTIFIED, timestamp: new Date() } }
-              }
-            );
+            await updatePatientStage(patient._id, STAGES.EXECUTIVE_NOTIFIED);
           }
         } catch (notifError) {
           console.error(`❌ Notification failed:`, notifError.message);
@@ -1036,6 +1032,23 @@ app.get('/executive-chat/:token', async (req, res) => {
         <body style="font-family: Arial; padding: 30px;">
           <h2 style="color: #dc3545;">❌ Invalid or Expired Session</h2>
           <p>Please request a new connection from WhatsApp.</p>
+        </body>
+      </html>
+    `);
+  }
+  
+  // Check expiry
+  if (session.expiresAt && new Date() > new Date(session.expiresAt)) {
+    await chatSessionsCollection.updateOne(
+      { sessionToken: token },
+      { $set: { status: 'expired' } }
+    );
+    return res.send(`
+      <html>
+        <head><title>Chat Session</title></head>
+        <body style="font-family: Arial; padding: 30px;">
+          <h2 style="color: #dc3545;">⏰ Session Expired</h2>
+          <p>This chat session has expired. Please request a new connection.</p>
         </body>
       </html>
     `);
@@ -1476,8 +1489,8 @@ app.get('/health', async (req, res) => {
 // ============================================
 app.get('/', (req, res) => {
   res.json({
-    message: '🚀 Tata-WATI Executive System (AI Powered)',
-    version: '5.0.0',
+    message: '🚀 Tata-WATI Executive System (ULTIMATE EDITION)',
+    version: '7.0.0',
     endpoints: {
       admin_dashboard: '/admin',
       api_stats: '/api/stats',
@@ -1520,10 +1533,12 @@ async function startServer() {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
-      console.log(`📍 Chat System: Active`);
-      console.log(`📍 Executive Number Hidden: ✅`);
-      console.log(`📍 AI Classification: ✅ Powered by OpenAI`);
-      console.log(`📍 Patient Data Refresh: ✅ Fixed - Always uses latest data`);
+      console.log(`📍 Chat System: Active (24h expiry)`);
+      console.log(`📍 Executive Number: Dynamic from ENV`);
+      console.log(`📍 DEDUPE WINDOW: 5 seconds`);
+      console.log(`📍 AI Model: gpt-4o-mini`);
+      console.log(`📍 Confidence Threshold: 0.8`);
+      console.log(`📍 Stage-Based Logic: ✅ Active`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
