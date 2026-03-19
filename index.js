@@ -83,17 +83,25 @@ async function connectDB() {
 }
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS MAPPING - FIXED (सभी 917880261858 पर सेट)
+// ✅ EXECUTIVE NUMBERS MAPPING - HARDCODED
 // ============================================
 const EXECUTIVES = {
-  'Naroda Team': process.env.NARODA_EXECUTIVE || '917880261858',
-  'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '917880261858',
-  'Vadaj Team': process.env.VADAJ_EXECUTIVE || '917880261858',
-  'Satellite Team': process.env.SATELLITE_EXECUTIVE || '917880261858',
-  'Manager': process.env.MANAGER_NUMBER || '917880261858'
+  'Naroda Team': '917880261858',
+  'Usmanpura Team': '917880261858',
+  'Vadaj Team': '917880261858',
+  'Satellite Team': '917880261858',
+  'Manager': '917880261858'
 };
 
-console.log('✅ Executive numbers loaded:', EXECUTIVES);
+console.log('✅ Executive numbers loaded (hardcoded):', EXECUTIVES);
+
+// ============================================
+// ✅ HELPER FUNCTIONS
+// ============================================
+function getExecutiveNumber(branchName) {
+  // Always return 917880261858 for all branches
+  return '917880261858';
+}
 
 // ============================================
 // BRANCH CONFIGURATION
@@ -179,11 +187,6 @@ function normalizeIndianNumber(number) {
 function normalizeWhatsAppNumber(number) {
   const normalized = normalizeIndianNumber(number);
   return normalized || '';
-}
-
-function getExecutiveNumber(branchName) {
-  const teamName = `${branchName} Team`;
-  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
 }
 
 function getCallerNumberFromPayload(body) {
