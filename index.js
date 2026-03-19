@@ -300,20 +300,27 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION - FIXED WITH CORRECT TEST NAME AND TYPE
+// ✅ FIXED LEAD NOTIFICATION - CORRECT PARAMETER ORDER
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testName, testType, chatId) {
   console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
-  console.log(`   Test Name: ${testName}`);
-  console.log(`   Test Type: ${testType}`);
+  console.log(`   Patient: ${patientName}, Phone: ${patientPhone}, Branch: ${branch}`);
+  console.log(`   Test Name: ${testName}, Test Type: ${testType}`);
   
+  // CORRECT PARAMETER ORDER:
+  // {{1}} = Patient Name
+  // {{2}} = Patient Phone
+  // {{3}} = Branch
+  // {{4}} = Test Name (Typed by patient)
+  // {{5}} = Test Type (Selected from bot)
+  // {{6}} = Chat Link
   const parameters = [
     { name: "1", value: patientName || "Miss Call Patient" },
     { name: "2", value: patientPhone },
     { name: "3", value: branch },
-    { name: "4", value: testName || "Not specified" },      // ⭐️ Patient का टाइप किया हुआ text
-    { name: "5", value: testType || "Miss Call" },          // ⭐️ Bot से select किया हुआ test type
-    { name: "6", value: `${SELF_URL}/connect-chat/${chatId}?token=${generateToken(chatId)}` }
+    { name: "4", value: testName || "Not specified" },
+    { name: "5", value: testType || "Miss Call" },
+    { name: "6", value: `${SELF_URL}/executive-chat/${chatId}` }
   ];
   
   return await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
@@ -426,7 +433,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         patientName: 'Miss Call Patient',
         patientPhone: whatsappNumber,
         branch: branch.name,
-        testNames: null,
+        testName: null,
         testType: null,
         patientMessages: [],
         sourceType: 'Miss Call',
@@ -463,7 +470,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - COMPLETE WITH TEST NAME DETECTION
+// ✅ WATI WEBHOOK - COMPLETE FIXED VERSION WITH NAME DETECTION
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -503,64 +510,6 @@ app.post('/wati-webhook', async (req, res) => {
     console.log(`📝 Processed message: "${text}" from ${senderNumber} (type: ${messageType})`);
     
     // ============================================
-    // ✅ STORE PATIENT MESSAGES AND DETECT TEST TYPES
-    // ============================================
-    if (!text.endsWith('_BRANCH') && !text.startsWith('CONNECT') && !text.startsWith('CONVERT') && !text.startsWith('WAITING') && !text.startsWith('NOT')) {
-      
-      // Find patient
-      const patient = await patientsCollection.findOne({ 
-        patientPhone: senderNumber 
-      });
-      
-      if (patient) {
-        // Store message in patient's history
-        await patientsCollection.updateOne(
-          { _id: patient._id },
-          {
-            $push: {
-              patientMessages: {
-                text: messageText,
-                type: messageType,
-                timestamp: new Date()
-              }
-            },
-            $set: { lastMessageAt: new Date() }
-          }
-        );
-        console.log(`✅ Stored patient message: "${messageText}"`);
-        
-        // Detect test type from bot selections
-        const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'BLOOD', 'SONOGRAPHY'];
-        const upperText = messageText.toUpperCase();
-        
-        for (const keyword of testKeywords) {
-          if (upperText.includes(keyword) || upperText === keyword) {
-            await patientsCollection.updateOne(
-              { _id: patient._id },
-              { 
-                $set: { 
-                  testType: keyword,
-                  lastTestTypeDetected: messageText
-                }
-              }
-            );
-            console.log(`✅ Detected test type: ${keyword} from patient message`);
-            break;
-          }
-        }
-        
-        // If it's a longer message (more than 3 words), consider it as test name
-        if (messageText.split(' ').length > 1 && !testKeywords.some(k => upperText.includes(k))) {
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            { $set: { testName: messageText } }
-          );
-          console.log(`✅ Stored test name: ${messageText}`);
-        }
-      }
-    }
-    
-    // ============================================
     // ✅ HANDLE PATIENT REPLIES (for existing chat sessions)
     // ============================================
     const activeSession = await chatSessionsCollection.findOne({
@@ -586,6 +535,136 @@ app.post('/wati-webhook', async (req, res) => {
     }
     
     // ============================================
+    // ✅ STORE PATIENT MESSAGES AND DETECT TEST TYPES & NAMES
+    // ============================================
+    if (!text.endsWith('_BRANCH') && !text.startsWith('CONNECT') && !text.startsWith('CONVERT') && !text.startsWith('WAITING') && !text.startsWith('NOT')) {
+      
+      // Find patient
+      let patient = await patientsCollection.findOne({ 
+        patientPhone: senderNumber 
+      });
+      
+      // If patient doesn't exist, create a basic record
+      if (!patient) {
+        const result = await patientsCollection.insertOne({
+          patientPhone: senderNumber,
+          patientName: 'Miss Call Patient',
+          patientMessages: [],
+          testName: null,
+          testType: null,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
+        patient = { _id: result.insertedId };
+        console.log(`✅ Created new patient record for ${senderNumber}`);
+      }
+      
+      if (patient) {
+        // Store message in patient's history
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          {
+            $push: {
+              patientMessages: {
+                text: messageText,
+                type: messageType,
+                timestamp: new Date()
+              }
+            },
+            $set: { lastMessageAt: new Date() }
+          }
+        );
+        console.log(`✅ Stored patient message: "${messageText}"`);
+        
+        // ============================================
+        // ✅ PATIENT NAME DETECTION
+        // ============================================
+        const lowerMsg = messageText.toLowerCase();
+        
+        // Check for explicit name introduction
+        if (lowerMsg.includes('my name is') || lowerMsg.includes('i am') || lowerMsg.includes('call me') || lowerMsg.includes('name:')) {
+          
+          let extractedName = messageText;
+          
+          if (lowerMsg.includes('my name is')) {
+            extractedName = messageText.substring(lowerMsg.indexOf('my name is') + 11).trim();
+          } else if (lowerMsg.includes('i am')) {
+            extractedName = messageText.substring(lowerMsg.indexOf('i am') + 5).trim();
+          } else if (lowerMsg.includes('call me')) {
+            extractedName = messageText.substring(lowerMsg.indexOf('call me') + 8).trim();
+          } else if (lowerMsg.includes('name:')) {
+            extractedName = messageText.substring(lowerMsg.indexOf('name:') + 5).trim();
+          }
+          
+          // Clean up - remove extra words and punctuation
+          extractedName = extractedName.split(' ')[0].replace(/[.,!?]/g, '');
+          
+          if (extractedName && extractedName.length > 2) {
+            await patientsCollection.updateOne(
+              { _id: patient._id },
+              { $set: { patientName: extractedName } }
+            );
+            console.log(`✅ Patient name explicitly set to: ${extractedName}`);
+          }
+        } 
+        // Also check for single word messages that might be names
+        else if (messageText.length > 2 && messageText.length < 15 && !messageText.includes(' ')) {
+          // Only update if we don't already have a name or current name is default
+          const currentPatient = await patientsCollection.findOne({ _id: patient._id });
+          if (!currentPatient.patientName || currentPatient.patientName === 'Miss Call Patient') {
+            const upperText = messageText.toUpperCase();
+            // Make sure it's not a test name
+            if (!upperText.includes('MRI') && !upperText.includes('CT') && !upperText.includes('X-RAY') && !upperText.includes('USG')) {
+              await patientsCollection.updateOne(
+                { _id: patient._id },
+                { $set: { patientName: messageText } }
+              );
+              console.log(`✅ Patient name set from single word: ${messageText}`);
+            }
+          }
+        }
+        
+        // ============================================
+        // ✅ TEST TYPE DETECTION (MRI, CT, USG, X-RAY)
+        // ============================================
+        if (!messageText.toUpperCase().includes('CHANGE BRANCH') && !messageText.toUpperCase().includes('DONE')) {
+          const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY'];
+          const upperText = messageText.toUpperCase();
+          let isTestKeyword = false;
+          
+          for (const keyword of testKeywords) {
+            if (upperText.includes(keyword) || upperText === keyword) {
+              isTestKeyword = true;
+              await patientsCollection.updateOne(
+                { _id: patient._id },
+                { 
+                  $set: { 
+                    testType: keyword,
+                    lastTestTypeDetected: messageText
+                  }
+                }
+              );
+              console.log(`✅ Detected test type: ${keyword} from patient message`);
+              break;
+            }
+          }
+          
+          // ============================================
+          // ✅ TEST NAME DETECTION (Typed messages)
+          // ============================================
+          // If it's a longer message (more than 2 words) and not a command, consider it as test name
+          if (!isTestKeyword && messageText.split(' ').length > 1 && messageText.length > 5) {
+            await patientsCollection.updateOne(
+              { _id: patient._id },
+              { $set: { testName: messageText } }
+            );
+            console.log(`✅ Stored test name: ${messageText}`);
+          }
+        }
+      }
+    }
+    
+    // ============================================
     // ✅ HANDLE EXECUTIVE BUTTON CLICKS
     // ============================================
     if (text === 'CONNECT TO PATIENT' || text === 'CONVERT DONE' || text === 'WAITING' || text === 'NOT CONVERT') {
@@ -593,7 +672,7 @@ app.post('/wati-webhook', async (req, res) => {
       
       const patient = await patientsCollection.findOne({ 
         executiveNumber: senderNumber,
-        status: { $in: ['pending', 'awaiting_branch', 'branch_selected'] }
+        status: { $in: ['pending', 'awaiting_branch', 'branch_selected', 'executive_notified'] }
       });
       
       if (!patient) {
@@ -610,29 +689,27 @@ app.post('/wati-webhook', async (req, res) => {
       if (text === 'CONNECT TO PATIENT') {
         console.log(`🔗 Connecting executive ${senderNumber} with patient ${patient.patientPhone}`);
         
+        // Check if session already exists
         const existingSession = await chatSessionsCollection.findOne({
           patientPhone: patient.patientPhone,
           status: 'active'
         });
         
         if (existingSession) {
-          const executiveChatLink = `${SELF_URL}/executive-chat/${existingSession.sessionToken}`;
-          
-          await sendWatiTemplateMessage(
+          // Session already exists - use existing link
+          await sendLeadNotification(
             senderNumber,
-            LEAD_TEMPLATE_NAME,
-            [
-              { name: "1", value: "🔄 Existing Chat Session" },
-              { name: "2", value: patient.patientName || "Patient" },
-              { name: "3", value: patient.branch },
-              { name: "4", value: "Click to continue chat" },
-              { name: "5", value: "Connect" },
-              { name: "6", value: executiveChatLink }
-            ]
+            patient.patientName || 'Patient',
+            patient.patientPhone,
+            patient.branch || 'Branch',
+            'Chat Session',
+            'Connect',
+            existingSession.sessionToken
           );
           
           console.log(`✅ Existing session link sent to executive`);
         } else {
+          // Create new session
           const sessionToken = crypto.randomBytes(16).toString('hex');
           
           await chatSessionsCollection.insertOne({
@@ -645,19 +722,14 @@ app.post('/wati-webhook', async (req, res) => {
             status: 'active'
           });
           
-          const executiveChatLink = `${SELF_URL}/executive-chat/${sessionToken}`;
-          
-          await sendWatiTemplateMessage(
+          await sendLeadNotification(
             senderNumber,
-            LEAD_TEMPLATE_NAME,
-            [
-              { name: "1", value: "🔗 Chat Session Created" },
-              { name: "2", value: patient.patientName || "Patient" },
-              { name: "3", value: patient.branch },
-              { name: "4", value: "Click to start secure chat" },
-              { name: "5", value: "Connect" },
-              { name: "6", value: executiveChatLink }
-            ]
+            patient.patientName || 'Patient',
+            patient.patientPhone,
+            patient.branch || 'Branch',
+            'Chat Session',
+            'Connect',
+            sessionToken
           );
           
           await patientsCollection.updateOne(
@@ -689,6 +761,7 @@ app.post('/wati-webhook', async (req, res) => {
           }
         );
         
+        // Close any active chat session
         await chatSessionsCollection.updateMany(
           { patientPhone: patient.patientPhone, status: 'active' },
           { $set: { status: 'closed', closedAt: new Date() } }
@@ -734,6 +807,7 @@ app.post('/wati-webhook', async (req, res) => {
           }
         );
         
+        // Close any active chat session
         await chatSessionsCollection.updateMany(
           { patientPhone: patient.patientPhone, status: 'active' },
           { $set: { status: 'closed', closedAt: new Date() } }
@@ -812,13 +886,46 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Patient updated`);
       }
       
+      // Get the best patient name to send
+      let patientNameToSend = patient.patientName || 'Miss Call Patient';
+      
+      // If we have patient messages, look for name-like messages
+      if (patient.patientMessages && patient.patientMessages.length > 0 && patientNameToSend === 'Miss Call Patient') {
+        // Look for single word messages that could be names
+        for (let i = patient.patientMessages.length - 1; i >= 0; i--) {
+          const msg = patient.patientMessages[i];
+          const msgText = msg.text;
+          if (msgText.length > 2 && msgText.length < 15 && !msgText.includes(' ')) {
+            const upperMsg = msgText.toUpperCase();
+            if (!upperMsg.includes('MRI') && !upperMsg.includes('CT') && !upperMsg.includes('X-RAY')) {
+              patientNameToSend = msgText;
+              break;
+            }
+          }
+        }
+      }
+      
       // Prepare test name and type for notification
-      let testNameToSend = patient.testName || (patient.patientMessages && patient.patientMessages.length > 0 
-        ? patient.patientMessages[patient.patientMessages.length - 1].text 
-        : 'Not specified');
+      let testNameToSend = patient.testName || 'Not specified';
       let testTypeToSend = patient.testType || 'Miss Call';
       
-      console.log(`📤 Sending notification with Test Name: "${testNameToSend}", Test Type: "${testTypeToSend}"`);
+      // If we have patient messages, get the most recent meaningful one for test name
+      if (patient.patientMessages && patient.patientMessages.length > 0) {
+        // Get the most recent message that's not a command
+        const recentMessages = [...patient.patientMessages].reverse();
+        for (const msg of recentMessages) {
+          const msgUpper = msg.text.toUpperCase();
+          if (!msgUpper.includes('CHANGE BRANCH') && !msgUpper.includes('DONE') && msg.text.length > 3) {
+            testNameToSend = msg.text;
+            break;
+          }
+        }
+      }
+      
+      console.log(`📤 Sending notification with:`);
+      console.log(`   Patient Name: "${patientNameToSend}"`);
+      console.log(`   Test Name: "${testNameToSend}"`);
+      console.log(`   Test Type: "${testTypeToSend}"`);
       
       if (!patient.executiveActionTaken) {
         console.log(`📤 First time notification to executive ${executiveNumber}`);
@@ -826,11 +933,11 @@ app.post('/wati-webhook', async (req, res) => {
           const notified = await sendNotificationAtomic(patient._id, () =>
             sendLeadNotification(
               executiveNumber,
-              patient.patientName || 'Miss Call Patient',
+              patientNameToSend,      // ⭐️ Proper patient name
               whatsappNumber,
               branch,
-              testNameToSend,      // ⭐️ Patient का टाइप किया हुआ text
-              testTypeToSend,      // ⭐️ Bot से select किया हुआ test type
+              testNameToSend,         // ⭐️ Patient का टाइप किया हुआ text
+              testTypeToSend,         // ⭐️ Bot से select किया हुआ test type
               chatId
             )
           );
@@ -915,9 +1022,11 @@ app.get('/executive-chat/:token', async (req, res) => {
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; height: 100vh; }
         .chat-container { max-width: 800px; margin: 0 auto; height: 100vh; display: flex; flex-direction: column; background: white; }
-        .chat-header { background: #075e54; color: white; padding: 15px; }
+        .chat-header { background: #075e54; color: white; padding: 15px; display: flex; justify-content: space-between; align-items: center; }
+        .patient-info { flex: 1; }
         .patient-name { font-weight: bold; font-size: 1.2em; }
         .patient-phone { font-size: 0.8em; opacity: 0.8; }
+        .test-info { background: #128C7E; padding: 5px 10px; border-radius: 20px; font-size: 0.9em; }
         .messages-container { flex: 1; overflow-y: auto; padding: 20px; background: #e5ddd5; }
         .message { margin: 10px 0; display: flex; }
         .message.patient { justify-content: flex-start; }
@@ -927,19 +1036,22 @@ app.get('/executive-chat/:token', async (req, res) => {
         .message.executive .message-content { background: #dcf8c6; border-bottom-right-radius: 0; }
         .message-time { font-size: 0.7em; color: #999; margin-top: 5px; text-align: right; }
         .input-area { display: flex; padding: 15px; background: #f0f0f0; border-top: 1px solid #ddd; }
-        #messageInput { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 25px; outline: none; }
-        #sendBtn { width: 60px; height: 60px; border-radius: 50%; background: #075e54; color: white; border: none; margin-left: 10px; cursor: pointer; }
+        #messageInput { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 25px; outline: none; font-size: 1em; }
+        #sendBtn { width: 60px; height: 60px; border-radius: 50%; background: #075e54; color: white; border: none; margin-left: 10px; cursor: pointer; font-size: 1.2em; }
         #sendBtn:hover { background: #128C7E; }
         .quick-replies { display: flex; gap: 10px; padding: 10px 15px; background: white; border-top: 1px solid #eee; flex-wrap: wrap; }
-        .quick-reply-btn { background: #f0f0f0; border: 1px solid #ddd; padding: 8px 15px; border-radius: 20px; cursor: pointer; }
+        .quick-reply-btn { background: #f0f0f0; border: 1px solid #ddd; padding: 8px 15px; border-radius: 20px; cursor: pointer; font-size: 0.9em; }
         .quick-reply-btn:hover { background: #e0e0e0; }
       </style>
     </head>
     <body>
       <div class="chat-container">
         <div class="chat-header">
-          <div class="patient-name">${session.patientName || 'Patient'}</div>
-          <div class="patient-phone">${session.patientPhone}</div>
+          <div class="patient-info">
+            <div class="patient-name">${session.patientName || 'Patient'}</div>
+            <div class="patient-phone">${session.patientPhone}</div>
+          </div>
+          ${patient ? `<div class="test-info">${patient.testType || 'Miss Call'}</div>` : ''}
         </div>
         
         <div class="messages-container" id="messages">
@@ -1137,13 +1249,14 @@ app.get('/test-executive-direct', async (req, res) => {
     const execNumber = req.query.exec || '917880261858';
     const patientPhone = req.query.patient || '9876543210';
     const branch = req.query.branch || 'Naroda';
+    const patientName = req.query.name || 'Test Patient';
     const testName = req.query.test || 'MRI Brain';
     const testType = req.query.type || 'MRI';
     
     const chatId = `test_${Date.now()}`;
     const result = await sendLeadNotification(
       execNumber,
-      'Test Patient',
+      patientName,
       patientPhone,
       branch,
       testName,
@@ -1372,6 +1485,7 @@ async function startServer() {
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
       console.log(`📍 Chat System: Active`);
       console.log(`📍 Executive Number Hidden: ✅`);
+      console.log(`📍 Patient Name Detection: ✅ Active`);
       console.log(`📍 Test Name & Type: ✅ Fixed`);
       console.log('='.repeat(60) + '\n');
     });
