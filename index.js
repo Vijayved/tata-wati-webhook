@@ -380,9 +380,9 @@ async function classifyMessageWithAI(messageText, patientContext = {}) {
     const prompt = `
 You are an AI assistant for a medical executive system. You need to classify patient messages into one of three categories:
 
-1. PATIENT_NAME: The message contains the patient's name. Examples: "My name is Rajesh", "I am Priya", "Call me Ravi", "Sharma ji", "Rahul", "Parag dhaud".
+1. PATIENT_NAME: The message contains the patient's name. Examples: "My name is Rajesh", "I am Priya", "Call me Ravi", "Sharma ji", "Rahul", "Parag dhaud", "Rahul Modi".
 2. TEST_TYPE: The message is a medical test type (like MRI, CT, USG, X-RAY, Ultrasound, etc.) selected from a bot. This is usually a single word or abbreviation. Examples: "MRI", "CT", "USG", "X-RAY", "Ultrasound".
-3. TEST_DETAILS: The message describes the specific test details, like body part or instructions. Examples: "MRI KNEE", "CT abdomen", "X-ray chest", "Blood test for thyroid", "MRI KNEE MERI BRAIN".
+3. TEST_DETAILS: The message describes the specific test details, like body part or instructions. Examples: "MRI KNEE", "CT abdomen", "X-ray chest", "Blood test for thyroid", "MRI KNEE MERI BRAIN", "MRI KNEE USG ABDOMEN".
 4. IGNORE: The message is a command or unrelated to patient data. Examples: "Upload Prescription", "Manual Entry", "Change Branch", "Connect to Patient", "Convert Done", "Waiting", "Not Convert".
 
 Also consider the context: the patient may have already provided some information. Current patient data:
@@ -868,7 +868,7 @@ app.post('/wati-webhook', async (req, res) => {
     }
     
     // ============================================
-    // ✅ HANDLE _BRANCH MESSAGES
+    // ✅ HANDLE _BRANCH MESSAGES - FIXED WITH REFRESH
     // ============================================
     else if (text.endsWith('_BRANCH')) {
       const branchUpper = text.replace('_BRANCH', '');
@@ -943,10 +943,13 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Created new session token for chat link: ${sessionTokenForLink}`);
       }
       
-      // Prepare final data
-      let patientNameToSend = patient.patientName || 'Miss Call Patient';
-      let testTypeToSend = patient.testType || 'Miss Call';
-      let testDetailsToSend = patient.testDetails || 'Not specified';
+      // ⭐️ FIX: Refresh patient data before notification
+      const updatedPatient = await patientsCollection.findOne({ _id: patient._id });
+      
+      // Prepare final data from refreshed patient
+      let patientNameToSend = updatedPatient.patientName || 'Miss Call Patient';
+      let testTypeToSend = updatedPatient.testType || 'Miss Call';
+      let testDetailsToSend = updatedPatient.testDetails || 'Not specified';
       
       console.log(`🤖 AI LOGIC - Final Data for Notification:`);
       console.log(`   Patient Name: "${patientNameToSend}"`);
@@ -960,7 +963,7 @@ app.post('/wati-webhook', async (req, res) => {
           const notified = await sendNotificationAtomic(patient._id, () =>
             sendLeadNotification(
               executiveNumber,
-              patientNameToSend,
+              patientNameToSend,        // ⭐️ Now using refreshed data
               whatsappNumber,
               branch,
               testDetailsToSend,
@@ -1520,6 +1523,7 @@ async function startServer() {
       console.log(`📍 Chat System: Active`);
       console.log(`📍 Executive Number Hidden: ✅`);
       console.log(`📍 AI Classification: ✅ Powered by OpenAI`);
+      console.log(`📍 Patient Data Refresh: ✅ Fixed - Always uses latest data`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
