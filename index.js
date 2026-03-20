@@ -24,7 +24,7 @@ const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
 const DEDUPE_WINDOW_MS = 5000;
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
-const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2';
+const LEAD_TEMPLATE_NAME = 'lead_notification_v5';  // ✅ NAYA TEMPLATE NAME
 
 // OpenAI
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -92,7 +92,7 @@ async function connectDB() {
 }
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS MAPPING - CLEANED VERSION
+// ✅ EXECUTIVE NUMBERS MAPPING
 // ============================================
 const EXECUTIVES = {
   'Naroda Team': (process.env.NARODA_EXECUTIVE || '919106959092').toString().trim(),
@@ -108,7 +108,7 @@ const EXECUTIVES = {
   'Manager': (process.env.MANAGER_NUMBER || '917698011233').toString().trim()
 };
 
-console.log('✅ Executive numbers loaded:', EXECUTIVES);
+console.log('✅ Executive numbers loaded');
 
 function getExecutiveNumber(branchName) {
   const formattedBranch = branchName.charAt(0).toUpperCase() + branchName.slice(1).toLowerCase();
@@ -116,151 +116,6 @@ function getExecutiveNumber(branchName) {
   const execNumber = EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
   return execNumber.toString().trim();
 }
-
-// ============================================
-// ✅ BRANCH CONFIGURATION - WITH WATI NUMBERS
-// ============================================
-const BRANCHES = {
-  // Naroda
-  [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: {
-    name: 'Naroda',
-    watiNumber: '917969690935',
-    executive: EXECUTIVES['Naroda Team']
-  },
-  [normalizeIndianNumber('917969690922')]: {
-    name: 'Naroda',
-    watiNumber: '917969690922',
-    executive: EXECUTIVES['Naroda Team']
-  },
-  
-  // Usmanpura
-  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: {
-    name: 'Usmanpura',
-    watiNumber: '917969690901',
-    executive: EXECUTIVES['Usmanpura Team']
-  },
-  [normalizeIndianNumber('917969690952')]: {
-    name: 'Usmanpura',
-    watiNumber: '917969690952',
-    executive: EXECUTIVES['Usmanpura Team']
-  },
-  
-  // Vadaj
-  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: {
-    name: 'Vadaj',
-    watiNumber: '917969690903',
-    executive: EXECUTIVES['Vadaj Team']
-  },
-  [normalizeIndianNumber('917969690917')]: {
-    name: 'Vadaj',
-    watiNumber: '917969690917',
-    executive: EXECUTIVES['Vadaj Team']
-  },
-  
-  // Satellite
-  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: {
-    name: 'Satellite',
-    watiNumber: '917969690924',
-    executive: EXECUTIVES['Satellite Team']
-  },
-  [normalizeIndianNumber('917969690902')]: {
-    name: 'Satellite',
-    watiNumber: '917969690902',
-    executive: EXECUTIVES['Satellite Team']
-  },
-  
-  // Maninagar
-  [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: {
-    name: 'Maninagar',
-    watiNumber: '917969690936',
-    executive: EXECUTIVES['Maninagar Team']
-  },
-  [normalizeIndianNumber('917969690904')]: {
-    name: 'Maninagar',
-    watiNumber: '917969690904',
-    executive: EXECUTIVES['Maninagar Team']
-  },
-  
-  // Bapunagar
-  [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: {
-    name: 'Bapunagar',
-    watiNumber: '917969690923',
-    executive: EXECUTIVES['Bapunagar Team']
-  },
-  [normalizeIndianNumber('917969690906')]: {
-    name: 'Bapunagar',
-    watiNumber: '917969690906',
-    executive: EXECUTIVES['Bapunagar Team']
-  },
-  
-  // Juhapura
-  [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: {
-    name: 'Juhapura',
-    watiNumber: '917969690918',
-    executive: EXECUTIVES['Juhapura Team']
-  },
-  [normalizeIndianNumber('917969690909')]: {
-    name: 'Juhapura',
-    watiNumber: '917969690909',
-    executive: EXECUTIVES['Juhapura Team']
-  },
-  
-  // Gandhinagar
-  [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: {
-    name: 'Gandhinagar',
-    watiNumber: '917969690941',
-    executive: EXECUTIVES['Gandhinagar Team']
-  },
-  [normalizeIndianNumber('917969690910')]: {
-    name: 'Gandhinagar',
-    watiNumber: '917969690910',
-    executive: EXECUTIVES['Gandhinagar Team']
-  },
-  
-  // Rajkot
-  [normalizeIndianNumber('917969690913')]: {
-    name: 'Rajkot',
-    watiNumber: '917969690913',
-    executive: EXECUTIVES['Rajkot Team']
-  },
-  [normalizeIndianNumber('917969690919')]: {
-    name: 'Rajkot',
-    watiNumber: '917969690919',
-    executive: EXECUTIVES['Rajkot Team']
-  },
-  
-  // Sabarmati
-  [normalizeIndianNumber('917969690942')]: {
-    name: 'Sabarmati',
-    watiNumber: '917969690942',
-    executive: EXECUTIVES['Sabarmati Team']
-  },
-  [normalizeIndianNumber('917969690905')]: {
-    name: 'Sabarmati',
-    watiNumber: '917969690905',
-    executive: EXECUTIVES['Sabarmati Team']
-  }
-};
-
-// ============================================
-// ✅ STAGE TRACKING CONSTANTS
-// ============================================
-const STAGES = {
-  MISS_CALL_RECEIVED: 'miss_call_received',
-  AWAITING_BRANCH: 'awaiting_branch',
-  BRANCH_SELECTED: 'branch_selected',
-  AWAITING_NAME: 'awaiting_name',
-  AWAITING_TEST_TYPE: 'awaiting_test_type',
-  AWAITING_TEST_DETAILS: 'awaiting_test_details',
-  OCR_PROCESSING: 'ocr_processing',
-  OCR_COMPLETED: 'ocr_completed',
-  EXECUTIVE_NOTIFIED: 'executive_notified',
-  CONNECTED: 'connected',
-  CONVERTED: 'converted',
-  WAITING: 'waiting',
-  NOT_CONVERTED: 'not_converted',
-  ESCALATED: 'escalated'
-};
 
 // ============================================
 // ✅ HELPER FUNCTIONS
@@ -297,22 +152,56 @@ function getCallerNumberFromPayload(body) {
          '';
 }
 
+// ============================================
+// ✅ BRANCH CONFIGURATION
+// ============================================
+const BRANCHES = {
+  [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: { name: 'Naroda', executive: EXECUTIVES['Naroda Team'] },
+  [normalizeIndianNumber('917969690922')]: { name: 'Naroda', executive: EXECUTIVES['Naroda Team'] },
+  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: { name: 'Usmanpura', executive: EXECUTIVES['Usmanpura Team'] },
+  [normalizeIndianNumber('917969690952')]: { name: 'Usmanpura', executive: EXECUTIVES['Usmanpura Team'] },
+  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: { name: 'Vadaj', executive: EXECUTIVES['Vadaj Team'] },
+  [normalizeIndianNumber('917969690917')]: { name: 'Vadaj', executive: EXECUTIVES['Vadaj Team'] },
+  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: { name: 'Satellite', executive: EXECUTIVES['Satellite Team'] },
+  [normalizeIndianNumber('917969690902')]: { name: 'Satellite', executive: EXECUTIVES['Satellite Team'] },
+  [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: { name: 'Maninagar', executive: EXECUTIVES['Maninagar Team'] },
+  [normalizeIndianNumber('917969690904')]: { name: 'Maninagar', executive: EXECUTIVES['Maninagar Team'] },
+  [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: { name: 'Bapunagar', executive: EXECUTIVES['Bapunagar Team'] },
+  [normalizeIndianNumber('917969690906')]: { name: 'Bapunagar', executive: EXECUTIVES['Bapunagar Team'] },
+  [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: { name: 'Juhapura', executive: EXECUTIVES['Juhapura Team'] },
+  [normalizeIndianNumber('917969690909')]: { name: 'Juhapura', executive: EXECUTIVES['Juhapura Team'] },
+  [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: { name: 'Gandhinagar', executive: EXECUTIVES['Gandhinagar Team'] },
+  [normalizeIndianNumber('917969690910')]: { name: 'Gandhinagar', executive: EXECUTIVES['Gandhinagar Team'] },
+  [normalizeIndianNumber('917969690913')]: { name: 'Rajkot', executive: EXECUTIVES['Rajkot Team'] },
+  [normalizeIndianNumber('917969690919')]: { name: 'Rajkot', executive: EXECUTIVES['Rajkot Team'] },
+  [normalizeIndianNumber('917969690942')]: { name: 'Sabarmati', executive: EXECUTIVES['Sabarmati Team'] },
+  [normalizeIndianNumber('917969690905')]: { name: 'Sabarmati', executive: EXECUTIVES['Sabarmati Team'] }
+};
+
 function getBranchByCalledNumber(calledNumber) {
   const normalized = normalizeIndianNumber(calledNumber);
-  return BRANCHES[normalized] || {
-    name: 'Main Branch',
-    executive: process.env.DEFAULT_EXECUTIVE || '917880261858'
-  };
+  return BRANCHES[normalized] || { name: 'Main Branch', executive: process.env.DEFAULT_EXECUTIVE || '917880261858' };
 }
 
-function shouldSkipDuplicateMissCall(whatsappNumber, calledNumber) {
-  const key = `${whatsappNumber}_${normalizeIndianNumber(calledNumber)}`;
-  const now = Date.now();
-  const lastHit = recentMissCalls.get(key);
-  if (lastHit && (now - lastHit) < DEDUPE_WINDOW_MS) return true;
-  recentMissCalls.set(key, now);
-  return false;
-}
+// ============================================
+// ✅ STAGE TRACKING CONSTANTS
+// ============================================
+const STAGES = {
+  MISS_CALL_RECEIVED: 'miss_call_received',
+  AWAITING_BRANCH: 'awaiting_branch',
+  BRANCH_SELECTED: 'branch_selected',
+  AWAITING_NAME: 'awaiting_name',
+  AWAITING_TEST_TYPE: 'awaiting_test_type',
+  AWAITING_TEST_DETAILS: 'awaiting_test_details',
+  OCR_PROCESSING: 'ocr_processing',
+  OCR_COMPLETED: 'ocr_completed',
+  EXECUTIVE_NOTIFIED: 'executive_notified',
+  CONNECTED: 'connected',
+  CONVERTED: 'converted',
+  WAITING: 'waiting',
+  NOT_CONVERTED: 'not_converted',
+  ESCALATED: 'escalated'
+};
 
 // ============================================
 // ✅ DATABASE FUNCTIONS
@@ -336,15 +225,7 @@ async function markMessageProcessed(messageId) {
 async function updatePatientStage(patientId, stage) {
   try {
     const patient = await patientsCollection.findOne({ _id: patientId });
-    
     if (patient) {
-      if (!patient.stageHistory || typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
-        await patientsCollection.updateOne(
-          { _id: patientId },
-          { $set: { stageHistory: [] } }
-        );
-      }
-      
       await patientsCollection.updateOne(
         { _id: patientId },
         { 
@@ -358,89 +239,6 @@ async function updatePatientStage(patientId, stage) {
     console.error('❌ Stage update failed:', error.message);
     return false;
   }
-}
-
-// ============================================
-// ✅ WATI TEMPLATE SENDER
-// ============================================
-async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
-  console.log(`📤 Sending template ${templateName} to ${whatsappNumber}`);
-  
-  const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
-  
-  const payload = {
-    template_name: templateName,
-    broadcast_name: `msg_${Date.now()}`,
-    parameters: parameters || []
-  };
-  
-  try {
-    const response = await axios.post(url, payload, {
-      headers: {
-        Authorization: `${WATI_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 15000
-    });
-    
-    console.log(`✅ Template ${templateName} sent successfully`);
-    return response.data;
-  } catch (error) {
-    console.error(`❌ Template ${templateName} send FAILED:`, error.message);
-    throw error;
-  }
-}
-
-// ============================================
-// ✅ SEND SESSION MESSAGE TO PATIENT (FROM EXECUTIVE)
-// ============================================
-async function sendWhatsAppMessageToPatient(executiveNumber, patientPhone, message) {
-  console.log(`📤 Sending message from executive ${executiveNumber} to patient ${patientPhone}`);
-  console.log(`   Message: ${message.substring(0, 100)}...`);
-  
-  const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${patientPhone}`;
-  
-  const payload = {
-    messageText: message
-  };
-  
-  try {
-    const response = await axios.post(url, payload, {
-      headers: {
-        'Authorization': WATI_TOKEN,
-        'Content-Type': 'application/json'
-      },
-      timeout: 15000
-    });
-    
-    console.log(`✅ Message sent successfully to patient`);
-    return response.data;
-  } catch (error) {
-    console.error(`❌ Failed to send message to patient:`, error.message);
-    throw error;
-  }
-}
-
-// ============================================
-// ✅ LEAD NOTIFICATION - WITH 7 PARAMETERS
-// ============================================
-async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
-  console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
-  console.log(`   Patient: ${patientName}, Phone: ${patientPhone}, Branch: ${branch}`);
-  console.log(`   Test Details: ${testDetails}, Test Type: ${testType}`);
-  console.log(`   Chat Token: ${chatToken}`);
-  
-  const parameters = [
-    { name: "1", value: patientName || "Miss Call Patient" },
-    { name: "2", value: patientPhone },
-    { name: "3", value: branch },
-    { name: "4", value: testDetails || "Not specified" },
-    { name: "5", value: testType || "Miss Call" },
-    { name: "6", value: `${SELF_URL}/executive-chat/${chatToken}` },
-    { name: "7", value: `${SELF_URL}/connect-chat/${chatToken}` }
-  ];
-  
-  return await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
 }
 
 // ============================================
@@ -477,22 +275,86 @@ async function sendNotificationAtomic(patientId, notificationFunction) {
 }
 
 // ============================================
-// ✅ TOKEN GENERATION
+// ✅ WATI TEMPLATE SENDER
 // ============================================
-function generateToken(chatId) {
-  return crypto
-    .createHmac('sha256', HMAC_SECRET)
-    .update(chatId)
-    .digest('hex');
+async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
+  console.log(`📤 Sending template ${templateName} to ${whatsappNumber}`);
+  
+  const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
+  
+  const payload = {
+    template_name: templateName,
+    broadcast_name: `msg_${Date.now()}`,
+    parameters: parameters || []
+  };
+  
+  try {
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `${WATI_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+    
+    console.log(`✅ Template ${templateName} sent successfully`);
+    return response.data;
+  } catch (error) {
+    console.error(`❌ Template ${templateName} send FAILED:`, error.message);
+    throw error;
+  }
 }
 
-function verifyToken(chatId, token) {
-  const expectedToken = generateToken(chatId);
+// ============================================
+// ✅ SEND SESSION MESSAGE TO PATIENT
+// ============================================
+async function sendWhatsAppMessageToPatient(executiveNumber, patientPhone, message) {
+  console.log(`📤 Sending message from executive to patient ${patientPhone}`);
+  
+  const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${patientPhone}`;
+  
+  const payload = {
+    messageText: message
+  };
+  
   try {
-    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken));
-  } catch {
-    return false;
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Authorization': WATI_TOKEN,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+    
+    console.log(`✅ Message sent successfully to patient`);
+    return response.data;
+  } catch (error) {
+    console.error(`❌ Failed to send message:`, error.message);
+    throw error;
   }
+}
+
+// ============================================
+// ✅ LEAD NOTIFICATION - WITH REDIRECT LINK
+// ============================================
+async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
+  console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
+  console.log(`   Patient: ${patientName}, Phone: ${patientPhone}, Branch: ${branch}`);
+  
+  // ✅ Redirect link - WATI wa.me allow nahi karta isliye
+  const redirectLink = `${SELF_URL}/redirect-chat/${chatToken}`;
+  
+  const parameters = [
+    { name: "1", value: patientName || "Miss Call Patient" },
+    { name: "2", value: patientPhone },
+    { name: "3", value: branch },
+    { name: "4", value: testDetails || "Not specified" },
+    { name: "5", value: testType || "Miss Call" },
+    { name: "6", value: new Date().toLocaleString() },
+    { name: "7", value: redirectLink }  // ✅ Redirect link
+  ];
+  
+  return await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
 }
 
 // ============================================
@@ -742,6 +604,64 @@ Return JSON with category and confidence (0-1).`;
 }
 
 // ============================================
+// ✅ NAYA ENDPOINT: REDIRECT TO WHATSAPP
+// ============================================
+app.get('/redirect-chat/:token', async (req, res) => {
+  const { token } = req.params;
+  
+  console.log(`🔀 Redirecting token: ${token}`);
+  
+  try {
+    let session = await chatSessionsCollection.findOne({ sessionToken: token, status: 'active' });
+    
+    if (!session) {
+      const patient = await patientsCollection.findOne({ chatSessionToken: token });
+      if (patient && patient.chatSessionToken) {
+        session = {
+          sessionToken: token,
+          patientPhone: patient.patientPhone,
+          patientName: patient.patientName,
+          executiveNumber: patient.executiveNumber
+        };
+      }
+    }
+    
+    if (!session) {
+      return res.send(`
+        <html>
+          <head><title>Session Expired</title></head>
+          <body style="font-family: Arial; padding: 30px; text-align: center;">
+            <h2>⏰ Session Expired</h2>
+            <p>Please click "Connect to Patient" again from WhatsApp.</p>
+          </body>
+        </html>
+      `);
+    }
+    
+    const patient = await patientsCollection.findOne({ patientPhone: session.patientPhone });
+    
+    const welcomeText = `Hi ${patient?.patientName || session.patientName || 'Patient'}, I am from UIC Support Team.
+
+Your Details:
+Name: ${patient?.patientName || session.patientName || 'Patient'}
+Test: ${patient?.testType || 'Miss Call'} - ${patient?.testDetails || 'Not specified'}
+Branch: ${patient?.branch || 'Main Branch'}
+Miss Call Time: ${patient?.missCallTime ? new Date(patient.missCallTime).toLocaleString() : 'Not recorded'}
+
+How can I help you?`;
+    
+    const whatsappLink = `https://wa.me/${session.patientPhone}?text=${encodeURIComponent(welcomeText)}`;
+    
+    console.log(`🔀 Redirecting to WhatsApp`);
+    res.redirect(whatsappLink);
+    
+  } catch (error) {
+    console.error('❌ Redirect error:', error);
+    res.send(`<h2>❌ Error</h2><p>Please try again.</p>`);
+  }
+});
+
+// ============================================
 // ✅ TATA TELE WEBHOOK
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
@@ -771,9 +691,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     const chatId = `${whatsappNumber}_${branch.name}`;
     
-    const existingPatient = await patientsCollection.findOne({ 
-      patientPhone: whatsappNumber
-    });
+    const existingPatient = await patientsCollection.findOne({ patientPhone: whatsappNumber });
     
     if (existingPatient) {
       await patientsCollection.updateOne(
@@ -1088,7 +1006,7 @@ app.post('/wati-webhook', async (req, res) => {
           console.error(`❌ Failed to send welcome message:`, error.message);
         }
         
-        // Send notification to executive with chat link
+        // Send notification to executive with redirect link
         await sendLeadNotification(
           senderNumber,
           patient.patientName || 'Patient',
@@ -1099,7 +1017,7 @@ app.post('/wati-webhook', async (req, res) => {
           sessionToken
         );
         
-        console.log(`✅ Executive notification sent with chat link`);
+        console.log(`✅ Executive notification sent with redirect link`);
       }
       else if (text === 'CONVERT DONE') {
         await patientsCollection.updateOne(
@@ -1284,7 +1202,7 @@ app.post('/wati-webhook', async (req, res) => {
 });
 
 // ============================================
-// ✅ EXECUTIVE CHAT INTERFACE - COMPLETE WITH AUTO WELCOME DISPLAY
+// ✅ EXECUTIVE CHAT INTERFACE
 // ============================================
 app.get('/executive-chat/:token', async (req, res) => {
   const { token } = req.params;
@@ -1332,7 +1250,7 @@ app.get('/executive-chat/:token', async (req, res) => {
         .patient-name { font-weight: bold; font-size: 1.2em; }
         .patient-phone { font-size: 0.8em; opacity: 0.9; }
         .test-info { background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 20px; font-size: 0.85em; }
-        .messages-container { flex: 1; overflow-y: auto; padding: 20px; background: #e5ddd5; background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="rgba(255,255,255,0.05)"/><circle cx="50" cy="50" r="40" fill="none" stroke="rgba(0,0,0,0.03)" stroke-width="2"/></svg>'); }
+        .messages-container { flex: 1; overflow-y: auto; padding: 20px; background: #e5ddd5; }
         .message { margin: 10px 0; display: flex; }
         .message.patient { justify-content: flex-start; }
         .message.executive { justify-content: flex-end; }
@@ -1347,14 +1265,9 @@ app.get('/executive-chat/:token', async (req, res) => {
         #messageInput { flex: 1; padding: 12px 15px; border: 1px solid #ddd; border-radius: 25px; outline: none; font-size: 1em; font-family: inherit; }
         #sendBtn { width: 50px; height: 50px; border-radius: 50%; background: #075e54; color: white; border: none; margin-left: 10px; cursor: pointer; font-size: 1.2em; transition: all 0.3s; }
         #sendBtn:hover { background: #128C7E; transform: scale(1.02); }
-        #sendBtn:disabled { background: #ccc; cursor: not-allowed; transform: none; }
         .quick-replies { display: flex; gap: 10px; padding: 10px 15px; background: white; border-top: 1px solid #eee; flex-wrap: wrap; }
         .quick-reply-btn { background: #f0f0f0; border: 1px solid #ddd; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 0.9em; transition: all 0.2s; }
         .quick-reply-btn:hover { background: #075e54; color: white; border-color: #075e54; }
-        .typing-indicator { display: none; padding: 10px 20px; color: #666; font-size: 0.85em; font-style: italic; }
-        .welcome-badge { background: #e8f5e9; color: #2e7d32; padding: 8px 15px; border-radius: 20px; font-size: 0.85em; margin-top: 5px; text-align: center; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .message { animation: fadeIn 0.3s ease; }
       </style>
     </head>
     <body>
@@ -1380,7 +1293,6 @@ app.get('/executive-chat/:token', async (req, res) => {
               </div>
             </div>
           `).join('')}
-          <div class="typing-indicator" id="typingIndicator">✍️ Patient is typing...</div>
         </div>
         
         <div class="quick-replies">
@@ -1402,12 +1314,9 @@ app.get('/executive-chat/:token', async (req, res) => {
         const messageInput = document.getElementById('messageInput');
         const sendBtn = document.getElementById('sendBtn');
         let lastMessageCount = ${messages.length};
-        let lastActivity = Date.now();
         
-        // Auto-scroll to bottom
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
         
-        // Check for new messages every 2 seconds
         setInterval(checkNewMessages, 2000);
         
         async function checkNewMessages() {
@@ -1518,10 +1427,8 @@ app.post('/api/send-to-patient', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Session not found or expired' });
     }
     
-    // Send message via WATI
     const result = await sendWhatsAppMessageToPatient(session.executiveNumber, session.patientPhone, text);
     
-    // Store message in database
     await chatMessagesCollection.insertOne({
       sessionToken,
       sender: 'executive',
@@ -1564,47 +1471,10 @@ app.get('/api/chat-messages/:token', async (req, res) => {
 });
 
 // ============================================
-// ✅ CONNECT CHAT ENDPOINT - REDIRECT TO EXECUTIVE CHAT
+// ✅ CONNECT CHAT ENDPOINT
 // ============================================
 app.get('/connect-chat/:token', async (req, res) => {
   const { token } = req.params;
-  
-  console.log(`🔗 Connect chat requested for token: ${token}`);
-  
-  // Find session by token
-  const session = await chatSessionsCollection.findOne({ 
-    sessionToken: token,
-    status: 'active'
-  });
-  
-  if (!session) {
-    return res.status(404).send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Session Not Found</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          body { font-family: 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; justify-content: center; align-items: center; margin: 0; padding: 20px; }
-          .card { background: white; border-radius: 20px; padding: 40px; max-width: 500px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
-          h2 { color: #dc3545; margin-bottom: 20px; }
-          p { color: #666; margin-bottom: 20px; line-height: 1.6; }
-          .btn { display: inline-block; background: #075e54; color: white; padding: 12px 24px; text-decoration: none; border-radius: 25px; margin-top: 10px; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h2>🔗 Session Not Found</h2>
-          <p>The chat session you're trying to access is not active.</p>
-          <p>Please click "Connect to Patient" again from your WhatsApp to start a new chat.</p>
-          <a href="javascript:history.back()" class="btn">Go Back</a>
-        </div>
-      </body>
-      </html>
-    `);
-  }
-  
-  // Redirect to executive chat interface
   res.redirect(`/executive-chat/${token}`);
 });
 
@@ -1783,6 +1653,7 @@ app.get('/health', async (req, res) => {
     success: true,
     uptime: process.uptime(),
     mongodb: 'connected',
+    template: LEAD_TEMPLATE_NAME,
     time: new Date().toISOString()
   });
 });
@@ -1792,26 +1663,15 @@ app.get('/health', async (req, res) => {
 // ============================================
 app.get('/', (req, res) => {
   res.json({
-    message: '🚀 Tata-WATI Executive System (ULTIMATE EDITION)',
-    version: '8.0.0',
-    features: [
-      'Auto welcome message from executive to patient',
-      'Real-time chat interface',
-      'Session management (24h expiry)',
-      'OCR for prescriptions',
-      'AI classification',
-      'Executive dashboard'
-    ],
+    message: '🚀 Tata-WATI Executive System',
+    version: '9.0.0',
+    template: LEAD_TEMPLATE_NAME,
     endpoints: {
-      admin_dashboard: '/admin',
-      api_stats: '/api/stats',
-      test_executive: '/test-executive-direct',
-      test_misscall: '/test-misscall',
-      fix_database: '/fix-database',
-      webhook_wati: '/wati-webhook',
-      webhook_tata: '/tata-misscall-whatsapp',
+      redirect_chat: '/redirect-chat/:token',
       executive_chat: '/executive-chat/:token',
-      connect_chat: '/connect-chat/:token'
+      connect_chat: '/connect-chat/:token',
+      health: '/health',
+      api_stats: '/api/stats'
     }
   });
 });
@@ -1858,13 +1718,11 @@ async function startServer() {
     app.listen(PORT, HOST, () => {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
-      console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
-      console.log(`📍 Chat System: Active (24h expiry)`);
-      console.log(`📍 Auto Welcome Message: ✅ Active`);
-      console.log(`📍 Executive Numbers: Clean & Trimmed`);
-      console.log(`📍 OCR Processing: ✅ Active (JPG, PNG, PDF)`);
+      console.log(`📍 Template Name: ${LEAD_TEMPLATE_NAME}`);
+      console.log(`📍 Redirect Endpoint: ${SELF_URL}/redirect-chat/:token`);
+      console.log(`📍 Admin Dashboard: ${SELF_URL}/admin`);
+      console.log(`📍 OCR Processing: Active`);
       console.log(`📍 AI Model: gpt-4o-mini`);
-      console.log(`📍 Confidence Threshold: 0.8`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
