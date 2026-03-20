@@ -22,11 +22,11 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
-const DEDUPE_WINDOW_MS = 5000; // ⭐ FIXED: 5 seconds dedupe
+const DEDUPE_WINDOW_MS = 5000;
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = process.env.LEAD_TEMPLATE_NAME || 'lead_notification_v2';
 
-// OpenAI - UPDATED MODEL
+// OpenAI
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // Keep-alive
@@ -92,7 +92,7 @@ async function connectDB() {
 }
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS MAPPING - FINAL
+// ✅ EXECUTIVE NUMBERS MAPPING - UPDATED
 // ============================================
 const EXECUTIVES = {
   'Naroda Team': process.env.NARODA_EXECUTIVE || '919106959092',
@@ -103,7 +103,9 @@ const EXECUTIVES = {
   'Bapunagar Team': process.env.BAPUNAGAR_EXECUTIVE || '919274682553',
   'Juhapura Team': process.env.JUHAPURA_EXECUTIVE || '919274682553',
   'Gandhinagar Team': process.env.GANDHINAGAR_EXECUTIVE || '919558591212',
-  'Manager': process.env.MANAGER_NUMBER || '917698011233'  // ✅ Updated manager number
+  'Rajkot Team': process.env.RAJKOT_EXECUTIVE || '917880261858',
+  'Sabarmati Team': process.env.SABARMATI_EXECUTIVE || '917880261858',
+  'Manager': process.env.MANAGER_NUMBER || '917698011233'
 };
 
 console.log('✅ Executive numbers loaded:', EXECUTIVES);
@@ -115,44 +117,148 @@ function getExecutiveNumber(branchName) {
 }
 
 // ============================================
-// BRANCH CONFIGURATION
+// ✅ BRANCH CONFIGURATION - WITH WATI NUMBERS
 // ============================================
 const BRANCHES = {
+  // Naroda - with both Tata Tele and WATI numbers
   [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: {
     name: 'Naroda',
+    tataNumber: '07969690935',
+    watiNumber: '917969690935', // Primary WATI number
     executive: EXECUTIVES['Naroda Team']
   },
+  // Additional Naroda WATI number
+  [normalizeIndianNumber('917969690922')]: {
+    name: 'Naroda',
+    tataNumber: null,
+    watiNumber: '917969690922', // Secondary WATI number
+    executive: EXECUTIVES['Naroda Team']
+  },
+  
+  // Usmanpura
   [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: {
     name: 'Usmanpura',
+    tataNumber: '9898989897',
+    watiNumber: '917969690901', // Primary
     executive: EXECUTIVES['Usmanpura Team']
   },
+  [normalizeIndianNumber('917969690952')]: {
+    name: 'Usmanpura',
+    tataNumber: null,
+    watiNumber: '917969690952', // Secondary
+    executive: EXECUTIVES['Usmanpura Team']
+  },
+  
+  // Vadaj
   [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: {
     name: 'Vadaj',
+    tataNumber: '9898989896',
+    watiNumber: '917969690903', // Primary
     executive: EXECUTIVES['Vadaj Team']
   },
+  [normalizeIndianNumber('917969690917')]: {
+    name: 'Vadaj',
+    tataNumber: null,
+    watiNumber: '917969690917', // Secondary
+    executive: EXECUTIVES['Vadaj Team']
+  },
+  
+  // Satellite
   [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: {
     name: 'Satellite',
+    tataNumber: '9898989898',
+    watiNumber: '917969690924', // Primary
     executive: EXECUTIVES['Satellite Team']
   },
+  [normalizeIndianNumber('917969690902')]: {
+    name: 'Satellite',
+    tataNumber: null,
+    watiNumber: '917969690902', // Secondary
+    executive: EXECUTIVES['Satellite Team']
+  },
+  
+  // Maninagar
   [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: {
     name: 'Maninagar',
+    tataNumber: '9898989895',
+    watiNumber: '917969690936', // Primary
     executive: EXECUTIVES['Maninagar Team']
   },
+  [normalizeIndianNumber('917969690904')]: {
+    name: 'Maninagar',
+    tataNumber: null,
+    watiNumber: '917969690904', // Secondary
+    executive: EXECUTIVES['Maninagar Team']
+  },
+  
+  // Bapunagar
   [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: {
     name: 'Bapunagar',
+    tataNumber: '9898989894',
+    watiNumber: '917969690923', // Primary
     executive: EXECUTIVES['Bapunagar Team']
   },
+  [normalizeIndianNumber('917969690906')]: {
+    name: 'Bapunagar',
+    tataNumber: null,
+    watiNumber: '917969690906', // Secondary
+    executive: EXECUTIVES['Bapunagar Team']
+  },
+  
+  // Juhapura
   [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: {
     name: 'Juhapura',
+    tataNumber: '9898989893',
+    watiNumber: '917969690918', // Primary
     executive: EXECUTIVES['Juhapura Team']
   },
+  [normalizeIndianNumber('917969690909')]: {
+    name: 'Juhapura',
+    tataNumber: null,
+    watiNumber: '917969690909', // Secondary
+    executive: EXECUTIVES['Juhapura Team']
+  },
+  
+  // Gandhinagar
   [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: {
     name: 'Gandhinagar',
+    tataNumber: '9898989892',
+    watiNumber: '917969690941', // Primary
     executive: EXECUTIVES['Gandhinagar Team']
   },
-  [normalizeIndianNumber('917969690935')]: {
-    name: 'Test Branch',
-    executive: '917880261858'
+  [normalizeIndianNumber('917969690910')]: {
+    name: 'Gandhinagar',
+    tataNumber: null,
+    watiNumber: '917969690910', // Secondary
+    executive: EXECUTIVES['Gandhinagar Team']
+  },
+  
+  // Rajkot (new branch)
+  [normalizeIndianNumber('917969690913')]: {
+    name: 'Rajkot',
+    tataNumber: null,
+    watiNumber: '917969690913', // Primary
+    executive: EXECUTIVES['Rajkot Team']
+  },
+  [normalizeIndianNumber('917969690919')]: {
+    name: 'Rajkot',
+    tataNumber: null,
+    watiNumber: '917969690919', // Secondary
+    executive: EXECUTIVES['Rajkot Team']
+  },
+  
+  // Sabarmati (new branch)
+  [normalizeIndianNumber('917969690942')]: {
+    name: 'Sabarmati',
+    tataNumber: null,
+    watiNumber: '917969690942', // Primary
+    executive: EXECUTIVES['Sabarmati Team']
+  },
+  [normalizeIndianNumber('917969690905')]: {
+    name: 'Sabarmati',
+    tataNumber: null,
+    watiNumber: '917969690905', // Secondary
+    executive: EXECUTIVES['Sabarmati Team']
   }
 };
 
@@ -213,6 +319,7 @@ function getBranchByCalledNumber(calledNumber) {
   const normalized = normalizeIndianNumber(calledNumber);
   return BRANCHES[normalized] || {
     name: 'Main Branch',
+    watiNumber: null,
     executive: process.env.DEFAULT_EXECUTIVE || '917880261858'
   };
 }
@@ -452,7 +559,7 @@ Categories: PATIENT_NAME, TEST_TYPE, TEST_DETAILS, IGNORE
 Return JSON with category and confidence (0-1).`;
       
       const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini", // ⭐ UPDATED MODEL
+        model: "gpt-4o-mini",
         messages: [
           { role: "system", content: "You classify medical patient messages accurately." },
           { role: "user", content: prompt }
@@ -715,7 +822,7 @@ app.post('/wati-webhook', async (req, res) => {
             { 
               $set: { 
                 testDetails: result.value,
-                currentStage: STAGES.AWAITING_BRANCH // Reset to wait for branch
+                currentStage: STAGES.AWAITING_BRANCH
               } 
             }
           );
@@ -779,7 +886,7 @@ app.post('/wati-webhook', async (req, res) => {
             createdAt: new Date(),
             lastActivity: new Date(),
             status: 'active',
-            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours expiry
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
           });
           
           await sendLeadNotification(
@@ -915,7 +1022,7 @@ app.post('/wati-webhook', async (req, res) => {
           missCallCount: 1,
           createdAt: new Date(),
           updatedAt: new Date(),
-          currentStage: STAGES.AWAITING_NAME, // ⭐ After branch, wait for name
+          currentStage: STAGES.AWAITING_NAME,
           stageHistory: [{ stage: STAGES.BRANCH_SELECTED, timestamp: new Date() }]
         });
         patient = { _id: result.insertedId };
@@ -935,7 +1042,7 @@ app.post('/wati-webhook', async (req, res) => {
               branch: branch,
               status: 'pending',
               executiveNumber: executiveNumber,
-              currentStage: STAGES.AWAITING_NAME, // ⭐ After branch, wait for name
+              currentStage: STAGES.AWAITING_NAME,
               updatedAt: new Date()
             },
             $push: { stageHistory: { stage: STAGES.BRANCH_SELECTED, timestamp: new Date() } }
@@ -955,7 +1062,7 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Created new session token for chat link: ${sessionTokenForLink}`);
       }
       
-      // ⭐⭐⭐ FRESH DATABASE READ BEFORE NOTIFICATION ⭐⭐⭐
+      // FRESH DATABASE READ BEFORE NOTIFICATION
       const freshPatientData = await patientsCollection.findOne({ _id: patient._id });
       
       // अब FRESH data का use करो
