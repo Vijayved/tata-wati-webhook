@@ -24,7 +24,7 @@ const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
 const DEDUPE_WINDOW_MS = 5000;
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
-const LEAD_TEMPLATE_NAME = 'lead_notification_v5';  // ✅ NAYA TEMPLATE NAME
+const LEAD_TEMPLATE_NAME = 'lead_notification_v6';  // ✅ NAYA TEMPLATE NAME
 
 // OpenAI
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -335,14 +335,27 @@ async function sendWhatsAppMessageToPatient(executiveNumber, patientPhone, messa
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION - WITH REDIRECT LINK
+// ✅ LEAD NOTIFICATION - WITH WHATSAPP DIRECT LINK
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
   console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
   console.log(`   Patient: ${patientName}, Phone: ${patientPhone}, Branch: ${branch}`);
+  console.log(`   Test: ${testType} - ${testDetails}`);
   
-  // ✅ Redirect link - WATI wa.me allow nahi karta isliye
-  const redirectLink = `${SELF_URL}/redirect-chat/${chatToken}`;
+  // WhatsApp direct link banao (no redirect, seedha link)
+  const welcomeText = `Hi ${patientName}, I am from UIC Support Team.
+
+Your Details:
+Name: ${patientName}
+Test: ${testType} - ${testDetails}
+Branch: ${branch}
+Miss Call Time: ${new Date().toLocaleString()}
+
+How can I help you?`;
+  
+  const whatsappLink = `https://wa.me/${patientPhone}?text=${encodeURIComponent(welcomeText)}`;
+  
+  console.log(`   WhatsApp Link: ${whatsappLink.substring(0, 100)}...`);
   
   const parameters = [
     { name: "1", value: patientName || "Miss Call Patient" },
@@ -351,7 +364,7 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
     { name: "4", value: testDetails || "Not specified" },
     { name: "5", value: testType || "Miss Call" },
     { name: "6", value: new Date().toLocaleString() },
-    { name: "7", value: redirectLink }  // ✅ Redirect link
+    { name: "7", value: whatsappLink }  // ✅ Seedha WhatsApp link
   ];
   
   return await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
@@ -602,64 +615,6 @@ Return JSON with category and confidence (0-1).`;
   
   return { category: 'IGNORE', value: messageText, confidence: 0.5, reason: 'Default ignore' };
 }
-
-// ============================================
-// ✅ NAYA ENDPOINT: REDIRECT TO WHATSAPP
-// ============================================
-app.get('/redirect-chat/:token', async (req, res) => {
-  const { token } = req.params;
-  
-  console.log(`🔀 Redirecting token: ${token}`);
-  
-  try {
-    let session = await chatSessionsCollection.findOne({ sessionToken: token, status: 'active' });
-    
-    if (!session) {
-      const patient = await patientsCollection.findOne({ chatSessionToken: token });
-      if (patient && patient.chatSessionToken) {
-        session = {
-          sessionToken: token,
-          patientPhone: patient.patientPhone,
-          patientName: patient.patientName,
-          executiveNumber: patient.executiveNumber
-        };
-      }
-    }
-    
-    if (!session) {
-      return res.send(`
-        <html>
-          <head><title>Session Expired</title></head>
-          <body style="font-family: Arial; padding: 30px; text-align: center;">
-            <h2>⏰ Session Expired</h2>
-            <p>Please click "Connect to Patient" again from WhatsApp.</p>
-          </body>
-        </html>
-      `);
-    }
-    
-    const patient = await patientsCollection.findOne({ patientPhone: session.patientPhone });
-    
-    const welcomeText = `Hi ${patient?.patientName || session.patientName || 'Patient'}, I am from UIC Support Team.
-
-Your Details:
-Name: ${patient?.patientName || session.patientName || 'Patient'}
-Test: ${patient?.testType || 'Miss Call'} - ${patient?.testDetails || 'Not specified'}
-Branch: ${patient?.branch || 'Main Branch'}
-Miss Call Time: ${patient?.missCallTime ? new Date(patient.missCallTime).toLocaleString() : 'Not recorded'}
-
-How can I help you?`;
-    
-    const whatsappLink = `https://wa.me/${session.patientPhone}?text=${encodeURIComponent(welcomeText)}`;
-    
-    console.log(`🔀 Redirecting to WhatsApp`);
-    res.redirect(whatsappLink);
-    
-  } catch (error) {
-    console.error('❌ Redirect error:', error);
-    res.send(`<h2>❌ Error</h2><p>Please try again.</p>`);
-  }
-});
 
 // ============================================
 // ✅ TATA TELE WEBHOOK
@@ -993,7 +948,6 @@ app.post('/wati-webhook', async (req, res) => {
           await sendWhatsAppMessageToPatient(senderNumber, patient.patientPhone, welcomeMessage);
           console.log(`✅ Welcome message sent to patient from executive ${senderNumber}`);
           
-          // Store welcome message in chat history
           await chatMessagesCollection.insertOne({
             sessionToken: sessionToken,
             sender: 'executive',
@@ -1006,7 +960,7 @@ app.post('/wati-webhook', async (req, res) => {
           console.error(`❌ Failed to send welcome message:`, error.message);
         }
         
-        // Send notification to executive with redirect link
+        // Send notification to executive with WhatsApp link
         await sendLeadNotification(
           senderNumber,
           patient.patientName || 'Patient',
@@ -1017,7 +971,7 @@ app.post('/wati-webhook', async (req, res) => {
           sessionToken
         );
         
-        console.log(`✅ Executive notification sent with redirect link`);
+        console.log(`✅ Executive notification sent with WhatsApp link`);
       }
       else if (text === 'CONVERT DONE') {
         await patientsCollection.updateOne(
@@ -1667,7 +1621,6 @@ app.get('/', (req, res) => {
     version: '9.0.0',
     template: LEAD_TEMPLATE_NAME,
     endpoints: {
-      redirect_chat: '/redirect-chat/:token',
       executive_chat: '/executive-chat/:token',
       connect_chat: '/connect-chat/:token',
       health: '/health',
@@ -1719,7 +1672,7 @@ async function startServer() {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
       console.log(`📍 Template Name: ${LEAD_TEMPLATE_NAME}`);
-      console.log(`📍 Redirect Endpoint: ${SELF_URL}/redirect-chat/:token`);
+      console.log(`📍 WhatsApp Direct Link: Active`);
       console.log(`📍 Admin Dashboard: ${SELF_URL}/admin`);
       console.log(`📍 OCR Processing: Active`);
       console.log(`📍 AI Model: gpt-4o-mini`);
