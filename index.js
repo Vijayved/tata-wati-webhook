@@ -121,144 +121,123 @@ function getExecutiveNumber(branchName) {
 // ✅ BRANCH CONFIGURATION - WITH WATI NUMBERS
 // ============================================
 const BRANCHES = {
-  // Naroda - with both Tata Tele and WATI numbers
+  // Naroda
   [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: {
     name: 'Naroda',
-    tataNumber: '07969690935',
-    watiNumber: '917969690935', // Primary WATI number
+    watiNumber: '917969690935',
     executive: EXECUTIVES['Naroda Team']
   },
-  // Additional Naroda WATI number
   [normalizeIndianNumber('917969690922')]: {
     name: 'Naroda',
-    tataNumber: null,
-    watiNumber: '917969690922', // Secondary WATI number
+    watiNumber: '917969690922',
     executive: EXECUTIVES['Naroda Team']
   },
   
   // Usmanpura
   [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: {
     name: 'Usmanpura',
-    tataNumber: '9898989897',
-    watiNumber: '917969690901', // Primary
+    watiNumber: '917969690901',
     executive: EXECUTIVES['Usmanpura Team']
   },
   [normalizeIndianNumber('917969690952')]: {
     name: 'Usmanpura',
-    tataNumber: null,
-    watiNumber: '917969690952', // Secondary
+    watiNumber: '917969690952',
     executive: EXECUTIVES['Usmanpura Team']
   },
   
   // Vadaj
   [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: {
     name: 'Vadaj',
-    tataNumber: '9898989896',
-    watiNumber: '917969690903', // Primary
+    watiNumber: '917969690903',
     executive: EXECUTIVES['Vadaj Team']
   },
   [normalizeIndianNumber('917969690917')]: {
     name: 'Vadaj',
-    tataNumber: null,
-    watiNumber: '917969690917', // Secondary
+    watiNumber: '917969690917',
     executive: EXECUTIVES['Vadaj Team']
   },
   
   // Satellite
   [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: {
     name: 'Satellite',
-    tataNumber: '9898989898',
-    watiNumber: '917969690924', // Primary
+    watiNumber: '917969690924',
     executive: EXECUTIVES['Satellite Team']
   },
   [normalizeIndianNumber('917969690902')]: {
     name: 'Satellite',
-    tataNumber: null,
-    watiNumber: '917969690902', // Secondary
+    watiNumber: '917969690902',
     executive: EXECUTIVES['Satellite Team']
   },
   
   // Maninagar
   [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: {
     name: 'Maninagar',
-    tataNumber: '9898989895',
-    watiNumber: '917969690936', // Primary
+    watiNumber: '917969690936',
     executive: EXECUTIVES['Maninagar Team']
   },
   [normalizeIndianNumber('917969690904')]: {
     name: 'Maninagar',
-    tataNumber: null,
-    watiNumber: '917969690904', // Secondary
+    watiNumber: '917969690904',
     executive: EXECUTIVES['Maninagar Team']
   },
   
   // Bapunagar
   [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: {
     name: 'Bapunagar',
-    tataNumber: '9898989894',
-    watiNumber: '917969690923', // Primary
+    watiNumber: '917969690923',
     executive: EXECUTIVES['Bapunagar Team']
   },
   [normalizeIndianNumber('917969690906')]: {
     name: 'Bapunagar',
-    tataNumber: null,
-    watiNumber: '917969690906', // Secondary
+    watiNumber: '917969690906',
     executive: EXECUTIVES['Bapunagar Team']
   },
   
   // Juhapura
   [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: {
     name: 'Juhapura',
-    tataNumber: '9898989893',
-    watiNumber: '917969690918', // Primary
+    watiNumber: '917969690918',
     executive: EXECUTIVES['Juhapura Team']
   },
   [normalizeIndianNumber('917969690909')]: {
     name: 'Juhapura',
-    tataNumber: null,
-    watiNumber: '917969690909', // Secondary
+    watiNumber: '917969690909',
     executive: EXECUTIVES['Juhapura Team']
   },
   
   // Gandhinagar
   [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: {
     name: 'Gandhinagar',
-    tataNumber: '9898989892',
-    watiNumber: '917969690941', // Primary
+    watiNumber: '917969690941',
     executive: EXECUTIVES['Gandhinagar Team']
   },
   [normalizeIndianNumber('917969690910')]: {
     name: 'Gandhinagar',
-    tataNumber: null,
-    watiNumber: '917969690910', // Secondary
+    watiNumber: '917969690910',
     executive: EXECUTIVES['Gandhinagar Team']
   },
   
-  // Rajkot (new branch)
+  // Rajkot
   [normalizeIndianNumber('917969690913')]: {
     name: 'Rajkot',
-    tataNumber: null,
-    watiNumber: '917969690913', // Primary
+    watiNumber: '917969690913',
     executive: EXECUTIVES['Rajkot Team']
   },
   [normalizeIndianNumber('917969690919')]: {
     name: 'Rajkot',
-    tataNumber: null,
-    watiNumber: '917969690919', // Secondary
+    watiNumber: '917969690919',
     executive: EXECUTIVES['Rajkot Team']
   },
   
-  // Sabarmati (new branch)
+  // Sabarmati
   [normalizeIndianNumber('917969690942')]: {
     name: 'Sabarmati',
-    tataNumber: null,
-    watiNumber: '917969690942', // Primary
+    watiNumber: '917969690942',
     executive: EXECUTIVES['Sabarmati Team']
   },
   [normalizeIndianNumber('917969690905')]: {
     name: 'Sabarmati',
-    tataNumber: null,
-    watiNumber: '917969690905', // Secondary
+    watiNumber: '917969690905',
     executive: EXECUTIVES['Sabarmati Team']
   }
 };
@@ -322,7 +301,6 @@ function getBranchByCalledNumber(calledNumber) {
   const normalized = normalizeIndianNumber(calledNumber);
   return BRANCHES[normalized] || {
     name: 'Main Branch',
-    watiNumber: null,
     executive: process.env.DEFAULT_EXECUTIVE || '917880261858'
   };
 }
@@ -487,10 +465,24 @@ function verifyToken(chatId, token) {
 }
 
 // ============================================
-// ✅ OPENAI OCR FUNCTION
+// ✅ HELPER FUNCTION TO GET FILE URL
 // ============================================
-async function extractWithOpenAI(imageUrl) {
-  console.log(`🔍 Performing OCR on image: ${imageUrl.substring(0, 50)}...`);
+function getFileUrlFromMessage(msg) {
+  return msg.mediaUrl || 
+         msg.url || 
+         msg.image?.url || 
+         msg.media?.url ||
+         msg.document?.url ||
+         msg.file?.url ||
+         msg.attachments?.[0]?.url ||
+         null;
+}
+
+// ============================================
+// ✅ OPENAI OCR FUNCTION (Handles Images & PDFs)
+// ============================================
+async function extractWithOpenAI(fileUrl) {
+  console.log(`🔍 Performing OCR on: ${fileUrl.substring(0, 50)}...`);
   
   try {
     const response = await openai.chat.completions.create({
@@ -501,11 +493,11 @@ async function extractWithOpenAI(imageUrl) {
           content: [
             {
               type: "text",
-              text: "Extract patient name and medical tests from this prescription. Return JSON with keys: patientName, tests. If name not found, use 'Unknown'. If tests not found, use 'Not specified'."
+              text: "Extract patient name and medical tests from this prescription image/PDF. Return ONLY JSON with keys: patientName, tests. If name not found, use 'Unknown'. If tests not found, use 'Not specified'."
             },
             {
               type: "image_url",
-              image_url: { url: imageUrl }
+              image_url: { url: fileUrl }
             }
           ]
         }
@@ -514,9 +506,8 @@ async function extractWithOpenAI(imageUrl) {
     });
     
     const content = response.choices[0].message.content;
-    console.log('📝 OCR Raw Response:', content);
+    console.log('📝 OCR Response:', content);
     
-    // Try to extract JSON
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
@@ -533,13 +524,12 @@ async function extractWithOpenAI(imageUrl) {
 }
 
 // ============================================
-// ✅ PROCESS IMAGE UPLOAD WITH OCR
+// ✅ PROCESS IMAGE/PDF UPLOAD WITH OCR
 // ============================================
-async function processImageUpload(messageId, patientName, branch, imageUrl, patientPhone) {
-  console.log(`\n📸 Processing image upload for ${patientPhone}`);
+async function processFileUpload(messageId, patientName, branch, fileUrl, patientPhone) {
+  console.log(`\n📎 Processing file upload for ${patientPhone}`);
   
   try {
-    // Find patient
     const patient = await patientsCollection.findOne({
       patientPhone: patientPhone,
       status: { $in: ['awaiting_branch', 'pending', 'waiting', 'branch_selected', 'awaiting_name', 'awaiting_test_type', 'awaiting_test_details'] }
@@ -558,24 +548,21 @@ async function processImageUpload(messageId, patientName, branch, imageUrl, pati
     
     const finalBranch = patient.branch || branch;
     const executiveNumber = getExecutiveNumber(finalBranch);
-    const chatId = patient.chatId || `${patientPhone}_${finalBranch}`;
     
     console.log(`🏥 Using branch: ${finalBranch}, Executive: ${executiveNumber}`);
     
-    // Perform OCR
-    const extracted = await extractWithOpenAI(imageUrl);
+    const extracted = await extractWithOpenAI(fileUrl);
     console.log(`✅ OCR Result:`, extracted);
     
     await updatePatientStage(patient._id, STAGES.OCR_COMPLETED);
     
-    // Update patient with OCR data
     await patientsCollection.updateOne(
       { _id: patient._id },
       {
         $set: {
-          patientName: extracted.patientName || patientName,
+          patientName: extracted.patientName !== 'Unknown' ? extracted.patientName : (patient.patientName || patientName),
           testDetails: extracted.tests,
-          imageUrl: imageUrl,
+          fileUrl: fileUrl,
           updatedAt: new Date()
         }
       }
@@ -583,7 +570,6 @@ async function processImageUpload(messageId, patientName, branch, imageUrl, pati
     
     console.log(`✅ Patient record updated with OCR data`);
     
-    // Create or get session token
     let sessionTokenForLink = patient.chatSessionToken;
     if (!sessionTokenForLink) {
       sessionTokenForLink = crypto.randomBytes(16).toString('hex');
@@ -593,18 +579,20 @@ async function processImageUpload(messageId, patientName, branch, imageUrl, pati
       );
     }
     
-    // Send notification if not already sent
     if (!patient.executiveActionTaken && !patient.notificationSent) {
       console.log(`📤 Sending notification to executive ${executiveNumber} after OCR`);
       
       try {
+        const finalPatientName = extracted.patientName !== 'Unknown' ? extracted.patientName : (patient.patientName || 'Miss Call Patient');
+        const finalTestDetails = extracted.tests !== 'Not specified' ? extracted.tests : (patient.testDetails || 'Not specified');
+        
         const notified = await sendNotificationAtomic(patient._id, () =>
           sendLeadNotification(
             executiveNumber,
-            extracted.patientName || patient.patientName || 'Miss Call Patient',
+            finalPatientName,
             patientPhone,
             finalBranch,
-            extracted.tests,
+            finalTestDetails,
             'Upload',
             sessionTokenForLink
           )
@@ -622,7 +610,7 @@ async function processImageUpload(messageId, patientName, branch, imageUrl, pati
     return true;
     
   } catch (error) {
-    console.error(`❌ processImageUpload error:`, error);
+    console.error(`❌ processFileUpload error:`, error);
     return false;
   } finally {
     await markMessageProcessed(messageId);
@@ -636,7 +624,6 @@ async function classifyMessage(messageText, patientContext = {}) {
   const upperMsg = messageText.toUpperCase();
   const wordCount = messageText.split(' ').length;
   
-  // COMMANDS - हमेशा IGNORE
   const commands = ['UPLOAD PRESCRIPTION', 'MANUAL ENTRY', 'CHANGE BRANCH', 'CONNECT TO PATIENT', 'CONVERT DONE', 'WAITING', 'NOT CONVERT'];
   for (const cmd of commands) {
     if (upperMsg.includes(cmd)) {
@@ -644,7 +631,6 @@ async function classifyMessage(messageText, patientContext = {}) {
     }
   }
   
-  // STAGE-BASED LOGIC (सबसे पहले)
   if (patientContext.currentStage === STAGES.AWAITING_NAME) {
     return { category: 'PATIENT_NAME', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_name' };
   }
@@ -655,7 +641,6 @@ async function classifyMessage(messageText, patientContext = {}) {
     return { category: 'TEST_DETAILS', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_test_details' };
   }
   
-  // TEST KEYWORDS
   const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY'];
   const bodyParts = ['KNEE', 'SPINE', 'ABDOMEN', 'CHEST', 'BRAIN', 'HEAD', 'NECK', 'PELVIS', 'HIP', 'SHOULDER', 'WRIST', 'ANKLE'];
   
@@ -676,28 +661,23 @@ async function classifyMessage(messageText, patientContext = {}) {
     }
   }
   
-  // NAME DETECTION - regex pattern
   const nameRegex = /^[A-Za-z\s]{2,30}$/;
   if (nameRegex.test(messageText) && !hasTestKeyword && wordCount <= 3) {
     return { category: 'PATIENT_NAME', value: messageText, confidence: 0.9, reason: 'Name pattern match' };
   }
   
-  // TEST DETAILS - test keyword + body part
   if (hasTestKeyword && hasBodyPart) {
     return { category: 'TEST_DETAILS', value: messageText, confidence: 0.98, reason: 'Test + body part' };
   }
   
-  // TEST DETAILS - just test keyword but longer message
   if (hasTestKeyword && wordCount > 1) {
     return { category: 'TEST_DETAILS', value: messageText, confidence: 0.85, reason: 'Test keyword with details' };
   }
   
-  // TEST TYPE - single word test keyword
   if (hasTestKeyword && wordCount === 1) {
     return { category: 'TEST_TYPE', value: messageText, confidence: 0.99, reason: 'Single word test type' };
   }
   
-  // AI FALLBACK - only for uncertain cases
   if (!hasTestKeyword && wordCount > 2) {
     try {
       const prompt = `Classify this patient message: "${messageText}"
@@ -727,7 +707,6 @@ Return JSON with category and confidence (0-1).`;
     }
   }
   
-  // DEFAULT
   return { category: 'IGNORE', value: messageText, confidence: 0.5, reason: 'Default ignore' };
 }
 
@@ -823,7 +802,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - WITH IMAGE HANDLING
+// ✅ WATI WEBHOOK - COMPLETE
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -861,24 +840,20 @@ app.post('/wati-webhook', async (req, res) => {
     console.log(`📝 Processed message: "${text}" from ${senderNumber} (type: ${messageType})`);
     
     // ============================================
-    // ✅ IMAGE MESSAGE HANDLING
+    // ✅ FILE/IMAGE HANDLING
     // ============================================
-    if (msg.type === 'image' || msg.messageType === 'image' || msg.image || msg.media) {
-      console.log(`📸 Image message detected from ${senderNumber}`);
+    if (msg.type === 'image' || msg.messageType === 'image' || msg.image || msg.document || msg.file || msg.media) {
+      console.log(`📎 File/Image detected from ${senderNumber}`);
       
-      // Try to get image URL from various possible locations
-      const imageUrl = msg.mediaUrl || msg.url || msg.image?.url || msg.media?.url;
+      const fileUrl = getFileUrlFromMessage(msg);
       
-      if (imageUrl) {
-        console.log(`🖼️ Image URL found: ${imageUrl.substring(0, 50)}...`);
+      if (fileUrl) {
+        console.log(`🖼️ File URL found: ${fileUrl.substring(0, 50)}...`);
         
-        // Find patient
-        const patient = await patientsCollection.findOne({ 
-          patientPhone: senderNumber 
-        });
+        const patient = await patientsCollection.findOne({ patientPhone: senderNumber });
         
         if (!patient) {
-          console.log(`❌ No patient found for image upload`);
+          console.log(`❌ No patient found for file upload`);
           await sendWatiTemplateMessage(
             senderNumber,
             'text_message',
@@ -886,15 +861,10 @@ app.post('/wati-webhook', async (req, res) => {
           );
         } else {
           const branch = patient.branch || 'Naroda';
-          await processImageUpload(msgId, patient.patientName || 'Patient', branch, imageUrl, senderNumber);
+          await processFileUpload(msgId, patient.patientName || 'Patient', branch, fileUrl, senderNumber);
         }
       } else {
-        console.log(`❌ No image URL found in message`);
-        // Try to get media ID
-        const mediaId = msg.media?.id || msg.image?.id;
-        if (mediaId) {
-          console.log(`📎 Media ID found: ${mediaId}, but URL fetch not implemented`);
-        }
+        console.log(`❌ No file URL found in message`);
       }
       
       await markMessageProcessed(msgId);
@@ -931,9 +901,7 @@ app.post('/wati-webhook', async (req, res) => {
     // ============================================
     if (!text.endsWith('_BRANCH') && !text.startsWith('CONNECT') && !text.startsWith('CONVERT') && !text.startsWith('WAITING') && !text.startsWith('NOT')) {
       
-      let patient = await patientsCollection.findOne({ 
-        patientPhone: senderNumber 
-      });
+      let patient = await patientsCollection.findOne({ patientPhone: senderNumber });
       
       if (!patient) {
         const result = await patientsCollection.insertOne({
@@ -950,7 +918,6 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Created new patient record for ${senderNumber}`);
       }
       
-      // Store raw message
       await patientsCollection.updateOne(
         { _id: patient._id },
         {
@@ -966,7 +933,6 @@ app.post('/wati-webhook', async (req, res) => {
       );
       console.log(`✅ Stored raw patient message: "${messageText}"`);
       
-      // Call hybrid classifier
       const context = {
         currentStage: patient.currentStage,
         patientName: patient.patientName,
@@ -977,7 +943,6 @@ app.post('/wati-webhook', async (req, res) => {
       const result = await classifyMessage(messageText, context);
       console.log(`🧠 CLASSIFICATION:`, result);
       
-      // Apply if confidence is high enough
       if (result.confidence >= 0.8) {
         if (result.category === 'PATIENT_NAME') {
           await patientsCollection.updateOne(
@@ -1060,7 +1025,6 @@ app.post('/wati-webhook', async (req, res) => {
             patient.testType || 'Miss Call',
             existingSession.sessionToken
           );
-          
           console.log(`✅ Existing session link sent to executive`);
         } else {
           const sessionToken = crypto.randomBytes(16).toString('hex');
@@ -1097,7 +1061,6 @@ app.post('/wati-webhook', async (req, res) => {
               $push: { stageHistory: { stage: STAGES.CONNECTED, timestamp: new Date() } }
             }
           );
-          
           console.log(`✅ New chat session created: ${sessionToken}`);
         }
       }
@@ -1185,15 +1148,11 @@ app.post('/wati-webhook', async (req, res) => {
       const whatsappNumber = normalizeWhatsAppNumber(senderNumber);
       const executiveNumber = getExecutiveNumber(branchUpper);
       
-      let patient = await patientsCollection.findOne({ 
-        patientPhone: whatsappNumber
-      });
-      
-      const chatId = `${whatsappNumber}_${branch}`;
+      let patient = await patientsCollection.findOne({ patientPhone: whatsappNumber });
       
       if (!patient) {
         const result = await patientsCollection.insertOne({
-          chatId,
+          chatId: `${whatsappNumber}_${branch}`,
           patientName: 'Miss Call Patient',
           patientPhone: whatsappNumber,
           branch: branch,
@@ -1215,13 +1174,6 @@ app.post('/wati-webhook', async (req, res) => {
         patient = { _id: result.insertedId };
         console.log(`✅ New patient created, waiting for name`);
       } else {
-        if (patient.stageHistory && typeof patient.stageHistory === 'object' && !Array.isArray(patient.stageHistory)) {
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            { $set: { stageHistory: [] } }
-          );
-        }
-        
         await patientsCollection.updateOne(
           { _id: patient._id },
           {
@@ -1238,7 +1190,6 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Patient updated, waiting for name`);
       }
       
-      // Create or get session token
       let sessionTokenForLink = patient.chatSessionToken;
       if (!sessionTokenForLink) {
         sessionTokenForLink = crypto.randomBytes(16).toString('hex');
@@ -1249,10 +1200,8 @@ app.post('/wati-webhook', async (req, res) => {
         console.log(`✅ Created new session token for chat link: ${sessionTokenForLink}`);
       }
       
-      // FRESH DATABASE READ BEFORE NOTIFICATION
       const freshPatientData = await patientsCollection.findOne({ _id: patient._id });
       
-      // अब FRESH data का use करो
       let patientNameToSend = freshPatientData.patientName || 'Miss Call Patient';
       let testTypeToSend = freshPatientData.testType || 'Miss Call';
       let testDetailsToSend = freshPatientData.testDetails || 'Not specified';
@@ -1280,7 +1229,6 @@ app.post('/wati-webhook', async (req, res) => {
           
           if (notified) {
             console.log(`✅✅ EXECUTIVE NOTIFICATION SENT to ${executiveNumber}`);
-            
             await updatePatientStage(patient._id, STAGES.EXECUTIVE_NOTIFIED);
           }
         } catch (notifError) {
@@ -1312,40 +1260,19 @@ app.get('/executive-chat/:token', async (req, res) => {
   });
   
   if (!session) {
-    const patient = await patientsCollection.findOne({ 
-      chatSessionToken: token 
-    });
-    
+    const patient = await patientsCollection.findOne({ chatSessionToken: token });
     if (patient && patient.chatSessionToken) {
       return res.redirect(`/executive-chat/${patient.chatSessionToken}`);
     }
-    
-    return res.send(`
-      <html>
-        <head><title>Chat Session</title></head>
-        <body style="font-family: Arial; padding: 30px;">
-          <h2 style="color: #dc3545;">❌ Invalid or Expired Session</h2>
-          <p>Please request a new connection from WhatsApp.</p>
-        </body>
-      </html>
-    `);
+    return res.send(`<h2>❌ Invalid or Expired Session</h2>`);
   }
   
-  // Check expiry
   if (session.expiresAt && new Date() > new Date(session.expiresAt)) {
     await chatSessionsCollection.updateOne(
       { sessionToken: token },
       { $set: { status: 'expired' } }
     );
-    return res.send(`
-      <html>
-        <head><title>Chat Session</title></head>
-        <body style="font-family: Arial; padding: 30px;">
-          <h2 style="color: #dc3545;">⏰ Session Expired</h2>
-          <p>This chat session has expired. Please request a new connection.</p>
-        </body>
-      </html>
-    `);
+    return res.send(`<h2>⏰ Session Expired</h2>`);
   }
   
   const messages = await chatMessagesCollection
@@ -1353,9 +1280,7 @@ app.get('/executive-chat/:token', async (req, res) => {
     .sort({ timestamp: 1 })
     .toArray();
   
-  const patient = await patientsCollection.findOne({ 
-    patientPhone: session.patientPhone 
-  });
+  const patient = await patientsCollection.findOne({ patientPhone: session.patientPhone });
   
   res.send(`
     <!DOCTYPE html>
@@ -1435,17 +1360,11 @@ app.get('/executive-chat/:token', async (req, res) => {
           try {
             const response = await fetch('/api/chat-messages/' + sessionToken + '?since=' + lastMessageCount);
             const data = await response.json();
-            
             if (data.messages && data.messages.length > 0) {
               data.messages.forEach(msg => {
                 const messageDiv = document.createElement('div');
                 messageDiv.className = 'message ' + (msg.sender === 'executive' ? 'executive' : 'patient');
-                messageDiv.innerHTML = \`
-                  <div class="message-content">
-                    \${msg.text}
-                    <div class="message-time">\${new Date(msg.timestamp).toLocaleTimeString()}</div>
-                  </div>
-                \`;
+                messageDiv.innerHTML = \`<div class="message-content">\${msg.text}<div class="message-time">\${new Date(msg.timestamp).toLocaleTimeString()}</div></div>\`;
                 messagesDiv.appendChild(messageDiv);
               });
               lastMessageCount += data.messages.length;
@@ -1459,28 +1378,19 @@ app.get('/executive-chat/:token', async (req, res) => {
         async function sendMessage() {
           const text = messageInput.value.trim();
           if (!text) return;
-          
           messageInput.disabled = true;
           document.getElementById('sendBtn').disabled = true;
-          
           try {
             const response = await fetch('/api/send-to-patient', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ sessionToken, text })
             });
-            
             const result = await response.json();
-            
             if (result.success) {
               const messageDiv = document.createElement('div');
               messageDiv.className = 'message executive';
-              messageDiv.innerHTML = \`
-                <div class="message-content">
-                  \${text}
-                  <div class="message-time">Just now</div>
-                </div>
-              \`;
+              messageDiv.innerHTML = \`<div class="message-content">\${text}<div class="message-time">Just now</div></div>\`;
               messagesDiv.appendChild(messageDiv);
               lastMessageCount++;
               messageInput.value = '';
@@ -1829,7 +1739,7 @@ async function startServer() {
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
       console.log(`📍 Chat System: Active (24h expiry)`);
       console.log(`📍 Executive Numbers: Clean & Trimmed`);
-      console.log(`📍 OCR Processing: ✅ Active`);
+      console.log(`📍 OCR Processing: ✅ Active (JPG, PNG, PDF)`);
       console.log(`📍 DEDUPE WINDOW: 5 seconds`);
       console.log(`📍 AI Model: gpt-4o-mini`);
       console.log(`📍 Confidence Threshold: 0.8`);
