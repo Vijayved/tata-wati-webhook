@@ -92,20 +92,20 @@ async function connectDB() {
 }
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS MAPPING - UPDATED
+// ✅ EXECUTIVE NUMBERS MAPPING - CLEANED VERSION
 // ============================================
 const EXECUTIVES = {
-  'Naroda Team': process.env.NARODA_EXECUTIVE || '919106959092',
-  'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '917490029085',
-  'Vadaj Team': process.env.VADAJ_EXECUTIVE || '918488931212',
-  'Satellite Team': process.env.SATELLITE_EXECUTIVE || '917490029085',
-  'Maninagar Team': process.env.MANINAGAR_EXECUTIVE || '918488931212',
-  'Bapunagar Team': process.env.BAPUNAGAR_EXECUTIVE || '919274682553',
-  'Juhapura Team': process.env.JUHAPURA_EXECUTIVE || '919274682553',
-  'Gandhinagar Team': process.env.GANDHINAGAR_EXECUTIVE || '919558591212',
-  'Rajkot Team': process.env.RAJKOT_EXECUTIVE || '917880261858',
-  'Sabarmati Team': process.env.SABARMATI_EXECUTIVE || '917880261858',
-  'Manager': process.env.MANAGER_NUMBER || '917698011233'
+  'Naroda Team': (process.env.NARODA_EXECUTIVE || '919106959092').toString().trim(),
+  'Usmanpura Team': (process.env.USMANPURA_EXECUTIVE || '917490029085').toString().trim(),
+  'Vadaj Team': (process.env.VADAJ_EXECUTIVE || '918488931212').toString().trim(),
+  'Satellite Team': (process.env.SATELLITE_EXECUTIVE || '917490029085').toString().trim(),
+  'Maninagar Team': (process.env.MANINAGAR_EXECUTIVE || '918488931212').toString().trim(),
+  'Bapunagar Team': (process.env.BAPUNAGAR_EXECUTIVE || '919274682553').toString().trim(),
+  'Juhapura Team': (process.env.JUHAPURA_EXECUTIVE || '919274682553').toString().trim(),
+  'Gandhinagar Team': (process.env.GANDHINAGAR_EXECUTIVE || '919558591212').toString().trim(),
+  'Rajkot Team': (process.env.RAJKOT_EXECUTIVE || '917880261858').toString().trim(),
+  'Sabarmati Team': (process.env.SABARMATI_EXECUTIVE || '917880261858').toString().trim(),
+  'Manager': (process.env.MANAGER_NUMBER || '917698011233').toString().trim()
 };
 
 console.log('✅ Executive numbers loaded:', EXECUTIVES);
@@ -113,7 +113,8 @@ console.log('✅ Executive numbers loaded:', EXECUTIVES);
 function getExecutiveNumber(branchName) {
   const formattedBranch = branchName.charAt(0).toUpperCase() + branchName.slice(1).toLowerCase();
   const teamName = `${formattedBranch} Team`;
-  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
+  const execNumber = EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
+  return execNumber.toString().trim();
 }
 
 // ============================================
@@ -272,6 +273,8 @@ const STAGES = {
   AWAITING_NAME: 'awaiting_name',
   AWAITING_TEST_TYPE: 'awaiting_test_type',
   AWAITING_TEST_DETAILS: 'awaiting_test_details',
+  OCR_PROCESSING: 'ocr_processing',
+  OCR_COMPLETED: 'ocr_completed',
   EXECUTIVE_NOTIFIED: 'executive_notified',
   CONNECTED: 'connected',
   CONVERTED: 'converted',
@@ -484,6 +487,149 @@ function verifyToken(chatId, token) {
 }
 
 // ============================================
+// ✅ OPENAI OCR FUNCTION
+// ============================================
+async function extractWithOpenAI(imageUrl) {
+  console.log(`🔍 Performing OCR on image: ${imageUrl.substring(0, 50)}...`);
+  
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Extract patient name and medical tests from this prescription. Return JSON with keys: patientName, tests. If name not found, use 'Unknown'. If tests not found, use 'Not specified'."
+            },
+            {
+              type: "image_url",
+              image_url: { url: imageUrl }
+            }
+          ]
+        }
+      ],
+      max_tokens: 300
+    });
+    
+    const content = response.choices[0].message.content;
+    console.log('📝 OCR Raw Response:', content);
+    
+    // Try to extract JSON
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        patientName: parsed.patientName || 'Unknown',
+        tests: parsed.tests || 'Not specified'
+      };
+    }
+  } catch (error) {
+    console.error('❌ OCR failed:', error.message);
+  }
+  
+  return { patientName: 'Unknown', tests: 'Not specified' };
+}
+
+// ============================================
+// ✅ PROCESS IMAGE UPLOAD WITH OCR
+// ============================================
+async function processImageUpload(messageId, patientName, branch, imageUrl, patientPhone) {
+  console.log(`\n📸 Processing image upload for ${patientPhone}`);
+  
+  try {
+    // Find patient
+    const patient = await patientsCollection.findOne({
+      patientPhone: patientPhone,
+      status: { $in: ['awaiting_branch', 'pending', 'waiting', 'branch_selected', 'awaiting_name', 'awaiting_test_type', 'awaiting_test_details'] }
+    }, { 
+      sort: { createdAt: -1 },
+      limit: 1 
+    });
+    
+    if (!patient) {
+      console.log(`❌ No active patient found for ${patientPhone}`);
+      await markMessageProcessed(messageId);
+      return false;
+    }
+    
+    await updatePatientStage(patient._id, STAGES.OCR_PROCESSING);
+    
+    const finalBranch = patient.branch || branch;
+    const executiveNumber = getExecutiveNumber(finalBranch);
+    const chatId = patient.chatId || `${patientPhone}_${finalBranch}`;
+    
+    console.log(`🏥 Using branch: ${finalBranch}, Executive: ${executiveNumber}`);
+    
+    // Perform OCR
+    const extracted = await extractWithOpenAI(imageUrl);
+    console.log(`✅ OCR Result:`, extracted);
+    
+    await updatePatientStage(patient._id, STAGES.OCR_COMPLETED);
+    
+    // Update patient with OCR data
+    await patientsCollection.updateOne(
+      { _id: patient._id },
+      {
+        $set: {
+          patientName: extracted.patientName || patientName,
+          testDetails: extracted.tests,
+          imageUrl: imageUrl,
+          updatedAt: new Date()
+        }
+      }
+    );
+    
+    console.log(`✅ Patient record updated with OCR data`);
+    
+    // Create or get session token
+    let sessionTokenForLink = patient.chatSessionToken;
+    if (!sessionTokenForLink) {
+      sessionTokenForLink = crypto.randomBytes(16).toString('hex');
+      await patientsCollection.updateOne(
+        { _id: patient._id },
+        { $set: { chatSessionToken: sessionTokenForLink } }
+      );
+    }
+    
+    // Send notification if not already sent
+    if (!patient.executiveActionTaken && !patient.notificationSent) {
+      console.log(`📤 Sending notification to executive ${executiveNumber} after OCR`);
+      
+      try {
+        const notified = await sendNotificationAtomic(patient._id, () =>
+          sendLeadNotification(
+            executiveNumber,
+            extracted.patientName || patient.patientName || 'Miss Call Patient',
+            patientPhone,
+            finalBranch,
+            extracted.tests,
+            'Upload',
+            sessionTokenForLink
+          )
+        );
+        
+        if (notified) {
+          console.log(`✅✅ EXECUTIVE NOTIFICATION SENT AFTER OCR`);
+          await updatePatientStage(patient._id, STAGES.EXECUTIVE_NOTIFIED);
+        }
+      } catch (notifError) {
+        console.error(`❌ Notification failed:`, notifError.message);
+      }
+    }
+    
+    return true;
+    
+  } catch (error) {
+    console.error(`❌ processImageUpload error:`, error);
+    return false;
+  } finally {
+    await markMessageProcessed(messageId);
+  }
+}
+
+// ============================================
 // ✅ HYBRID CLASSIFICATION ENGINE
 // ============================================
 async function classifyMessage(messageText, patientContext = {}) {
@@ -677,7 +823,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - HYBRID CLASSIFICATION
+// ✅ WATI WEBHOOK - WITH IMAGE HANDLING
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -713,6 +859,47 @@ app.post('/wati-webhook', async (req, res) => {
     
     const text = (messageText || '').toUpperCase().trim();
     console.log(`📝 Processed message: "${text}" from ${senderNumber} (type: ${messageType})`);
+    
+    // ============================================
+    // ✅ IMAGE MESSAGE HANDLING
+    // ============================================
+    if (msg.type === 'image' || msg.messageType === 'image' || msg.image || msg.media) {
+      console.log(`📸 Image message detected from ${senderNumber}`);
+      
+      // Try to get image URL from various possible locations
+      const imageUrl = msg.mediaUrl || msg.url || msg.image?.url || msg.media?.url;
+      
+      if (imageUrl) {
+        console.log(`🖼️ Image URL found: ${imageUrl.substring(0, 50)}...`);
+        
+        // Find patient
+        const patient = await patientsCollection.findOne({ 
+          patientPhone: senderNumber 
+        });
+        
+        if (!patient) {
+          console.log(`❌ No patient found for image upload`);
+          await sendWatiTemplateMessage(
+            senderNumber,
+            'text_message',
+            [{ name: "1", value: "Please start with a missed call first." }]
+          );
+        } else {
+          const branch = patient.branch || 'Naroda';
+          await processImageUpload(msgId, patient.patientName || 'Patient', branch, imageUrl, senderNumber);
+        }
+      } else {
+        console.log(`❌ No image URL found in message`);
+        // Try to get media ID
+        const mediaId = msg.media?.id || msg.image?.id;
+        if (mediaId) {
+          console.log(`📎 Media ID found: ${mediaId}, but URL fetch not implemented`);
+        }
+      }
+      
+      await markMessageProcessed(msgId);
+      return res.sendStatus(200);
+    }
     
     // ============================================
     // ✅ HANDLE PATIENT REPLIES
@@ -1641,7 +1828,8 @@ async function startServer() {
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
       console.log(`📍 Chat System: Active (24h expiry)`);
-      console.log(`📍 Executive Number: Dynamic from ENV`);
+      console.log(`📍 Executive Numbers: Clean & Trimmed`);
+      console.log(`📍 OCR Processing: ✅ Active`);
       console.log(`📍 DEDUPE WINDOW: 5 seconds`);
       console.log(`📍 AI Model: gpt-4o-mini`);
       console.log(`📍 Confidence Threshold: 0.8`);
