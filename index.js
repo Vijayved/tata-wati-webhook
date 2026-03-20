@@ -7,9 +7,40 @@ const OpenAI = require('openai');
 const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
 
+// ============================================
+// ✅ TIMEZONE SETUP - IST (Indian Standard Time)
+// ============================================
+process.env.TZ = 'Asia/Kolkata';
+
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// ============================================
+// ✅ IST TIME HELPER FUNCTIONS
+// ============================================
+function getISTTime(date = new Date()) {
+  return date.toLocaleString('en-IN', { 
+    timeZone: 'Asia/Kolkata',
+    day: 'numeric',
+    month: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
+
+function getISTDateTime(date = new Date()) {
+  return date.toLocaleString('en-IN', { 
+    timeZone: 'Asia/Kolkata',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
 
 // ============================================
 // CONFIGURATION
@@ -28,7 +59,7 @@ const LEAD_TEMPLATE_NAME = 'lead_notification_v6';
 
 // ✅ Follow-up Template Names
 const FOLLOWUP_NO_REPLY_TEMPLATE = 'followup_no_reply';
-const FOLLOWUP_WAITING_TEMPLATE = 'following_waiting';  // Note: as per WATI name
+const FOLLOWUP_WAITING_TEMPLATE = 'following_waiting';
 const ESCALATION_MANAGER_TEMPLATE = 'escalation_manager';
 const EXECUTIVE_REPORT_TEMPLATE = 'executive_report';
 
@@ -58,7 +89,7 @@ let executivesCollection;
 let missCallsCollection;
 let chatSessionsCollection;
 let chatMessagesCollection;
-let followupCollection;  // ✅ New collection for follow-ups
+let followupCollection;
 
 async function connectDB() {
   try {
@@ -77,7 +108,7 @@ async function connectDB() {
     missCallsCollection = db.collection('miss_calls');
     chatSessionsCollection = db.collection('chat_sessions');
     chatMessagesCollection = db.collection('chat_messages');
-    followupCollection = db.collection('followups');  // ✅ New collection
+    followupCollection = db.collection('followups');
     
     // Indexes
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
@@ -90,8 +121,7 @@ async function connectDB() {
     await chatSessionsCollection.createIndex({ sessionToken: 1 }, { unique: true });
     await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
     await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
-    await followupCollection.createIndex({ patientId: 1, type: 1, createdAt: -1 });  // ✅ New index
-    await followupCollection.createIndex({ sentAt: 1 });  // ✅ New index
+    await followupCollection.createIndex({ patientId: 1, type: 1, createdAt: -1 });
     
     console.log('✅ Indexes created');
     return true;
@@ -252,6 +282,53 @@ async function updatePatientStage(patientId, stage) {
 }
 
 // ============================================
+// ✅ SESSION FUNCTIONS (NO EXPIRY)
+// ============================================
+
+// Create new chat session (PERMANENT - no expiry)
+async function createChatSession(executiveNumber, patientPhone, patientName) {
+  const sessionToken = crypto.randomBytes(16).toString('hex');
+  
+  await chatSessionsCollection.insertOne({
+    sessionToken,
+    executiveNumber: executiveNumber,
+    patientPhone: patientPhone,
+    patientName: patientName || 'Patient',
+    createdAt: new Date(),
+    lastActivity: new Date(),
+    status: 'active',
+    expiresAt: null  // ✅ NO EXPIRY - permanent session
+  });
+  
+  return sessionToken;
+}
+
+// Get or create session (for reminders - ensures link always works)
+async function getOrCreateChatSession(patient) {
+  // Try to find existing active session
+  let session = await chatSessionsCollection.findOne({ 
+    patientPhone: patient.patientPhone,
+    status: 'active'
+  });
+  
+  if (!session) {
+    console.log(`🔄 No active session found for ${patient.patientPhone}, creating new...`);
+    const executiveNumber = getExecutiveNumber(patient.branch);
+    const sessionToken = await createChatSession(executiveNumber, patient.patientPhone, patient.patientName);
+    
+    // Update patient with new token
+    await patientsCollection.updateOne(
+      { _id: patient._id },
+      { $set: { chatSessionToken: sessionToken } }
+    );
+    
+    session = await chatSessionsCollection.findOne({ sessionToken });
+  }
+  
+  return session;
+}
+
+// ============================================
 // ✅ ATOMIC NOTIFICATION SENDER
 // ============================================
 async function sendNotificationAtomic(patientId, notificationFunction) {
@@ -345,15 +422,22 @@ async function sendWhatsAppMessageToPatient(executiveNumber, patientPhone, messa
 }
 
 // ============================================
-// ✅ FOLLOW-UP FUNCTIONS
+// ✅ FOLLOW-UP FUNCTIONS (WITH PERMANENT SESSION)
 // ============================================
 
 // 1. No Reply Follow-up (every 20 min)
 async function sendNoReplyFollowup(patient) {
   console.log(`📢 Sending no-reply followup for ${patient.patientName}`);
   
+  // ✅ Get or create session - ensures link is always valid
+  const session = await getOrCreateChatSession(patient);
+  const chatLink = `${SELF_URL}/executive-chat/${session.sessionToken}`;
+  
   const executiveNumber = getExecutiveNumber(patient.branch);
-  const chatLink = `${SELF_URL}/executive-chat/${patient.chatSessionToken || ''}`;
+  
+  // ✅ IST Time Format
+  const istMissCallTime = patient.missCallTime ? getISTTime(new Date(patient.missCallTime)) : "Not recorded";
+  const istLastMessageAt = patient.lastMessageAt ? getISTTime(new Date(patient.lastMessageAt)) : "No message";
   
   const parameters = [
     { name: "1", value: patient.patientName || "Patient" },
@@ -361,8 +445,8 @@ async function sendNoReplyFollowup(patient) {
     { name: "3", value: patient.branch || "Main Branch" },
     { name: "4", value: patient.testType || "Not specified" },
     { name: "5", value: patient.testDetails || "Not specified" },
-    { name: "6", value: patient.missCallTime ? new Date(patient.missCallTime).toLocaleString() : "Not recorded" },
-    { name: "7", value: patient.lastMessageAt ? new Date(patient.lastMessageAt).toLocaleString() : "No message" },
+    { name: "6", value: istMissCallTime },
+    { name: "7", value: istLastMessageAt },
     { name: "8", value: chatLink }
   ];
   
@@ -390,7 +474,12 @@ async function sendNoReplyFollowup(patient) {
 async function sendWaitingFollowup(patient, waitingCount) {
   console.log(`⏳ Sending waiting followup for ${patient.patientName} (count: ${waitingCount})`);
   
+  // ✅ Get or create session - ensures link is always valid
+  const session = await getOrCreateChatSession(patient);
   const executiveNumber = getExecutiveNumber(patient.branch);
+  
+  // ✅ IST Time Format
+  const istUpdatedAt = patient.updatedAt ? getISTTime(new Date(patient.updatedAt)) : "Not recorded";
   
   const parameters = [
     { name: "1", value: patient.patientName || "Patient" },
@@ -398,7 +487,7 @@ async function sendWaitingFollowup(patient, waitingCount) {
     { name: "3", value: patient.branch || "Main Branch" },
     { name: "4", value: patient.testType || "Not specified" },
     { name: "5", value: patient.testDetails || "Not specified" },
-    { name: "6", value: patient.updatedAt ? new Date(patient.updatedAt).toLocaleString() : "Not recorded" }
+    { name: "6", value: istUpdatedAt }
   ];
   
   await sendWatiTemplateMessage(executiveNumber, FOLLOWUP_WAITING_TEMPLATE, parameters);
@@ -566,10 +655,13 @@ cron.schedule('0 */2 * * *', async () => {
 });
 
 // ============================================
-// ✅ LEAD NOTIFICATION
+// ✅ LEAD NOTIFICATION (WITH IST TIME)
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
   console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
+  
+  // ✅ IST Time
+  const istTime = getISTDateTime();
   
   const welcomeText = `Hi ${patientName}, I am from UIC Support Team.
 
@@ -577,7 +669,7 @@ Your Details:
 Name: ${patientName}
 Test: ${testType} - ${testDetails}
 Branch: ${branch}
-Miss Call Time: ${new Date().toLocaleString()}
+Miss Call Time: ${istTime}
 
 How can I help you?`;
   
@@ -589,7 +681,7 @@ How can I help you?`;
     { name: "3", value: branch },
     { name: "4", value: testDetails || "Not specified" },
     { name: "5", value: testType || "Miss Call" },
-    { name: "6", value: new Date().toLocaleString() },
+    { name: "6", value: istTime },
     { name: "7", value: whatsappLink }
   ];
   
@@ -825,7 +917,7 @@ Return JSON with category and confidence (0-1).`;
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK
+// ✅ TATA TELE WEBHOOK (WITH IST TIME)
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -845,11 +937,14 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
     
+    const istTime = getISTTime();
+    
     await missCallsCollection.insertOne({
       phoneNumber: whatsappNumber,
       calledNumber: calledNumber,
       branch: branch.name,
-      createdAt: new Date()
+      createdAt: new Date(),
+      istTime: istTime
     });
     
     const chatId = `${whatsappNumber}_${branch.name}`;
@@ -862,6 +957,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         { 
           $set: { 
             missCallTime: new Date(),
+            missCallTimeIST: istTime,
             updatedAt: new Date(),
             branch: branch.name,
             status: 'awaiting_branch',
@@ -888,6 +984,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         executiveActionTaken: false,
         missCallCount: 1,
         missCallTime: new Date(),
+        missCallTimeIST: istTime,
         createdAt: new Date(),
         updatedAt: new Date(),
         currentStage: STAGES.AWAITING_BRANCH,
@@ -914,7 +1011,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK - COMPLETE (WITH FOLLOW-UP HANDLERS)
+// ✅ WATI WEBHOOK - COMPLETE
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -1049,19 +1146,17 @@ app.post('/wati-webhook', async (req, res) => {
     }
     
     // ============================================
-    // ✅ HANDLE EXECUTIVE QUICK REPLIES (Convert Done, Waiting, Not Convert)
+    // ✅ HANDLE EXECUTIVE QUICK REPLIES
     // ============================================
     if (text === 'CONVERT DONE' || text === 'WAITING' || text === 'NOT CONVERT') {
       console.log(`🔘 Executive quick reply: ${text} from ${senderNumber}`);
       
-      // Find patient assigned to this executive
       let patient = await patientsCollection.findOne({ 
         executiveNumber: senderNumber,
         status: { $in: ['pending', 'awaiting_branch', 'branch_selected', 'executive_notified', 'waiting'] }
       });
       
       if (!patient) {
-        // Try to find any waiting patient for this executive
         patient = await patientsCollection.findOne({ 
           executiveNumber: senderNumber,
           currentStage: { $nin: ['converted', 'not_converted'] }
@@ -1087,6 +1182,7 @@ app.post('/wati-webhook', async (req, res) => {
               currentStage: STAGES.CONVERTED,
               executiveActionTaken: true,
               convertedAt: new Date(),
+              convertedAtIST: getISTTime(),
               noReplyFollowupCount: 0,
               waitingFollowupCount: 0
             }
@@ -1113,7 +1209,8 @@ app.post('/wati-webhook', async (req, res) => {
               status: 'waiting',
               currentStage: STAGES.WAITING,
               waitingFollowupCount: waitingCount,
-              updatedAt: new Date()
+              updatedAt: new Date(),
+              updatedAtIST: getISTTime()
             }
           }
         );
@@ -1132,7 +1229,8 @@ app.post('/wati-webhook', async (req, res) => {
               status: 'not_converted',
               currentStage: STAGES.NOT_CONVERTED,
               executiveActionTaken: true,
-              notConvertedAt: new Date()
+              notConvertedAt: new Date(),
+              notConvertedAtIST: getISTTime()
             }
           }
         );
@@ -1146,7 +1244,7 @@ app.post('/wati-webhook', async (req, res) => {
     }
     
     // ============================================
-    // ✅ HANDLE CONNECT TO PATIENT (for executives)
+    // ✅ HANDLE CONNECT TO PATIENT
     // ============================================
     else if (text === 'CONNECT TO PATIENT') {
       console.log(`🔘 Executive connect request: ${text} from ${senderNumber}`);
@@ -1166,38 +1264,8 @@ app.post('/wati-webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
-      const existingSession = await chatSessionsCollection.findOne({
-        patientPhone: patient.patientPhone,
-        status: 'active'
-      });
-      
-      let sessionToken = existingSession?.sessionToken;
-      
-      if (!existingSession) {
-        sessionToken = crypto.randomBytes(16).toString('hex');
-        
-        await chatSessionsCollection.insertOne({
-          sessionToken,
-          executiveNumber: senderNumber,
-          patientPhone: patient.patientPhone,
-          patientName: patient.patientName || 'Patient',
-          createdAt: new Date(),
-          lastActivity: new Date(),
-          status: 'active',
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
-        });
-        
-        await patientsCollection.updateOne(
-          { _id: patient._id },
-          { 
-            $set: { 
-              chatSessionToken: sessionToken,
-              currentStage: STAGES.CONNECTED,
-              connectedAt: new Date()
-            }
-          }
-        );
-      }
+      // ✅ Get or create session (permanent)
+      const session = await getOrCreateChatSession(patient);
       
       const welcomeMessage = `Hi, I am UIC Support Team\n\nYour name is: ${patient.patientName || 'Patient'}\nTest: ${patient.testType || 'Not specified'}\nBranch: ${patient.branch || 'Main Branch'}`;
       
@@ -1205,7 +1273,7 @@ app.post('/wati-webhook', async (req, res) => {
         await sendWhatsAppMessageToPatient(senderNumber, patient.patientPhone, welcomeMessage);
         
         await chatMessagesCollection.insertOne({
-          sessionToken: sessionToken,
+          sessionToken: session.sessionToken,
           sender: 'executive',
           text: welcomeMessage,
           timestamp: new Date(),
@@ -1223,17 +1291,16 @@ app.post('/wati-webhook', async (req, res) => {
         patient.branch || 'Branch',
         patient.testDetails || 'Not specified',
         patient.testType || 'Miss Call',
-        sessionToken
+        session.sessionToken
       );
     }
     
     // ============================================
-    // ✅ HANDLE MANAGER QUICK REPLIES (for escalation_manager)
+    // ✅ HANDLE MANAGER QUICK REPLIES
     // ============================================
     else if (text === 'SEND EXECUTIVE PT DETAILS' || text === 'SEND EXECUTIVE') {
       console.log(`🔘 Manager quick reply: ${text} from ${senderNumber}`);
       
-      // Find escalated patient
       const patient = await patientsCollection.findOne({ 
         escalatedToManager: true,
         escalatedResolved: { $ne: true }
@@ -1249,8 +1316,10 @@ app.post('/wati-webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
+      // ✅ Get session (or create if missing)
+      const session = await getOrCreateChatSession(patient);
       const executiveNumber = patient.executiveNumber || getExecutiveNumber(patient.branch);
-      const detailsLink = `${SELF_URL}/executive-chat/${patient.chatSessionToken}`;
+      const detailsLink = `${SELF_URL}/executive-chat/${session.sessionToken}`;
       
       await sendWatiTemplateMessage(
         executiveNumber,
@@ -1380,15 +1449,7 @@ app.get('/executive-chat/:token', async (req, res) => {
     if (patient && patient.chatSessionToken) {
       return res.redirect(`/executive-chat/${patient.chatSessionToken}`);
     }
-    return res.send(`<h2>❌ Invalid or Expired Session</h2><p>Please click "Connect to Patient" again from WhatsApp.</p>`);
-  }
-  
-  if (session.expiresAt && new Date() > new Date(session.expiresAt)) {
-    await chatSessionsCollection.updateOne(
-      { sessionToken: token },
-      { $set: { status: 'expired' } }
-    );
-    return res.send(`<h2>⏰ Session Expired (24 hours)</h2><p>Please click "Connect to Patient" again from WhatsApp.</p>`);
+    return res.send(`<h2>❌ Invalid Session</h2><p>Please click "Connect to Patient" again from WhatsApp.</p>`);
   }
   
   const messages = await chatMessagesCollection
@@ -1417,38 +1478,17 @@ app.get('/executive-chat/:token', async (req, res) => {
         .message { margin: 10px 0; display: flex; }
         .message.patient { justify-content: flex-start; }
         .message.executive { justify-content: flex-end; }
-        .message.system { justify-content: center; }
         .message-content { max-width: 70%; padding: 10px 15px; border-radius: 18px; position: relative; word-wrap: break-word; }
-        .message.patient .message-content { background: white; border-bottom-left-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
-        .message.executive .message-content { background: #dcf8c6; border-bottom-right-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
-        .message.system .message-content { background: #fff3cd; color: #856404; font-style: italic; font-size: 0.9em; text-align: center; max-width: 90%; border-radius: 20px; }
+        .message.patient .message-content { background: white; border-bottom-left-radius: 4px; }
+        .message.executive .message-content { background: #dcf8c6; border-bottom-right-radius: 4px; }
         .message-time { font-size: 0.7em; color: #999; margin-top: 5px; text-align: right; }
-        .message-status { font-size: 0.65em; color: #4caf50; margin-left: 5px; }
         .input-area { display: flex; padding: 15px; background: #f0f0f0; border-top: 1px solid #ddd; }
-        #messageInput { flex: 1; padding: 12px 15px; border: 1px solid #ddd; border-radius: 25px; outline: none; font-size: 1em; font-family: inherit; }
-        #sendBtn { width: 50px; height: 50px; border-radius: 50%; background: #075e54; color: white; border: none; margin-left: 10px; cursor: pointer; font-size: 1.2em; transition: all 0.3s; }
-        #sendBtn:hover { background: #128C7E; transform: scale(1.02); }
+        #messageInput { flex: 1; padding: 12px 15px; border: 1px solid #ddd; border-radius: 25px; outline: none; font-size: 1em; }
+        #sendBtn { width: 50px; height: 50px; border-radius: 50%; background: #075e54; color: white; border: none; margin-left: 10px; cursor: pointer; font-size: 1.2em; }
+        #sendBtn:hover { background: #128C7E; }
         .quick-replies { display: flex; gap: 10px; padding: 10px 15px; background: white; border-top: 1px solid #eee; flex-wrap: wrap; }
-        .quick-reply-btn { background: #f0f0f0; border: 1px solid #ddd; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 0.9em; transition: all 0.2s; }
-        .quick-reply-btn:hover { background: #075e54; color: white; border-color: #075e54; }
-        .blink-red {
-          animation: blink 1s infinite;
-          background-color: #ff6b6b !important;
-          color: white !important;
-          font-weight: bold;
-          padding: 2px 8px;
-          border-radius: 10px;
-          display: inline-block;
-        }
-        @keyframes blink {
-          0% { opacity: 1; background-color: #ff6b6b; }
-          50% { opacity: 0.6; background-color: #ef4444; }
-          100% { opacity: 1; background-color: #ff6b6b; }
-        }
-        .high-miss-call {
-          border-left: 4px solid #ff6b6b;
-          background-color: #fff5f5;
-        }
+        .quick-reply-btn { background: #f0f0f0; border: 1px solid #ddd; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 0.9em; }
+        .quick-reply-btn:hover { background: #075e54; color: white; }
       </style>
     </head>
     <body>
@@ -1463,14 +1503,10 @@ app.get('/executive-chat/:token', async (req, res) => {
         
         <div class="messages-container" id="messages">
           ${messages.map(msg => `
-            <div class="message ${msg.sender === 'executive' ? 'executive' : msg.sender === 'system' ? 'system' : 'patient'}">
+            <div class="message ${msg.sender === 'executive' ? 'executive' : 'patient'}">
               <div class="message-content">
                 ${escapeHtml(msg.text)}
-                <div class="message-time">
-                  ${new Date(msg.timestamp).toLocaleTimeString()}
-                  ${msg.sender === 'executive' && !msg.isWelcomeMessage ? '<span class="message-status">✓ Sent</span>' : ''}
-                  ${msg.isWelcomeMessage ? '<span class="message-status">✓ Auto-sent</span>' : ''}
-                </div>
+                <div class="message-time">${getISTTime(new Date(msg.timestamp))}</div>
               </div>
             </div>
           `).join('')}
@@ -1478,100 +1514,59 @@ app.get('/executive-chat/:token', async (req, res) => {
         
         <div class="quick-replies">
           <button class="quick-reply-btn" onclick="sendQuickReply('Thank you')">🙏 Thank you</button>
-          <button class="quick-reply-btn" onclick="sendQuickReply('Please wait, I am checking')">⏳ Please wait</button>
-          <button class="quick-reply-btn" onclick="sendQuickReply('I will get back to you soon')">📞 Will revert soon</button>
-          <button class="quick-reply-btn" onclick="sendQuickReply('Please send your reports')">📄 Send reports</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('Please wait')">⏳ Please wait</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('I will check')">📞 I will check</button>
         </div>
         
         <div class="input-area">
-          <input type="text" id="messageInput" placeholder="Type your message here..." autocomplete="off">
+          <input type="text" id="messageInput" placeholder="Type your message..." autocomplete="off">
           <button id="sendBtn" onclick="sendMessage()">➤</button>
         </div>
       </div>
       
       <script>
         const sessionToken = '${token}';
-        const messagesDiv = document.getElementById('messages');
-        const messageInput = document.getElementById('messageInput');
-        const sendBtn = document.getElementById('sendBtn');
         let lastMessageCount = ${messages.length};
-        
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
         
         setInterval(checkNewMessages, 2000);
         
         async function checkNewMessages() {
-          try {
-            const response = await fetch('/api/chat-messages/' + sessionToken + '?since=' + lastMessageCount);
-            const data = await response.json();
-            if (data.messages && data.messages.length > 0) {
-              data.messages.forEach(msg => {
-                const messageDiv = document.createElement('div');
-                messageDiv.className = 'message ' + (msg.sender === 'executive' ? 'executive' : msg.sender === 'system' ? 'system' : 'patient');
-                messageDiv.innerHTML = \`
-                  <div class="message-content">
-                    \${escapeHtml(msg.text)}
-                    <div class="message-time">
-                      \${new Date(msg.timestamp).toLocaleTimeString()}
-                      \${msg.sender === 'executive' && !msg.isWelcomeMessage ? '<span class="message-status">✓ Sent</span>' : ''}
-                      \${msg.isWelcomeMessage ? '<span class="message-status">✓ Auto-sent</span>' : ''}
-                    </div>
-                  </div>
-                \`;
-                messagesDiv.appendChild(messageDiv);
-              });
-              lastMessageCount += data.messages.length;
-              messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            }
-          } catch (error) {
-            console.error('Error checking messages:', error);
+          const response = await fetch('/api/chat-messages/' + sessionToken + '?since=' + lastMessageCount);
+          const data = await response.json();
+          if (data.messages && data.messages.length > 0) {
+            data.messages.forEach(msg => {
+              const div = document.createElement('div');
+              div.className = 'message ' + msg.sender;
+              div.innerHTML = '<div class="message-content">' + escapeHtml(msg.text) + '<div class="message-time">' + new Date(msg.timestamp).toLocaleTimeString() + '</div></div>';
+              document.getElementById('messages').appendChild(div);
+            });
+            lastMessageCount += data.messages.length;
+            document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
           }
         }
         
         async function sendMessage() {
-          const text = messageInput.value.trim();
+          const text = document.getElementById('messageInput').value.trim();
           if (!text) return;
           
-          messageInput.disabled = true;
-          sendBtn.disabled = true;
-          sendBtn.textContent = '⏳';
-          
-          try {
-            const response = await fetch('/api/send-to-patient', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ sessionToken, text })
-            });
-            const result = await response.json();
-            if (result.success) {
-              const messageDiv = document.createElement('div');
-              messageDiv.className = 'message executive';
-              messageDiv.innerHTML = \`
-                <div class="message-content">
-                  \${escapeHtml(text)}
-                  <div class="message-time">Just now <span class="message-status">✓ Sent</span></div>
-                </div>
-              \`;
-              messagesDiv.appendChild(messageDiv);
-              lastMessageCount++;
-              messageInput.value = '';
-              messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            } else {
-              alert('Failed to send message: ' + (result.error || 'Unknown error'));
-            }
-          } catch (error) {
-            console.error('Error sending message:', error);
-            alert('Error sending message. Please check your connection.');
-          } finally {
-            messageInput.disabled = false;
-            sendBtn.disabled = false;
-            sendBtn.textContent = '➤';
-            messageInput.focus();
+          const response = await fetch('/api/send-to-patient', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionToken, text })
+          });
+          const result = await response.json();
+          if (result.success) {
+            const div = document.createElement('div');
+            div.className = 'message executive';
+            div.innerHTML = '<div class="message-content">' + escapeHtml(text) + '<div class="message-time">Just now</div></div>';
+            document.getElementById('messages').appendChild(div);
+            document.getElementById('messageInput').value = '';
+            document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
           }
         }
         
         function sendQuickReply(reply) {
-          messageInput.value = reply;
+          document.getElementById('messageInput').value = reply;
           sendMessage();
         }
         
@@ -1580,12 +1575,6 @@ app.get('/executive-chat/:token', async (req, res) => {
           div.textContent = text;
           return div.innerHTML;
         }
-        
-        messageInput.addEventListener('keypress', (e) => {
-          if (e.key === 'Enter') sendMessage();
-        });
-        
-        messageInput.focus();
       </script>
     </body>
     </html>
@@ -1605,7 +1594,7 @@ app.post('/api/send-to-patient', async (req, res) => {
     });
     
     if (!session) {
-      return res.status(404).json({ success: false, error: 'Session not found or expired' });
+      return res.status(404).json({ success: false, error: 'Session not found' });
     }
     
     const result = await sendWhatsAppMessageToPatient(session.executiveNumber, session.patientPhone, text);
@@ -1801,7 +1790,6 @@ app.get('/api/stats', async (req, res) => {
     
     const activeChats = await chatSessionsCollection.countDocuments({ status: 'active' });
     
-    // Follow-up stats
     const followupStats = {
       noReplySent: await followupCollection.countDocuments({ type: 'no_reply', sentAt: { $gte: today } }),
       waitingSent: await followupCollection.countDocuments({ type: 'waiting', sentAt: { $gte: today } }),
@@ -1844,13 +1832,14 @@ app.get('/health', async (req, res) => {
     uptime: process.uptime(),
     mongodb: 'connected',
     template: LEAD_TEMPLATE_NAME,
+    timezone: 'Asia/Kolkata',
+    istTime: getISTTime(),
     followupTemplates: {
       noReply: FOLLOWUP_NO_REPLY_TEMPLATE,
       waiting: FOLLOWUP_WAITING_TEMPLATE,
       escalation: ESCALATION_MANAGER_TEMPLATE,
       report: EXECUTIVE_REPORT_TEMPLATE
-    },
-    time: new Date().toISOString()
+    }
   });
 });
 
@@ -1861,14 +1850,18 @@ app.get('/', (req, res) => {
   res.json({
     message: '🚀 Tata-WATI Executive System',
     version: '10.0.0',
+    timezone: 'Asia/Kolkata (IST)',
+    istTime: getISTTime(),
     template: LEAD_TEMPLATE_NAME,
     features: [
-      'Auto follow-up every 20 min for no reply',
-      'Auto follow-up every hour for waiting status',
-      'Escalation to manager after 4 waiting follow-ups',
-      '2-hour report to manager',
-      'Executive quick replies: Convert Done, Waiting, Not Convert',
-      'Manager quick replies: Send Executive Pt Details'
+      '✅ Permanent chat links (never expire)',
+      '✅ Auto follow-up every 20 min for no reply',
+      '✅ Auto follow-up every hour for waiting status',
+      '✅ Escalation to manager after 4 waiting follow-ups',
+      '✅ 2-hour report to manager',
+      '✅ IST timezone for all messages',
+      '✅ Executive quick replies: Convert Done, Waiting, Not Convert',
+      '✅ Manager quick replies: Send Executive Pt Details'
     ],
     endpoints: {
       executive_chat: '/executive-chat/:token',
@@ -1924,15 +1917,16 @@ async function startServer() {
     app.listen(PORT, HOST, () => {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
+      console.log(`📍 Timezone: Asia/Kolkata (IST)`);
+      console.log(`📍 Current IST Time: ${getISTTime()}`);
       console.log(`📍 Lead Template: ${LEAD_TEMPLATE_NAME}`);
       console.log(`📍 Follow-up Templates:`);
       console.log(`   - No Reply: ${FOLLOWUP_NO_REPLY_TEMPLATE} (every 20 min)`);
       console.log(`   - Waiting: ${FOLLOWUP_WAITING_TEMPLATE} (every hour)`);
       console.log(`   - Escalation: ${ESCALATION_MANAGER_TEMPLATE} (after 4 waiting)`);
       console.log(`   - Report: ${EXECUTIVE_REPORT_TEMPLATE} (every 2 hours)`);
+      console.log(`📍 Chat Sessions: PERMANENT (never expire)`);
       console.log(`📍 Admin Dashboard: ${SELF_URL}/admin`);
-      console.log(`📍 OCR Processing: Active`);
-      console.log(`📍 AI Model: gpt-4o-mini`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
