@@ -1,798 +1,1944 @@
-// dashboard.js - Complete Admin Dashboard with Executive & Manager Tracking
+require('dotenv').config();
 const express = require('express');
-const router = express.Router();
+const axios = require('axios');
+const FormData = require('form-data');
+const cron = require('node-cron');
+const OpenAI = require('openai');
+const { MongoClient, ObjectId } = require('mongodb');
+const crypto = require('crypto');
 
-router.get('/', async (req, res) => {
+const app = express();
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// ============================================
+// CONFIGURATION
+// ============================================
+const PORT = process.env.PORT || 3000;
+const WATI_TOKEN = process.env.WATI_TOKEN;
+const WATI_BASE_URL = process.env.WATI_BASE_URL;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const MONGODB_URI = process.env.MONGODB_URI;
+const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
+const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
+const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
+const DEDUPE_WINDOW_MS = 5000;
+const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
+const LEAD_TEMPLATE_NAME = 'lead_notification_v6';
+
+// ✅ Follow-up Template Names
+const FOLLOWUP_NO_REPLY_TEMPLATE = 'followup_no_reply';
+const FOLLOWUP_WAITING_TEMPLATE = 'following_waiting';  // Note: as per WATI name
+const ESCALATION_MANAGER_TEMPLATE = 'escalation_manager';
+const EXECUTIVE_REPORT_TEMPLATE = 'executive_report';
+
+// OpenAI
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+// Keep-alive
+const SELF_URL = process.env.RENDER_EXTERNAL_URL || 'https://tata-wati-webhook.onrender.com';
+if (SELF_URL) {
+  setInterval(() => {
+    axios.get(`${SELF_URL}/health`).catch(() => {});
+  }, 14 * 60 * 1000);
+}
+
+if (!WATI_TOKEN || !WATI_BASE_URL) {
+  console.error('❌ Missing WATI configuration in .env');
+  process.exit(1);
+}
+
+// ============================================
+// ✅ DATABASE CONNECTION
+// ============================================
+let db;
+let processedCollection;
+let patientsCollection;
+let executivesCollection;
+let missCallsCollection;
+let chatSessionsCollection;
+let chatMessagesCollection;
+let followupCollection;  // ✅ New collection for follow-ups
+
+async function connectDB() {
   try {
-    const patientsCollection = req.patientsCollection;
-    const processedCollection = req.processedCollection;
-    const missCallsCollection = req.missCallsCollection;
-    const chatSessionsCollection = req.chatSessionsCollection;
-    const chatMessagesCollection = req.chatMessagesCollection;
-    const followupCollection = req.followupCollection;
-    const STAGES = req.STAGES;
-    const PORT = req.PORT;
+    console.log('🔄 Connecting to MongoDB...');
     
-    if (!patientsCollection || !processedCollection) {
-      throw new Error('Database collections not available');
+    if (!MONGODB_URI) throw new Error('MONGODB_URI is not defined');
+    
+    const client = new MongoClient(MONGODB_URI);
+    await client.connect();
+    console.log('✅ MongoDB connected successfully');
+    
+    db = client.db('executive_system');
+    processedCollection = db.collection('processed_messages');
+    patientsCollection = db.collection('patients');
+    executivesCollection = db.collection('executives');
+    missCallsCollection = db.collection('miss_calls');
+    chatSessionsCollection = db.collection('chat_sessions');
+    chatMessagesCollection = db.collection('chat_messages');
+    followupCollection = db.collection('followups');  // ✅ New collection
+    
+    // Indexes
+    await processedCollection.createIndex({ messageId: 1 }, { unique: true });
+    await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
+    await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
+    await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
+    await patientsCollection.createIndex({ missCallCount: -1 });
+    await patientsCollection.createIndex({ executiveActionTaken: 1 });
+    await patientsCollection.createIndex({ currentStage: 1 });
+    await chatSessionsCollection.createIndex({ sessionToken: 1 }, { unique: true });
+    await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
+    await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
+    await followupCollection.createIndex({ patientId: 1, type: 1, createdAt: -1 });  // ✅ New index
+    await followupCollection.createIndex({ sentAt: 1 });  // ✅ New index
+    
+    console.log('✅ Indexes created');
+    return true;
+  } catch (error) {
+    console.error('❌ MongoDB connection error:', error.message);
+    throw error;
+  }
+}
+
+// ============================================
+// ✅ EXECUTIVE NUMBERS MAPPING
+// ============================================
+const EXECUTIVES = {
+  'Naroda Team': (process.env.NARODA_EXECUTIVE || '919106959092').toString().trim(),
+  'Usmanpura Team': (process.env.USMANPURA_EXECUTIVE || '917490029085').toString().trim(),
+  'Vadaj Team': (process.env.VADAJ_EXECUTIVE || '918488931212').toString().trim(),
+  'Satellite Team': (process.env.SATELLITE_EXECUTIVE || '917490029085').toString().trim(),
+  'Maninagar Team': (process.env.MANINAGAR_EXECUTIVE || '918488931212').toString().trim(),
+  'Bapunagar Team': (process.env.BAPUNAGAR_EXECUTIVE || '919274682553').toString().trim(),
+  'Juhapura Team': (process.env.JUHAPURA_EXECUTIVE || '919274682553').toString().trim(),
+  'Gandhinagar Team': (process.env.GANDHINAGAR_EXECUTIVE || '919558591212').toString().trim(),
+  'Rajkot Team': (process.env.RAJKOT_EXECUTIVE || '917880261858').toString().trim(),
+  'Sabarmati Team': (process.env.SABARMATI_EXECUTIVE || '917880261858').toString().trim(),
+  'Manager': (process.env.MANAGER_NUMBER || '917698011233').toString().trim()
+};
+
+console.log('✅ Executive numbers loaded');
+
+function getExecutiveNumber(branchName) {
+  const formattedBranch = branchName.charAt(0).toUpperCase() + branchName.slice(1).toLowerCase();
+  const teamName = `${formattedBranch} Team`;
+  const execNumber = EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
+  return execNumber.toString().trim();
+}
+
+// ============================================
+// ✅ HELPER FUNCTIONS
+// ============================================
+function normalizeIndianNumber(number) {
+  if (!number) return '';
+  let digits = String(number).replace(/\D/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.length === 10) return '91' + digits;
+  if (digits.length === 11 && digits.startsWith('0')) return '91' + digits.slice(1);
+  if (digits.length === 12) {
+    if (digits.startsWith('91')) return digits;
+    return '91' + digits.slice(-10);
+  }
+  if (digits.length > 12) return digits.slice(-12);
+  return '';
+}
+
+function normalizeWhatsAppNumber(number) {
+  const normalized = normalizeIndianNumber(number);
+  return normalized || '';
+}
+
+function getCallerNumberFromPayload(body) {
+  return body.caller_id_number || 
+         body["customer_no_with_prefix "] || 
+         body.customer_number_with_prefix ||
+         body.cli || 
+         body.msisdn || 
+         body.mobile || 
+         body.caller_number || 
+         body.from || 
+         body.customer_number ||
+         '';
+}
+
+// ============================================
+// ✅ BRANCH CONFIGURATION
+// ============================================
+const BRANCHES = {
+  [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: { name: 'Naroda', executive: EXECUTIVES['Naroda Team'] },
+  [normalizeIndianNumber('917969690922')]: { name: 'Naroda', executive: EXECUTIVES['Naroda Team'] },
+  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: { name: 'Usmanpura', executive: EXECUTIVES['Usmanpura Team'] },
+  [normalizeIndianNumber('917969690952')]: { name: 'Usmanpura', executive: EXECUTIVES['Usmanpura Team'] },
+  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: { name: 'Vadaj', executive: EXECUTIVES['Vadaj Team'] },
+  [normalizeIndianNumber('917969690917')]: { name: 'Vadaj', executive: EXECUTIVES['Vadaj Team'] },
+  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: { name: 'Satellite', executive: EXECUTIVES['Satellite Team'] },
+  [normalizeIndianNumber('917969690902')]: { name: 'Satellite', executive: EXECUTIVES['Satellite Team'] },
+  [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: { name: 'Maninagar', executive: EXECUTIVES['Maninagar Team'] },
+  [normalizeIndianNumber('917969690904')]: { name: 'Maninagar', executive: EXECUTIVES['Maninagar Team'] },
+  [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: { name: 'Bapunagar', executive: EXECUTIVES['Bapunagar Team'] },
+  [normalizeIndianNumber('917969690906')]: { name: 'Bapunagar', executive: EXECUTIVES['Bapunagar Team'] },
+  [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: { name: 'Juhapura', executive: EXECUTIVES['Juhapura Team'] },
+  [normalizeIndianNumber('917969690909')]: { name: 'Juhapura', executive: EXECUTIVES['Juhapura Team'] },
+  [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: { name: 'Gandhinagar', executive: EXECUTIVES['Gandhinagar Team'] },
+  [normalizeIndianNumber('917969690910')]: { name: 'Gandhinagar', executive: EXECUTIVES['Gandhinagar Team'] },
+  [normalizeIndianNumber('917969690913')]: { name: 'Rajkot', executive: EXECUTIVES['Rajkot Team'] },
+  [normalizeIndianNumber('917969690919')]: { name: 'Rajkot', executive: EXECUTIVES['Rajkot Team'] },
+  [normalizeIndianNumber('917969690942')]: { name: 'Sabarmati', executive: EXECUTIVES['Sabarmati Team'] },
+  [normalizeIndianNumber('917969690905')]: { name: 'Sabarmati', executive: EXECUTIVES['Sabarmati Team'] }
+};
+
+function getBranchByCalledNumber(calledNumber) {
+  const normalized = normalizeIndianNumber(calledNumber);
+  return BRANCHES[normalized] || { name: 'Main Branch', executive: process.env.DEFAULT_EXECUTIVE || '917880261858' };
+}
+
+// ============================================
+// ✅ STAGE TRACKING CONSTANTS
+// ============================================
+const STAGES = {
+  MISS_CALL_RECEIVED: 'miss_call_received',
+  AWAITING_BRANCH: 'awaiting_branch',
+  BRANCH_SELECTED: 'branch_selected',
+  AWAITING_NAME: 'awaiting_name',
+  AWAITING_TEST_TYPE: 'awaiting_test_type',
+  AWAITING_TEST_DETAILS: 'awaiting_test_details',
+  OCR_PROCESSING: 'ocr_processing',
+  OCR_COMPLETED: 'ocr_completed',
+  EXECUTIVE_NOTIFIED: 'executive_notified',
+  CONNECTED: 'connected',
+  CONVERTED: 'converted',
+  WAITING: 'waiting',
+  NOT_CONVERTED: 'not_converted',
+  ESCALATED: 'escalated'
+};
+
+// ============================================
+// ✅ DATABASE FUNCTIONS
+// ============================================
+const recentMissCalls = new Map();
+
+async function isMessageProcessed(messageId) {
+  if (!processedCollection) return false;
+  return !!(await processedCollection.findOne({ messageId }));
+}
+
+async function markMessageProcessed(messageId) {
+  if (!processedCollection) return;
+  await processedCollection.updateOne(
+    { messageId },
+    { $set: { messageId, processedAt: new Date() } },
+    { upsert: true }
+  );
+}
+
+async function updatePatientStage(patientId, stage) {
+  try {
+    const patient = await patientsCollection.findOne({ _id: patientId });
+    if (patient) {
+      await patientsCollection.updateOne(
+        { _id: patientId },
+        { 
+          $set: { currentStage: stage, lastStageUpdate: new Date() },
+          $push: { stageHistory: { stage: stage, timestamp: new Date() } }
+        }
+      );
+    }
+    return true;
+  } catch (error) {
+    console.error('❌ Stage update failed:', error.message);
+    return false;
+  }
+}
+
+// ============================================
+// ✅ ATOMIC NOTIFICATION SENDER
+// ============================================
+async function sendNotificationAtomic(patientId, notificationFunction) {
+  const session = patientsCollection.client.startSession();
+  
+  try {
+    session.startTransaction();
+    
+    const patient = await patientsCollection.findOne({
+      _id: patientId,
+      executiveActionTaken: { $ne: true }
+    }, { session });
+    
+    if (!patient) {
+      console.log(`⏭️ Executive already took action, skipping notification`);
+      await session.abortTransaction();
+      return false;
     }
     
-    // Executive numbers mapping
-    const EXECUTIVES = {
-      'Naroda': process.env.NARODA_EXECUTIVE || '919106959092',
-      'Usmanpura': process.env.USMANPURA_EXECUTIVE || '917490029085',
-      'Vadaj': process.env.VADAJ_EXECUTIVE || '918488931212',
-      'Satellite': process.env.SATELLITE_EXECUTIVE || '917490029085',
-      'Maninagar': process.env.MANINAGAR_EXECUTIVE || '918488931212',
-      'Bapunagar': process.env.BAPUNAGAR_EXECUTIVE || '919274682553',
-      'Juhapura': process.env.JUHAPURA_EXECUTIVE || '919274682553',
-      'Gandhinagar': process.env.GANDHINAGAR_EXECUTIVE || '919558591212',
-      'Rajkot': process.env.RAJKOT_EXECUTIVE || '917880261858',
-      'Sabarmati': process.env.SABARMATI_EXECUTIVE || '917880261858',
-      'Manager': process.env.MANAGER_NUMBER || '917698011233'
-    };
+    await notificationFunction();
     
-    // Get all data
-    const allPatients = await patientsCollection.find({}).toArray();
-    const allMissCalls = await missCallsCollection.find({}).toArray();
-    const allFollowups = await followupCollection.find({}).toArray();
-    const allSessions = await chatSessionsCollection.find({}).toArray();
-    const allMessages = await chatMessagesCollection.find({}).toArray();
-    
-    // ============================================
-    // ✅ DATE RANGES
-    // ============================================
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    
-    const last7Days = new Date(today);
-    last7Days.setDate(last7Days.getDate() - 7);
-    
-    const last30Days = new Date(today);
-    last30Days.setDate(last30Days.getDate() - 30);
-    
-    // ============================================
-    // ✅ PATIENTS WITHOUT REPLY (No executive action)
-    // ============================================
-    const patientsWithoutReply = allPatients.filter(p => 
-      p.executiveActionTaken === false && 
-      p.currentStage !== STAGES?.CONVERTED &&
-      p.currentStage !== STAGES?.NOT_CONVERTED
-    );
-    
-    // ============================================
-    // ✅ PATIENTS WITH SINGLE MISS CALL
-    // ============================================
-    const singleMissCallPatients = allPatients.filter(p => (p.missCallCount || 1) === 1);
-    
-    // ============================================
-    // ✅ TEMPLATE SENT STATUS
-    // ============================================
-    const templateSentPatients = allPatients.filter(p => 
-      p.currentStage === STAGES?.EXECUTIVE_NOTIFIED ||
-      p.currentStage === STAGES?.CONNECTED
-    );
-    
-    // ============================================
-    // ✅ ESCALATED PATIENTS (Waiting for manager action)
-    // ============================================
-    const escalatedPatients = allPatients.filter(p => 
-      p.escalatedToManager === true && 
-      p.escalatedResolved !== true
-    );
-    
-    // ============================================
-    // ✅ HIGH MISS CALL PATIENTS (3+ calls)
-    // ============================================
-    const highMissCallPatients = allPatients.filter(p => (p.missCallCount || 1) >= 3);
-    
-    // ============================================
-    // ✅ WAITING PATIENTS (More than 2 hours)
-    // ============================================
-    const waitingPatients = allPatients.filter(p => {
-      if (p.currentStage !== 'waiting') return false;
-      const waitingTime = Date.now() - new Date(p.updatedAt);
-      return waitingTime > 2 * 60 * 60 * 1000; // 2 hours
+    await session.commitTransaction();
+    return true;
+  } catch (error) {
+    await session.abortTransaction();
+    console.error(`❌ Atomic notification failed:`, error.message);
+    return false;
+  } finally {
+    session.endSession();
+  }
+}
+
+// ============================================
+// ✅ WATI TEMPLATE SENDER
+// ============================================
+async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
+  console.log(`📤 Sending template ${templateName} to ${whatsappNumber}`);
+  
+  const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
+  
+  const payload = {
+    template_name: templateName,
+    broadcast_name: `msg_${Date.now()}`,
+    parameters: parameters || []
+  };
+  
+  try {
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `${WATI_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
     });
     
-    // ============================================
-    // ✅ FOLLOW-UP STATS
-    // ============================================
-    const followupStats = {
-      total: allFollowups.length,
-      noReply: allFollowups.filter(f => f.type === 'no_reply').length,
-      waiting: allFollowups.filter(f => f.type === 'waiting').length,
-      escalation: allFollowups.filter(f => f.type === 'escalation').length,
-      managerAction: allFollowups.filter(f => f.type === 'manager_action').length,
-      today: allFollowups.filter(f => new Date(f.sentAt) >= today).length,
-      last7Days: allFollowups.filter(f => new Date(f.sentAt) >= last7Days).length,
-      last30Days: allFollowups.filter(f => new Date(f.sentAt) >= last30Days).length
-    };
+    console.log(`✅ Template ${templateName} sent successfully`);
+    return response.data;
+  } catch (error) {
+    console.error(`❌ Template ${templateName} send FAILED:`, error.message);
+    throw error;
+  }
+}
+
+// ============================================
+// ✅ SEND SESSION MESSAGE TO PATIENT
+// ============================================
+async function sendWhatsAppMessageToPatient(executiveNumber, patientPhone, message) {
+  console.log(`📤 Sending message from executive to patient ${patientPhone}`);
+  
+  const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${patientPhone}`;
+  
+  const payload = {
+    messageText: message
+  };
+  
+  try {
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Authorization': WATI_TOKEN,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
     
-    // ============================================
-    // ✅ BRANCH WISE MISS CALLS
-    // ============================================
-    const branchMissCalls = {};
-    const branchMissCallsToday = {};
-    const branchMissCallsLast7Days = {};
-    const branchMissCallsLast30Days = {};
+    console.log(`✅ Message sent successfully to patient`);
+    return response.data;
+  } catch (error) {
+    console.error(`❌ Failed to send message:`, error.message);
+    throw error;
+  }
+}
+
+// ============================================
+// ✅ FOLLOW-UP FUNCTIONS
+// ============================================
+
+// 1. No Reply Follow-up (every 20 min)
+async function sendNoReplyFollowup(patient) {
+  console.log(`📢 Sending no-reply followup for ${patient.patientName}`);
+  
+  const executiveNumber = getExecutiveNumber(patient.branch);
+  const chatLink = `${SELF_URL}/executive-chat/${patient.chatSessionToken || ''}`;
+  
+  const parameters = [
+    { name: "1", value: patient.patientName || "Patient" },
+    { name: "2", value: patient.patientPhone },
+    { name: "3", value: patient.branch || "Main Branch" },
+    { name: "4", value: patient.testType || "Not specified" },
+    { name: "5", value: patient.testDetails || "Not specified" },
+    { name: "6", value: patient.missCallTime ? new Date(patient.missCallTime).toLocaleString() : "Not recorded" },
+    { name: "7", value: patient.lastMessageAt ? new Date(patient.lastMessageAt).toLocaleString() : "No message" },
+    { name: "8", value: chatLink }
+  ];
+  
+  await sendWatiTemplateMessage(executiveNumber, FOLLOWUP_NO_REPLY_TEMPLATE, parameters);
+  
+  await followupCollection.insertOne({
+    patientId: patient._id,
+    patientPhone: patient.patientPhone,
+    executiveNumber: executiveNumber,
+    type: 'no_reply',
+    sentAt: new Date(),
+    status: 'sent'
+  });
+  
+  await patientsCollection.updateOne(
+    { _id: patient._id },
+    { 
+      $inc: { noReplyFollowupCount: 1 },
+      $set: { lastNoReplyFollowupAt: new Date() }
+    }
+  );
+}
+
+// 2. Waiting Follow-up (every hour)
+async function sendWaitingFollowup(patient, waitingCount) {
+  console.log(`⏳ Sending waiting followup for ${patient.patientName} (count: ${waitingCount})`);
+  
+  const executiveNumber = getExecutiveNumber(patient.branch);
+  
+  const parameters = [
+    { name: "1", value: patient.patientName || "Patient" },
+    { name: "2", value: patient.patientPhone },
+    { name: "3", value: patient.branch || "Main Branch" },
+    { name: "4", value: patient.testType || "Not specified" },
+    { name: "5", value: patient.testDetails || "Not specified" },
+    { name: "6", value: patient.updatedAt ? new Date(patient.updatedAt).toLocaleString() : "Not recorded" }
+  ];
+  
+  await sendWatiTemplateMessage(executiveNumber, FOLLOWUP_WAITING_TEMPLATE, parameters);
+  
+  await followupCollection.insertOne({
+    patientId: patient._id,
+    patientPhone: patient.patientPhone,
+    executiveNumber: executiveNumber,
+    type: 'waiting',
+    waitingCount: waitingCount,
+    sentAt: new Date(),
+    status: 'sent'
+  });
+  
+  await patientsCollection.updateOne(
+    { _id: patient._id },
+    { 
+      $inc: { waitingFollowupCount: 1 },
+      $set: { lastWaitingFollowupAt: new Date() }
+    }
+  );
+  
+  if (waitingCount >= 4) {
+    await escalateToManager(patient, waitingCount);
+  }
+}
+
+// 3. Escalate to Manager
+async function escalateToManager(patient, waitingCount) {
+  console.log(`🚨 Escalating ${patient.patientName} to manager (waiting: ${waitingCount} times)`);
+  
+  const managerNumber = EXECUTIVES['Manager'] || process.env.MANAGER_NUMBER || '917698011233';
+  const executiveNumber = getExecutiveNumber(patient.branch);
+  const executiveName = Object.keys(EXECUTIVES).find(key => EXECUTIVES[key] === executiveNumber) || 'Unknown Executive';
+  const hoursWaiting = Math.floor((Date.now() - new Date(patient.updatedAt)) / (1000 * 60 * 60));
+  
+  const parameters = [
+    { name: "1", value: patient.patientName || "Patient" },
+    { name: "2", value: patient.patientPhone },
+    { name: "3", value: patient.branch || "Main Branch" },
+    { name: "4", value: patient.testType || "Not specified" },
+    { name: "5", value: patient.testDetails || "Not specified" },
+    { name: "6", value: waitingCount.toString() },
+    { name: "7", value: hoursWaiting.toString() },
+    { name: "8", value: executiveName },
+    { name: "9", value: executiveNumber }
+  ];
+  
+  await sendWatiTemplateMessage(managerNumber, ESCALATION_MANAGER_TEMPLATE, parameters);
+  
+  await followupCollection.insertOne({
+    patientId: patient._id,
+    patientPhone: patient.patientPhone,
+    executiveNumber: executiveNumber,
+    managerNumber: managerNumber,
+    type: 'escalation',
+    waitingCount: waitingCount,
+    hoursWaiting: hoursWaiting,
+    sentAt: new Date(),
+    status: 'escalated'
+  });
+  
+  await patientsCollection.updateOne(
+    { _id: patient._id },
+    { 
+      $set: { 
+        escalatedAt: new Date(), 
+        escalatedCount: waitingCount, 
+        escalatedToManager: true 
+      } 
+    }
+  );
+}
+
+// 4. Two Hour Report
+async function sendTwoHourReport(patient) {
+  console.log(`📊 Sending 2-hour report for ${patient.patientName}`);
+  
+  const managerNumber = EXECUTIVES['Manager'] || process.env.MANAGER_NUMBER || '917698011233';
+  
+  const parameters = [
+    { name: "1", value: patient.patientName || "Patient" },
+    { name: "2", value: patient.patientPhone },
+    { name: "3", value: patient.branch || "Main Branch" },
+    { name: "4", value: patient.testType || "Not specified" },
+    { name: "5", value: patient.testDetails || "Not specified" }
+  ];
+  
+  await sendWatiTemplateMessage(managerNumber, EXECUTIVE_REPORT_TEMPLATE, parameters);
+  
+  await patientsCollection.updateOne(
+    { _id: patient._id },
+    { $set: { lastReportSentAt: new Date() } }
+  );
+}
+
+// ============================================
+// ✅ CRON JOBS FOR FOLLOW-UPS
+// ============================================
+
+// Every 20 minutes - No reply followup
+cron.schedule('*/20 * * * *', async () => {
+  console.log('🔄 Running no-reply followup check...');
+  try {
+    const patients = await patientsCollection.find({
+      executiveActionTaken: false,
+      status: { $in: ['pending', 'awaiting_branch', 'branch_selected'] },
+      currentStage: { $nin: ['converted', 'not_converted'] },
+      createdAt: { $lt: new Date(Date.now() - 20 * 60 * 1000) }
+    }).toArray();
     
-    for (const call of allMissCalls) {
-      const branch = call.branch || 'Unknown';
-      const callDate = new Date(call.createdAt);
+    for (const patient of patients) {
+      const lastFollowup = await followupCollection.findOne({
+        patientId: patient._id,
+        type: 'no_reply',
+        sentAt: { $gt: new Date(Date.now() - 20 * 60 * 1000) }
+      });
+      if (!lastFollowup) {
+        await sendNoReplyFollowup(patient);
+      }
+    }
+  } catch (error) {
+    console.error('No-reply followup error:', error);
+  }
+});
+
+// Every hour - Waiting followup
+cron.schedule('0 * * * *', async () => {
+  console.log('🔄 Running waiting followup check...');
+  try {
+    const patients = await patientsCollection.find({
+      status: 'waiting',
+      currentStage: 'waiting',
+      waitingFollowupCount: { $lt: 4 }
+    }).toArray();
+    
+    for (const patient of patients) {
+      const waitingCount = (patient.waitingFollowupCount || 0) + 1;
+      await sendWaitingFollowup(patient, waitingCount);
+    }
+  } catch (error) {
+    console.error('Waiting followup error:', error);
+  }
+});
+
+// Every 2 hours - Executive report
+cron.schedule('0 */2 * * *', async () => {
+  console.log('📊 Running 2-hour report check...');
+  try {
+    const patients = await patientsCollection.find({
+      executiveActionTaken: false,
+      currentStage: { $nin: ['converted', 'not_converted'] },
+      $or: [
+        { lastReportSentAt: { $lt: new Date(Date.now() - 2 * 60 * 60 * 1000) } },
+        { lastReportSentAt: { $exists: false } }
+      ]
+    }).toArray();
+    
+    for (const patient of patients) {
+      await sendTwoHourReport(patient);
+    }
+  } catch (error) {
+    console.error('Report error:', error);
+  }
+});
+
+// ============================================
+// ✅ LEAD NOTIFICATION
+// ============================================
+async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
+  console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
+  
+  const welcomeText = `Hi ${patientName}, I am from UIC Support Team.
+
+Your Details:
+Name: ${patientName}
+Test: ${testType} - ${testDetails}
+Branch: ${branch}
+Miss Call Time: ${new Date().toLocaleString()}
+
+How can I help you?`;
+  
+  const whatsappLink = `https://wa.me/${patientPhone}?text=${encodeURIComponent(welcomeText)}`;
+  
+  const parameters = [
+    { name: "1", value: patientName || "Miss Call Patient" },
+    { name: "2", value: patientPhone },
+    { name: "3", value: branch },
+    { name: "4", value: testDetails || "Not specified" },
+    { name: "5", value: testType || "Miss Call" },
+    { name: "6", value: new Date().toLocaleString() },
+    { name: "7", value: whatsappLink }
+  ];
+  
+  return await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
+}
+
+// ============================================
+// ✅ HELPER FUNCTION TO GET FILE URL
+// ============================================
+function getFileUrlFromMessage(msg) {
+  return msg.mediaUrl || 
+         msg.url || 
+         msg.image?.url || 
+         msg.media?.url ||
+         msg.document?.url ||
+         msg.file?.url ||
+         msg.attachments?.[0]?.url ||
+         null;
+}
+
+// ============================================
+// ✅ OPENAI OCR FUNCTION
+// ============================================
+async function extractWithOpenAI(fileUrl) {
+  console.log(`🔍 Performing OCR on: ${fileUrl.substring(0, 50)}...`);
+  
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Extract patient name and medical tests from this prescription image/PDF. Return ONLY JSON with keys: patientName, tests. If name not found, use 'Unknown'. If tests not found, use 'Not specified'."
+            },
+            {
+              type: "image_url",
+              image_url: { url: fileUrl }
+            }
+          ]
+        }
+      ],
+      max_tokens: 300
+    });
+    
+    const content = response.choices[0].message.content;
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        patientName: parsed.patientName || 'Unknown',
+        tests: parsed.tests || 'Not specified'
+      };
+    }
+  } catch (error) {
+    console.error('❌ OCR failed:', error.message);
+  }
+  
+  return { patientName: 'Unknown', tests: 'Not specified' };
+}
+
+// ============================================
+// ✅ PROCESS FILE UPLOAD WITH OCR
+// ============================================
+async function processFileUpload(messageId, patientName, branch, fileUrl, patientPhone) {
+  console.log(`\n📎 Processing file upload for ${patientPhone}`);
+  
+  try {
+    const patient = await patientsCollection.findOne({
+      patientPhone: patientPhone,
+      status: { $in: ['awaiting_branch', 'pending', 'waiting', 'branch_selected', 'awaiting_name', 'awaiting_test_type', 'awaiting_test_details'] }
+    }, { 
+      sort: { createdAt: -1 },
+      limit: 1 
+    });
+    
+    if (!patient) {
+      console.log(`❌ No active patient found for ${patientPhone}`);
+      await markMessageProcessed(messageId);
+      return false;
+    }
+    
+    await updatePatientStage(patient._id, STAGES.OCR_PROCESSING);
+    
+    const finalBranch = patient.branch || branch;
+    const executiveNumber = getExecutiveNumber(finalBranch);
+    
+    const extracted = await extractWithOpenAI(fileUrl);
+    
+    await updatePatientStage(patient._id, STAGES.OCR_COMPLETED);
+    
+    await patientsCollection.updateOne(
+      { _id: patient._id },
+      {
+        $set: {
+          patientName: extracted.patientName !== 'Unknown' ? extracted.patientName : (patient.patientName || patientName),
+          testDetails: extracted.tests,
+          fileUrl: fileUrl,
+          updatedAt: new Date()
+        }
+      }
+    );
+    
+    let sessionTokenForLink = patient.chatSessionToken;
+    if (!sessionTokenForLink) {
+      sessionTokenForLink = crypto.randomBytes(16).toString('hex');
+      await patientsCollection.updateOne(
+        { _id: patient._id },
+        { $set: { chatSessionToken: sessionTokenForLink } }
+      );
+    }
+    
+    if (!patient.executiveActionTaken && !patient.notificationSent) {
+      const finalPatientName = extracted.patientName !== 'Unknown' ? extracted.patientName : (patient.patientName || 'Miss Call Patient');
+      const finalTestDetails = extracted.tests !== 'Not specified' ? extracted.tests : (patient.testDetails || 'Not specified');
       
-      branchMissCalls[branch] = (branchMissCalls[branch] || 0) + 1;
-      if (callDate >= today) branchMissCallsToday[branch] = (branchMissCallsToday[branch] || 0) + 1;
-      if (callDate >= last7Days) branchMissCallsLast7Days[branch] = (branchMissCallsLast7Days[branch] || 0) + 1;
-      if (callDate >= last30Days) branchMissCallsLast30Days[branch] = (branchMissCallsLast30Days[branch] || 0) + 1;
+      await sendNotificationAtomic(patient._id, () =>
+        sendLeadNotification(
+          executiveNumber,
+          finalPatientName,
+          patientPhone,
+          finalBranch,
+          finalTestDetails,
+          'Upload',
+          sessionTokenForLink
+        )
+      );
+    }
+    
+    return true;
+    
+  } catch (error) {
+    console.error(`❌ processFileUpload error:`, error);
+    return false;
+  } finally {
+    await markMessageProcessed(messageId);
+  }
+}
+
+// ============================================
+// ✅ HYBRID CLASSIFICATION ENGINE
+// ============================================
+async function classifyMessage(messageText, patientContext = {}) {
+  const upperMsg = messageText.toUpperCase();
+  const wordCount = messageText.split(' ').length;
+  
+  const commands = ['UPLOAD PRESCRIPTION', 'MANUAL ENTRY', 'CHANGE BRANCH', 'CONNECT TO PATIENT', 'CONVERT DONE', 'WAITING', 'NOT CONVERT'];
+  for (const cmd of commands) {
+    if (upperMsg.includes(cmd)) {
+      return { category: 'IGNORE', value: messageText, confidence: 1.0, reason: 'Command detected' };
+    }
+  }
+  
+  if (patientContext.currentStage === STAGES.AWAITING_NAME) {
+    return { category: 'PATIENT_NAME', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_name' };
+  }
+  if (patientContext.currentStage === STAGES.AWAITING_TEST_TYPE) {
+    return { category: 'TEST_TYPE', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_test_type' };
+  }
+  if (patientContext.currentStage === STAGES.AWAITING_TEST_DETAILS) {
+    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_test_details' };
+  }
+  
+  const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY'];
+  const bodyParts = ['KNEE', 'SPINE', 'ABDOMEN', 'CHEST', 'BRAIN', 'HEAD', 'NECK', 'PELVIS', 'HIP', 'SHOULDER', 'WRIST', 'ANKLE'];
+  
+  let hasTestKeyword = false;
+  let hasBodyPart = false;
+  
+  for (const kw of testKeywords) {
+    if (upperMsg.includes(kw)) {
+      hasTestKeyword = true;
+      break;
+    }
+  }
+  
+  for (const bp of bodyParts) {
+    if (upperMsg.includes(bp)) {
+      hasBodyPart = true;
+      break;
+    }
+  }
+  
+  const nameRegex = /^[A-Za-z\s]{2,30}$/;
+  if (nameRegex.test(messageText) && !hasTestKeyword && wordCount <= 3) {
+    return { category: 'PATIENT_NAME', value: messageText, confidence: 0.9, reason: 'Name pattern match' };
+  }
+  
+  if (hasTestKeyword && hasBodyPart) {
+    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.98, reason: 'Test + body part' };
+  }
+  
+  if (hasTestKeyword && wordCount > 1) {
+    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.85, reason: 'Test keyword with details' };
+  }
+  
+  if (hasTestKeyword && wordCount === 1) {
+    return { category: 'TEST_TYPE', value: messageText, confidence: 0.99, reason: 'Single word test type' };
+  }
+  
+  if (!hasTestKeyword && wordCount > 2) {
+    try {
+      const prompt = `Classify this patient message: "${messageText}"
+Categories: PATIENT_NAME, TEST_TYPE, TEST_DETAILS, IGNORE
+Return JSON with category and confidence (0-1).`;
+      
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "You classify medical patient messages accurately." },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 100
+      });
+      
+      const content = response.choices[0].message.content;
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const result = JSON.parse(jsonMatch[0]);
+        if (result.confidence > 0.7) {
+          return result;
+        }
+      }
+    } catch (error) {
+      console.error('❌ AI fallback error:', error.message);
+    }
+  }
+  
+  return { category: 'IGNORE', value: messageText, confidence: 0.5, reason: 'Default ignore' };
+}
+
+// ============================================
+// ✅ TATA TELE WEBHOOK
+// ============================================
+app.post('/tata-misscall-whatsapp', async (req, res) => {
+  try {
+    console.log('\n📞 TATA TELE WEBHOOK RECEIVED');
+    
+    const apiKey = req.headers['x-api-key'];
+    if (apiKey !== process.env.TATA_SECRET) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    const callerNumberRaw = getCallerNumberFromPayload(req.body);
+    if (!callerNumberRaw) return res.status(400).json({ error: 'Caller number not found' });
+    
+    const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
+    const calledNumber = req.body.call_to_number || '';
+    const branch = getBranchByCalledNumber(calledNumber);
+    
+    console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
+    
+    await missCallsCollection.insertOne({
+      phoneNumber: whatsappNumber,
+      calledNumber: calledNumber,
+      branch: branch.name,
+      createdAt: new Date()
+    });
+    
+    const chatId = `${whatsappNumber}_${branch.name}`;
+    
+    const existingPatient = await patientsCollection.findOne({ patientPhone: whatsappNumber });
+    
+    if (existingPatient) {
+      await patientsCollection.updateOne(
+        { _id: existingPatient._id },
+        { 
+          $set: { 
+            missCallTime: new Date(),
+            updatedAt: new Date(),
+            branch: branch.name,
+            status: 'awaiting_branch',
+            currentStage: STAGES.AWAITING_BRANCH
+          },
+          $inc: { missCallCount: 1 }
+        }
+      );
+      console.log(`✅ Patient updated, total miss calls: ${(existingPatient.missCallCount || 0) + 1}`);
+    } else {
+      await patientsCollection.insertOne({
+        chatId,
+        patientName: 'Miss Call Patient',
+        patientPhone: whatsappNumber,
+        branch: branch.name,
+        testType: null,
+        testDetails: null,
+        patientMessages: [],
+        sourceType: 'Miss Call',
+        executiveNumber: branch.executive,
+        priority: 'low',
+        status: 'awaiting_branch',
+        notificationSent: false,
+        executiveActionTaken: false,
+        missCallCount: 1,
+        missCallTime: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        currentStage: STAGES.AWAITING_BRANCH,
+        stageHistory: [{ stage: STAGES.AWAITING_BRANCH, timestamp: new Date() }]
+      });
+      console.log(`✅ New patient created`);
+    }
+    
+    try {
+      await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [
+        { name: '1', value: branch.name }
+      ]);
+      console.log(`✅ Welcome template sent to customer ${whatsappNumber}`);
+    } catch (templateError) {
+      console.error('❌ Failed to send welcome template:', templateError.message);
+    }
+    
+    res.json({ success: true, whatsappNumber, branch: branch.name });
+    
+  } catch (error) {
+    console.error('❌ Tata Tele error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// ✅ WATI WEBHOOK - COMPLETE (WITH FOLLOW-UP HANDLERS)
+// ============================================
+app.post('/wati-webhook', async (req, res) => {
+  try {
+    console.log('\n📨 WATI WEBHOOK RECEIVED');
+    
+    const msg = req.body;
+    const msgId = msg.id || msg.messageId;
+    if (!msgId) return res.sendStatus(200);
+    
+    if (await isMessageProcessed(msgId)) return res.sendStatus(200);
+    
+    const senderNumber = msg.whatsappNumber || msg.from || msg.waId;
+    if (!senderNumber) {
+      await markMessageProcessed(msgId);
+      return res.sendStatus(200);
+    }
+    
+    let messageText = '';
+    let messageType = msg.type || 'unknown';
+    
+    if (msg.text) {
+      messageText = msg.text;
+    } else if (msg.body) {
+      messageText = msg.body;
+    } else if (msg.type === 'interactive' && msg.listReply && msg.listReply.title) {
+      messageText = msg.listReply.title;
+      console.log(`📋 Interactive list reply: ${messageText}`);
+    } else if (msg.interactiveButtonReply && msg.interactiveButtonReply.title) {
+      messageText = msg.interactiveButtonReply.title;
+    } else if (msg.buttonReply && msg.buttonReply.title) {
+      messageText = msg.buttonReply.title;
+    }
+    
+    const text = (messageText || '').toUpperCase().trim();
+    console.log(`📝 Processed message: "${text}" from ${senderNumber} (type: ${messageType})`);
+    
+    // FILE/IMAGE HANDLING
+    if (msg.type === 'image' || msg.messageType === 'image' || msg.image || msg.document || msg.file || msg.media) {
+      console.log(`📎 File/Image detected from ${senderNumber}`);
+      
+      const fileUrl = getFileUrlFromMessage(msg);
+      
+      if (fileUrl) {
+        const patient = await patientsCollection.findOne({ patientPhone: senderNumber });
+        if (patient) {
+          const branch = patient.branch || 'Naroda';
+          await processFileUpload(msgId, patient.patientName || 'Patient', branch, fileUrl, senderNumber);
+        }
+      }
+      
+      await markMessageProcessed(msgId);
+      return res.sendStatus(200);
+    }
+    
+    // HANDLE PATIENT REPLIES
+    const activeSession = await chatSessionsCollection.findOne({
+      patientPhone: senderNumber,
+      status: 'active'
+    });
+    
+    if (activeSession && text && !text.endsWith('_BRANCH')) {
+      await chatMessagesCollection.insertOne({
+        sessionToken: activeSession.sessionToken,
+        sender: 'patient',
+        text: messageText,
+        timestamp: new Date(),
+        watiMessageId: msg.id
+      });
+      
+      await chatSessionsCollection.updateOne(
+        { sessionToken: activeSession.sessionToken },
+        { $set: { lastActivity: new Date() } }
+      );
+    }
+    
+    // HYBRID CLASSIFICATION (for patients)
+    if (!text.endsWith('_BRANCH') && !text.startsWith('CONNECT') && !text.startsWith('CONVERT') && !text.startsWith('WAITING') && !text.startsWith('NOT')) {
+      
+      let patient = await patientsCollection.findOne({ patientPhone: senderNumber });
+      
+      if (!patient) {
+        const result = await patientsCollection.insertOne({
+          patientPhone: senderNumber,
+          patientName: 'Miss Call Patient',
+          patientMessages: [],
+          testType: null,
+          testDetails: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          currentStage: STAGES.AWAITING_BRANCH
+        });
+        patient = { _id: result.insertedId };
+      }
+      
+      await patientsCollection.updateOne(
+        { _id: patient._id },
+        {
+          $push: { patientMessages: { text: messageText, type: messageType, timestamp: new Date() } },
+          $set: { lastMessageAt: new Date() }
+        }
+      );
+      
+      const context = {
+        currentStage: patient.currentStage,
+        patientName: patient.patientName,
+        testType: patient.testType,
+        testDetails: patient.testDetails
+      };
+      
+      const result = await classifyMessage(messageText, context);
+      
+      if (result.confidence >= 0.8) {
+        if (result.category === 'PATIENT_NAME') {
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { patientName: result.value, currentStage: STAGES.AWAITING_TEST_TYPE } }
+          );
+        }
+        else if (result.category === 'TEST_TYPE') {
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { testType: result.value, currentStage: STAGES.AWAITING_TEST_DETAILS } }
+          );
+        }
+        else if (result.category === 'TEST_DETAILS') {
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { testDetails: result.value, currentStage: STAGES.AWAITING_BRANCH } }
+          );
+        }
+      }
     }
     
     // ============================================
-    // ✅ BRANCH WISE TEST DISTRIBUTION & ALERTS
+    // ✅ HANDLE EXECUTIVE QUICK REPLIES (Convert Done, Waiting, Not Convert)
     // ============================================
-    const branchTests = {};
-    for (const patient of allPatients) {
-      const branch = patient.branch || 'Unknown';
-      if (!branchTests[branch]) {
-        branchTests[branch] = {
-          MRI: 0, CT: 0, 'X-RAY': 0, USG: 0, OTHER: 0,
-          total: 0, converted: 0, pending: 0, waiting: 0, notConverted: 0,
-          patientsWithNoReply: 0, singleMissCall: 0, highMissCall: 0,
-          escalated: 0, waitingLong: 0
-        };
+    if (text === 'CONVERT DONE' || text === 'WAITING' || text === 'NOT CONVERT') {
+      console.log(`🔘 Executive quick reply: ${text} from ${senderNumber}`);
+      
+      // Find patient assigned to this executive
+      let patient = await patientsCollection.findOne({ 
+        executiveNumber: senderNumber,
+        status: { $in: ['pending', 'awaiting_branch', 'branch_selected', 'executive_notified', 'waiting'] }
+      });
+      
+      if (!patient) {
+        // Try to find any waiting patient for this executive
+        patient = await patientsCollection.findOne({ 
+          executiveNumber: senderNumber,
+          currentStage: { $nin: ['converted', 'not_converted'] }
+        });
       }
       
-      const testType = patient.testType || patient.testDetails || '';
-      const upperTest = testType.toUpperCase();
+      if (!patient) {
+        await sendWatiTemplateMessage(
+          senderNumber,
+          'text_message',
+          [{ name: "1", value: "❌ No active patient found for you." }]
+        );
+        await markMessageProcessed(msgId);
+        return res.sendStatus(200);
+      }
       
-      if (upperTest.includes('MRI')) branchTests[branch].MRI++;
-      else if (upperTest.includes('CT')) branchTests[branch].CT++;
-      else if (upperTest.includes('X-RAY') || upperTest.includes('XRAY')) branchTests[branch]['X-RAY']++;
-      else if (upperTest.includes('USG') || upperTest.includes('ULTRASOUND')) branchTests[branch].USG++;
-      else branchTests[branch].OTHER++;
-      
-      branchTests[branch].total++;
-      
-      if (patient.status === 'converted') branchTests[branch].converted++;
-      else if (patient.status === 'pending') branchTests[branch].pending++;
-      else if (patient.status === 'waiting') branchTests[branch].waiting++;
-      else if (patient.status === 'not_converted') branchTests[branch].notConverted++;
-      
-      if (patient.executiveActionTaken === false) branchTests[branch].patientsWithNoReply++;
-      if ((patient.missCallCount || 1) === 1) branchTests[branch].singleMissCall++;
-      if ((patient.missCallCount || 1) >= 3) branchTests[branch].highMissCall++;
-      if (patient.escalatedToManager === true) branchTests[branch].escalated++;
-      
-      // Check waiting > 2 hours
-      if (patient.currentStage === 'waiting') {
-        const waitingTime = Date.now() - new Date(patient.updatedAt);
-        if (waitingTime > 2 * 60 * 60 * 1000) branchTests[branch].waitingLong++;
+      if (text === 'CONVERT DONE') {
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $set: { 
+              status: 'converted',
+              currentStage: STAGES.CONVERTED,
+              executiveActionTaken: true,
+              convertedAt: new Date(),
+              noReplyFollowupCount: 0,
+              waitingFollowupCount: 0
+            }
+          }
+        );
+        
+        await followupCollection.updateMany(
+          { patientId: patient._id, status: 'sent' },
+          { $set: { status: 'resolved', resolvedAt: new Date() } }
+        );
+        
+        await sendWatiTemplateMessage(
+          senderNumber,
+          'text_message',
+          [{ name: "1", value: "✅ Patient marked as converted. Thank you!" }]
+        );
+      }
+      else if (text === 'WAITING') {
+        const waitingCount = (patient.waitingFollowupCount || 0) + 1;
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $set: { 
+              status: 'waiting',
+              currentStage: STAGES.WAITING,
+              waitingFollowupCount: waitingCount,
+              updatedAt: new Date()
+            }
+          }
+        );
+        
+        await sendWatiTemplateMessage(
+          senderNumber,
+          'text_message',
+          [{ name: "1", value: "⏳ Patient marked as waiting. We'll follow up." }]
+        );
+      }
+      else if (text === 'NOT CONVERT') {
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $set: { 
+              status: 'not_converted',
+              currentStage: STAGES.NOT_CONVERTED,
+              executiveActionTaken: true,
+              notConvertedAt: new Date()
+            }
+          }
+        );
+        
+        await sendWatiTemplateMessage(
+          senderNumber,
+          'text_message',
+          [{ name: "1", value: "❌ Patient marked as not converted." }]
+        );
       }
     }
     
     // ============================================
-    // ✅ DAILY MISS CALLS (Last 7 Days)
+    // ✅ HANDLE CONNECT TO PATIENT (for executives)
     // ============================================
-    const dailyMissCalls = [];
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date(today);
-      date.setDate(date.getDate() - i);
-      date.setHours(0, 0, 0, 0);
-      const nextDate = new Date(date);
-      nextDate.setDate(nextDate.getDate() + 1);
+    else if (text === 'CONNECT TO PATIENT') {
+      console.log(`🔘 Executive connect request: ${text} from ${senderNumber}`);
       
-      const count = allMissCalls.filter(call => {
-        const callDate = new Date(call.createdAt);
-        return callDate >= date && callDate < nextDate;
-      }).length;
+      const patient = await patientsCollection.findOne({ 
+        executiveNumber: senderNumber,
+        status: { $in: ['pending', 'awaiting_branch', 'branch_selected', 'executive_notified'] }
+      });
       
-      dailyMissCalls.push({
-        date: date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
-        count: count
+      if (!patient) {
+        await sendWatiTemplateMessage(
+          senderNumber,
+          'text_message',
+          [{ name: "1", value: "❌ No patient assigned to you." }]
+        );
+        await markMessageProcessed(msgId);
+        return res.sendStatus(200);
+      }
+      
+      const existingSession = await chatSessionsCollection.findOne({
+        patientPhone: patient.patientPhone,
+        status: 'active'
+      });
+      
+      let sessionToken = existingSession?.sessionToken;
+      
+      if (!existingSession) {
+        sessionToken = crypto.randomBytes(16).toString('hex');
+        
+        await chatSessionsCollection.insertOne({
+          sessionToken,
+          executiveNumber: senderNumber,
+          patientPhone: patient.patientPhone,
+          patientName: patient.patientName || 'Patient',
+          createdAt: new Date(),
+          lastActivity: new Date(),
+          status: 'active',
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+        });
+        
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $set: { 
+              chatSessionToken: sessionToken,
+              currentStage: STAGES.CONNECTED,
+              connectedAt: new Date()
+            }
+          }
+        );
+      }
+      
+      const welcomeMessage = `Hi, I am UIC Support Team\n\nYour name is: ${patient.patientName || 'Patient'}\nTest: ${patient.testType || 'Not specified'}\nBranch: ${patient.branch || 'Main Branch'}`;
+      
+      try {
+        await sendWhatsAppMessageToPatient(senderNumber, patient.patientPhone, welcomeMessage);
+        
+        await chatMessagesCollection.insertOne({
+          sessionToken: sessionToken,
+          sender: 'executive',
+          text: welcomeMessage,
+          timestamp: new Date(),
+          isWelcomeMessage: true
+        });
+        
+      } catch (error) {
+        console.error(`❌ Failed to send welcome message:`, error.message);
+      }
+      
+      await sendLeadNotification(
+        senderNumber,
+        patient.patientName || 'Patient',
+        patient.patientPhone,
+        patient.branch || 'Branch',
+        patient.testDetails || 'Not specified',
+        patient.testType || 'Miss Call',
+        sessionToken
+      );
+    }
+    
+    // ============================================
+    // ✅ HANDLE MANAGER QUICK REPLIES (for escalation_manager)
+    // ============================================
+    else if (text === 'SEND EXECUTIVE PT DETAILS' || text === 'SEND EXECUTIVE') {
+      console.log(`🔘 Manager quick reply: ${text} from ${senderNumber}`);
+      
+      // Find escalated patient
+      const patient = await patientsCollection.findOne({ 
+        escalatedToManager: true,
+        escalatedResolved: { $ne: true }
+      });
+      
+      if (!patient) {
+        await sendWatiTemplateMessage(
+          senderNumber,
+          'text_message',
+          [{ name: "1", value: "❌ No escalated patient found." }]
+        );
+        await markMessageProcessed(msgId);
+        return res.sendStatus(200);
+      }
+      
+      const executiveNumber = patient.executiveNumber || getExecutiveNumber(patient.branch);
+      const detailsLink = `${SELF_URL}/executive-chat/${patient.chatSessionToken}`;
+      
+      await sendWatiTemplateMessage(
+        executiveNumber,
+        'text_message',
+        [{ name: "1", value: `📋 Patient details: ${detailsLink}\n\nPatient: ${patient.patientName}\nPhone: ${patient.patientPhone}\nTest: ${patient.testType} - ${patient.testDetails}` }]
+      );
+      
+      await sendWatiTemplateMessage(
+        senderNumber,
+        'text_message',
+        [{ name: "1", value: `✅ Patient details sent to executive ${executiveNumber}` }]
+      );
+      
+      await followupCollection.insertOne({
+        patientId: patient._id,
+        managerNumber: senderNumber,
+        executiveNumber: executiveNumber,
+        type: 'manager_action',
+        action: 'send_details',
+        sentAt: new Date()
       });
     }
     
     // ============================================
-    // ✅ BRANCH CONVERSION RATE
+    // ✅ HANDLE _BRANCH MESSAGES
     // ============================================
-    const branchConversion = {};
-    for (const [branch, tests] of Object.entries(branchTests)) {
-      branchConversion[branch] = {
-        rate: tests.total > 0 ? ((tests.converted / tests.total) * 100).toFixed(1) : 0,
-        converted: tests.converted,
-        total: tests.total
-      };
-    }
-    
-    // ============================================
-    // ✅ EXECUTIVE WISE DETAILED STATS
-    // ============================================
-    const executiveStats = {};
-    const executivePatients = {};
-    
-    for (const [branch, execNumber] of Object.entries(EXECUTIVES)) {
-      if (branch === 'Manager') continue;
-      executiveStats[branch] = {
-        execNumber: execNumber,
-        total: 0,
-        pending: 0,
-        converted: 0,
-        waiting: 0,
-        notConverted: 0,
-        awaitingBranch: 0,
-        branchSelected: 0,
-        awaitingName: 0,
-        awaitingTestType: 0,
-        awaitingTestDetails: 0,
-        executiveNotified: 0,
-        connected: 0,
-        noReply: 0,
-        singleMissCall: 0,
-        highMissCall: 0,
-        templateSent: 0,
-        escalated: 0,
-        waitingLong: 0
-      };
-      executivePatients[branch] = [];
-    }
-    
-    for (const patient of allPatients) {
-      const branch = patient.branch;
-      if (branch && EXECUTIVES[branch] && branch !== 'Manager') {
-        executiveStats[branch].total++;
-        
-        // Status wise
-        if (patient.status === 'pending') executiveStats[branch].pending++;
-        else if (patient.status === 'converted') executiveStats[branch].converted++;
-        else if (patient.status === 'waiting') executiveStats[branch].waiting++;
-        else if (patient.status === 'not_converted') executiveStats[branch].notConverted++;
-        
-        // Stage wise
-        if (patient.currentStage === 'awaiting_branch') executiveStats[branch].awaitingBranch++;
-        else if (patient.currentStage === 'branch_selected') executiveStats[branch].branchSelected++;
-        else if (patient.currentStage === 'awaiting_name') executiveStats[branch].awaitingName++;
-        else if (patient.currentStage === 'awaiting_test_type') executiveStats[branch].awaitingTestType++;
-        else if (patient.currentStage === 'awaiting_test_details') executiveStats[branch].awaitingTestDetails++;
-        else if (patient.currentStage === 'executive_notified') executiveStats[branch].executiveNotified++;
-        else if (patient.currentStage === 'connected') executiveStats[branch].connected++;
-        
-        // Special flags
-        if (patient.executiveActionTaken === false) executiveStats[branch].noReply++;
-        if ((patient.missCallCount || 1) === 1) executiveStats[branch].singleMissCall++;
-        if ((patient.missCallCount || 1) >= 3) executiveStats[branch].highMissCall++;
-        if (patient.currentStage === 'executive_notified' || patient.currentStage === 'connected') executiveStats[branch].templateSent++;
-        if (patient.escalatedToManager === true) executiveStats[branch].escalated++;
-        
-        // Check waiting > 2 hours
-        if (patient.currentStage === 'waiting') {
-          const waitingTime = Date.now() - new Date(patient.updatedAt);
-          if (waitingTime > 2 * 60 * 60 * 1000) executiveStats[branch].waitingLong++;
-        }
-        
-        executivePatients[branch].push({
-          patientName: patient.patientName || 'Unknown',
-          patientPhone: patient.patientPhone,
-          testType: patient.testType,
-          testDetails: patient.testDetails,
-          status: patient.status,
-          currentStage: patient.currentStage,
-          createdAt: patient.createdAt,
-          missCallCount: patient.missCallCount || 1,
-          executiveActionTaken: patient.executiveActionTaken,
-          lastMessageAt: patient.lastMessageAt,
-          updatedAt: patient.updatedAt,
-          escalatedToManager: patient.escalatedToManager,
-          waitingFollowupCount: patient.waitingFollowupCount || 0,
-          noReplyFollowupCount: patient.noReplyFollowupCount || 0
+    else if (text.endsWith('_BRANCH')) {
+      const branchUpper = text.replace('_BRANCH', '');
+      const branch = branchUpper.charAt(0).toUpperCase() + branchUpper.slice(1).toLowerCase();
+      
+      console.log(`🎯 BRANCH DETECTED: ${branch}`);
+      
+      const whatsappNumber = normalizeWhatsAppNumber(senderNumber);
+      const executiveNumber = getExecutiveNumber(branchUpper);
+      
+      let patient = await patientsCollection.findOne({ patientPhone: whatsappNumber });
+      
+      if (!patient) {
+        const result = await patientsCollection.insertOne({
+          chatId: `${whatsappNumber}_${branch}`,
+          patientName: 'Miss Call Patient',
+          patientPhone: whatsappNumber,
+          branch: branch,
+          testType: null,
+          testDetails: null,
+          patientMessages: [],
+          sourceType: 'Miss Call',
+          executiveNumber: executiveNumber,
+          priority: 'low',
+          status: 'pending',
+          notificationSent: false,
+          executiveActionTaken: false,
+          missCallCount: 1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          currentStage: STAGES.AWAITING_NAME,
+          stageHistory: [{ stage: STAGES.BRANCH_SELECTED, timestamp: new Date() }]
         });
+        patient = { _id: result.insertedId };
+      } else {
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          {
+            $set: {
+              branch: branch,
+              status: 'pending',
+              executiveNumber: executiveNumber,
+              currentStage: STAGES.AWAITING_NAME,
+              updatedAt: new Date()
+            }
+          }
+        );
+      }
+      
+      let sessionTokenForLink = patient.chatSessionToken;
+      if (!sessionTokenForLink) {
+        sessionTokenForLink = crypto.randomBytes(16).toString('hex');
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { $set: { chatSessionToken: sessionTokenForLink } }
+        );
+      }
+      
+      const freshPatientData = await patientsCollection.findOne({ _id: patient._id });
+      
+      let patientNameToSend = freshPatientData.patientName || 'Miss Call Patient';
+      let testTypeToSend = freshPatientData.testType || 'Miss Call';
+      let testDetailsToSend = freshPatientData.testDetails || 'Not specified';
+      
+      if (!patient.executiveActionTaken) {
+        await sendNotificationAtomic(patient._id, () =>
+          sendLeadNotification(
+            executiveNumber,
+            patientNameToSend,
+            whatsappNumber,
+            branch,
+            testDetailsToSend,
+            testTypeToSend,
+            sessionTokenForLink
+          )
+        );
       }
     }
     
-    // ============================================
-    // ✅ MANAGER VIEW - Escalated Patients
-    // ============================================
-    const managerView = {
-      escalatedPatients: escalatedPatients.map(p => ({
-        patientName: p.patientName || 'Unknown',
-        patientPhone: p.patientPhone,
-        branch: p.branch,
-        testType: p.testType,
-        testDetails: p.testDetails,
-        waitingCount: p.waitingFollowupCount || 0,
-        escalatedCount: p.escalatedCount || 0,
-        escalatedAt: p.escalatedAt,
-        executiveNumber: p.executiveNumber,
-        executiveName: Object.keys(EXECUTIVES).find(key => EXECUTIVES[key] === p.executiveNumber) || 'Unknown',
-        waitingTime: Math.floor((Date.now() - new Date(p.updatedAt)) / (1000 * 60 * 60))
-      })),
-      totalEscalated: escalatedPatients.length,
-      resolvedToday: allFollowups.filter(f => f.type === 'manager_action' && new Date(f.sentAt) >= today).length,
-      pendingActions: allFollowups.filter(f => f.type === 'escalation' && f.status === 'escalated').length
-    };
+    await markMessageProcessed(msgId);
+    res.sendStatus(200);
     
-    // ============================================
-    // ✅ OVERALL STATS
-    // ============================================
-    const totalPatients = allPatients.length;
+  } catch (error) {
+    console.error('❌ Webhook error:', error);
+    res.sendStatus(200);
+  }
+});
+
+// ============================================
+// ✅ EXECUTIVE CHAT INTERFACE
+// ============================================
+app.get('/executive-chat/:token', async (req, res) => {
+  const { token } = req.params;
+  
+  const session = await chatSessionsCollection.findOne({ 
+    sessionToken: token,
+    status: 'active'
+  });
+  
+  if (!session) {
+    const patient = await patientsCollection.findOne({ chatSessionToken: token });
+    if (patient && patient.chatSessionToken) {
+      return res.redirect(`/executive-chat/${patient.chatSessionToken}`);
+    }
+    return res.send(`<h2>❌ Invalid or Expired Session</h2><p>Please click "Connect to Patient" again from WhatsApp.</p>`);
+  }
+  
+  if (session.expiresAt && new Date() > new Date(session.expiresAt)) {
+    await chatSessionsCollection.updateOne(
+      { sessionToken: token },
+      { $set: { status: 'expired' } }
+    );
+    return res.send(`<h2>⏰ Session Expired (24 hours)</h2><p>Please click "Connect to Patient" again from WhatsApp.</p>`);
+  }
+  
+  const messages = await chatMessagesCollection
+    .find({ sessionToken: token })
+    .sort({ timestamp: 1 })
+    .toArray();
+  
+  const patient = await patientsCollection.findOne({ patientPhone: session.patientPhone });
+  
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Executive Chat - ${session.patientName || 'Patient'}</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; height: 100vh; }
+        .chat-container { max-width: 800px; margin: 0 auto; height: 100vh; display: flex; flex-direction: column; background: white; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
+        .chat-header { background: linear-gradient(135deg, #075e54, #128C7E); color: white; padding: 15px; display: flex; justify-content: space-between; align-items: center; }
+        .patient-info { flex: 1; }
+        .patient-name { font-weight: bold; font-size: 1.2em; }
+        .patient-phone { font-size: 0.8em; opacity: 0.9; }
+        .test-info { background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 20px; font-size: 0.85em; }
+        .messages-container { flex: 1; overflow-y: auto; padding: 20px; background: #e5ddd5; }
+        .message { margin: 10px 0; display: flex; }
+        .message.patient { justify-content: flex-start; }
+        .message.executive { justify-content: flex-end; }
+        .message.system { justify-content: center; }
+        .message-content { max-width: 70%; padding: 10px 15px; border-radius: 18px; position: relative; word-wrap: break-word; }
+        .message.patient .message-content { background: white; border-bottom-left-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .message.executive .message-content { background: #dcf8c6; border-bottom-right-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .message.system .message-content { background: #fff3cd; color: #856404; font-style: italic; font-size: 0.9em; text-align: center; max-width: 90%; border-radius: 20px; }
+        .message-time { font-size: 0.7em; color: #999; margin-top: 5px; text-align: right; }
+        .message-status { font-size: 0.65em; color: #4caf50; margin-left: 5px; }
+        .input-area { display: flex; padding: 15px; background: #f0f0f0; border-top: 1px solid #ddd; }
+        #messageInput { flex: 1; padding: 12px 15px; border: 1px solid #ddd; border-radius: 25px; outline: none; font-size: 1em; font-family: inherit; }
+        #sendBtn { width: 50px; height: 50px; border-radius: 50%; background: #075e54; color: white; border: none; margin-left: 10px; cursor: pointer; font-size: 1.2em; transition: all 0.3s; }
+        #sendBtn:hover { background: #128C7E; transform: scale(1.02); }
+        .quick-replies { display: flex; gap: 10px; padding: 10px 15px; background: white; border-top: 1px solid #eee; flex-wrap: wrap; }
+        .quick-reply-btn { background: #f0f0f0; border: 1px solid #ddd; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 0.9em; transition: all 0.2s; }
+        .quick-reply-btn:hover { background: #075e54; color: white; border-color: #075e54; }
+        .blink-red {
+          animation: blink 1s infinite;
+          background-color: #ff6b6b !important;
+          color: white !important;
+          font-weight: bold;
+          padding: 2px 8px;
+          border-radius: 10px;
+          display: inline-block;
+        }
+        @keyframes blink {
+          0% { opacity: 1; background-color: #ff6b6b; }
+          50% { opacity: 0.6; background-color: #ef4444; }
+          100% { opacity: 1; background-color: #ff6b6b; }
+        }
+        .high-miss-call {
+          border-left: 4px solid #ff6b6b;
+          background-color: #fff5f5;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="chat-container">
+        <div class="chat-header">
+          <div class="patient-info">
+            <div class="patient-name">${escapeHtml(session.patientName || 'Patient')}</div>
+            <div class="patient-phone">${session.patientPhone}</div>
+          </div>
+          ${patient ? `<div class="test-info">📋 ${escapeHtml(patient.testType || 'Miss Call')}</div>` : ''}
+        </div>
+        
+        <div class="messages-container" id="messages">
+          ${messages.map(msg => `
+            <div class="message ${msg.sender === 'executive' ? 'executive' : msg.sender === 'system' ? 'system' : 'patient'}">
+              <div class="message-content">
+                ${escapeHtml(msg.text)}
+                <div class="message-time">
+                  ${new Date(msg.timestamp).toLocaleTimeString()}
+                  ${msg.sender === 'executive' && !msg.isWelcomeMessage ? '<span class="message-status">✓ Sent</span>' : ''}
+                  ${msg.isWelcomeMessage ? '<span class="message-status">✓ Auto-sent</span>' : ''}
+                </div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+        
+        <div class="quick-replies">
+          <button class="quick-reply-btn" onclick="sendQuickReply('Thank you')">🙏 Thank you</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('Please wait, I am checking')">⏳ Please wait</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('I will get back to you soon')">📞 Will revert soon</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('Please send your reports')">📄 Send reports</button>
+        </div>
+        
+        <div class="input-area">
+          <input type="text" id="messageInput" placeholder="Type your message here..." autocomplete="off">
+          <button id="sendBtn" onclick="sendMessage()">➤</button>
+        </div>
+      </div>
+      
+      <script>
+        const sessionToken = '${token}';
+        const messagesDiv = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        let lastMessageCount = ${messages.length};
+        
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        
+        setInterval(checkNewMessages, 2000);
+        
+        async function checkNewMessages() {
+          try {
+            const response = await fetch('/api/chat-messages/' + sessionToken + '?since=' + lastMessageCount);
+            const data = await response.json();
+            if (data.messages && data.messages.length > 0) {
+              data.messages.forEach(msg => {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message ' + (msg.sender === 'executive' ? 'executive' : msg.sender === 'system' ? 'system' : 'patient');
+                messageDiv.innerHTML = \`
+                  <div class="message-content">
+                    \${escapeHtml(msg.text)}
+                    <div class="message-time">
+                      \${new Date(msg.timestamp).toLocaleTimeString()}
+                      \${msg.sender === 'executive' && !msg.isWelcomeMessage ? '<span class="message-status">✓ Sent</span>' : ''}
+                      \${msg.isWelcomeMessage ? '<span class="message-status">✓ Auto-sent</span>' : ''}
+                    </div>
+                  </div>
+                \`;
+                messagesDiv.appendChild(messageDiv);
+              });
+              lastMessageCount += data.messages.length;
+              messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+          } catch (error) {
+            console.error('Error checking messages:', error);
+          }
+        }
+        
+        async function sendMessage() {
+          const text = messageInput.value.trim();
+          if (!text) return;
+          
+          messageInput.disabled = true;
+          sendBtn.disabled = true;
+          sendBtn.textContent = '⏳';
+          
+          try {
+            const response = await fetch('/api/send-to-patient', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionToken, text })
+            });
+            const result = await response.json();
+            if (result.success) {
+              const messageDiv = document.createElement('div');
+              messageDiv.className = 'message executive';
+              messageDiv.innerHTML = \`
+                <div class="message-content">
+                  \${escapeHtml(text)}
+                  <div class="message-time">Just now <span class="message-status">✓ Sent</span></div>
+                </div>
+              \`;
+              messagesDiv.appendChild(messageDiv);
+              lastMessageCount++;
+              messageInput.value = '';
+              messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            } else {
+              alert('Failed to send message: ' + (result.error || 'Unknown error'));
+            }
+          } catch (error) {
+            console.error('Error sending message:', error);
+            alert('Error sending message. Please check your connection.');
+          } finally {
+            messageInput.disabled = false;
+            sendBtn.disabled = false;
+            sendBtn.textContent = '➤';
+            messageInput.focus();
+          }
+        }
+        
+        function sendQuickReply(reply) {
+          messageInput.value = reply;
+          sendMessage();
+        }
+        
+        function escapeHtml(text) {
+          const div = document.createElement('div');
+          div.textContent = text;
+          return div.innerHTML;
+        }
+        
+        messageInput.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') sendMessage();
+        });
+        
+        messageInput.focus();
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// ============================================
+// ✅ SEND MESSAGE TO PATIENT
+// ============================================
+app.post('/api/send-to-patient', async (req, res) => {
+  try {
+    const { sessionToken, text } = req.body;
+    
+    const session = await chatSessionsCollection.findOne({ 
+      sessionToken,
+      status: 'active'
+    });
+    
+    if (!session) {
+      return res.status(404).json({ success: false, error: 'Session not found or expired' });
+    }
+    
+    const result = await sendWhatsAppMessageToPatient(session.executiveNumber, session.patientPhone, text);
+    
+    await chatMessagesCollection.insertOne({
+      sessionToken,
+      sender: 'executive',
+      text: text,
+      timestamp: new Date(),
+      watiMessageId: result?.messageId
+    });
+    
+    await chatSessionsCollection.updateOne(
+      { sessionToken },
+      { $set: { lastActivity: new Date() } }
+    );
+    
+    res.json({ success: true, messageId: result?.messageId });
+    
+  } catch (error) {
+    console.error('❌ Send message error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// ✅ GET CHAT MESSAGES
+// ============================================
+app.get('/api/chat-messages/:token', async (req, res) => {
+  const { token } = req.params;
+  const since = parseInt(req.query.since) || 0;
+  
+  const messages = await chatMessagesCollection
+    .find({ sessionToken: token })
+    .sort({ timestamp: 1 })
+    .toArray();
+  
+  const newMessages = messages.slice(since);
+  
+  res.json({ 
+    messages: newMessages,
+    total: messages.length
+  });
+});
+
+// ============================================
+// ✅ CONNECT CHAT ENDPOINT
+// ============================================
+app.get('/connect-chat/:token', async (req, res) => {
+  const { token } = req.params;
+  res.redirect(`/executive-chat/${token}`);
+});
+
+// ============================================
+// ✅ EXECUTIVE ACTION HANDLER
+// ============================================
+app.get('/exec-action', async (req, res) => {
+  const { action, chat } = req.query;
+  
+  const status = action === 'convert' ? 'converted' : action === 'waiting' ? 'waiting' : 'not_converted';
+  const stage = action === 'convert' ? STAGES.CONVERTED : action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
+  
+  await patientsCollection.updateOne(
+    { chatId: chat },
+    { 
+      $set: { 
+        status, 
+        currentStage: stage, 
+        updatedAt: new Date(),
+        executiveActionTaken: true
+      },
+      $push: { stageHistory: { stage: stage, timestamp: new Date() } }
+    }
+  );
+  
+  res.send(`✅ Patient marked as ${status}`);
+});
+
+// ============================================
+// ✅ TEST ENDPOINTS
+// ============================================
+app.get('/test-executive-direct', async (req, res) => {
+  try {
+    const execNumber = req.query.exec || '917880261858';
+    const patientPhone = req.query.patient || '9876543210';
+    const branch = req.query.branch || 'Naroda';
+    const patientName = req.query.name || 'Test Patient';
+    const testDetails = req.query.details || 'MRI Brain';
+    const testType = req.query.type || 'MRI';
+    
+    const chatToken = `test_${Date.now()}`;
+    const result = await sendLeadNotification(
+      execNumber,
+      patientName,
+      patientPhone,
+      branch,
+      testDetails,
+      testType,
+      chatToken
+    );
+    
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/test-misscall', async (req, res) => {
+  try {
+    const phone = req.query.phone || '919106959092';
+    const branch = req.query.branch || 'Naroda';
+    
+    const result = await sendWatiTemplateMessage(phone, TEMPLATE_NAME, [
+      { name: '1', value: branch }
+    ]);
+    
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/fix-database', async (req, res) => {
+  try {
+    const result1 = await patientsCollection.updateMany(
+      { stageHistory: { $type: "object" } },
+      { $set: { stageHistory: [] } }
+    );
+    
+    const result2 = await patientsCollection.updateMany(
+      { executiveActionTaken: { $exists: false } },
+      { $set: { executiveActionTaken: false } }
+    );
+    
+    res.json({ 
+      success: true, 
+      message: `Fixed ${result1.modifiedCount} stageHistory, initialized ${result2.modifiedCount} executiveActionTaken` 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// ✅ API STATS ENDPOINT
+// ============================================
+app.get('/api/stats', async (req, res) => {
+  try {
+    const totalPatients = await patientsCollection.countDocuments();
     const pendingCount = await patientsCollection.countDocuments({ status: 'pending' });
     const convertedCount = await patientsCollection.countDocuments({ status: 'converted' });
     const waitingCount = await patientsCollection.countDocuments({ status: 'waiting' });
     const notConvertedCount = await patientsCollection.countDocuments({ status: 'not_converted' });
+    const connectedCount = await patientsCollection.countDocuments({ currentStage: STAGES.CONNECTED });
+    
+    const actionTakenCount = await patientsCollection.countDocuments({ executiveActionTaken: true });
+    const actionPendingCount = await patientsCollection.countDocuments({ executiveActionTaken: false });
     
     const stageStats = {};
-    if (STAGES) {
-      for (const stage of Object.values(STAGES)) {
-        stageStats[stage] = await patientsCollection.countDocuments({ currentStage: stage }) || 0;
-      }
+    for (const stage of Object.values(STAGES)) {
+      stageStats[stage] = await patientsCollection.countDocuments({ currentStage: stage }) || 0;
     }
     
-    const missCallTotal = allMissCalls.length;
-    const missCallToday = allMissCalls.filter(c => new Date(c.createdAt) >= today).length;
-    const missCallYesterday = allMissCalls.filter(c => {
-      const date = new Date(c.createdAt);
-      return date >= yesterday && date < today;
-    }).length;
-    const missCallLast7Days = allMissCalls.filter(c => new Date(c.createdAt) >= last7Days).length;
+    const missCallTotal = await missCallsCollection.countDocuments();
     
-    // Test type overall stats
-    const overallTests = { MRI: 0, CT: 0, 'X-RAY': 0, USG: 0, OTHER: 0 };
-    for (const patient of allPatients) {
-      const testType = patient.testType || patient.testDetails || '';
-      const upperTest = testType.toUpperCase();
-      if (upperTest.includes('MRI')) overallTests.MRI++;
-      else if (upperTest.includes('CT')) overallTests.CT++;
-      else if (upperTest.includes('X-RAY') || upperTest.includes('XRAY')) overallTests['X-RAY']++;
-      else if (upperTest.includes('USG') || upperTest.includes('ULTRASOUND')) overallTests.USG++;
-      else overallTests.OTHER++;
-    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const missCallToday = await missCallsCollection.countDocuments({
+      createdAt: { $gte: today }
+    });
     
-    const recentPatients = await patientsCollection.find().sort({ createdAt: -1 }).limit(50).toArray();
-    const recentMissCalls = await missCallsCollection.find().sort({ createdAt: -1 }).limit(50).toArray();
-    const topMissCallPatients = await patientsCollection.find().sort({ missCallCount: -1 }).limit(10).toArray();
-    const recentFollowups = await followupCollection.find().sort({ sentAt: -1 }).limit(30).toArray();
+    const branchStats = await missCallsCollection.aggregate([
+      { $group: { _id: '$branch', count: { $sum: 1 } } }
+    ]).toArray();
     
-    res.send(getDashboardHTML({
+    const branchMissCallMap = {};
+    branchStats.forEach(b => { branchMissCallMap[b._id] = b.count; });
+    
+    const recentPatients = await patientsCollection.find()
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .toArray();
+    
+    const recentMissCalls = await missCallsCollection.find()
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .toArray();
+    
+    const topMissCallPatients = await patientsCollection.find()
+      .sort({ missCallCount: -1 })
+      .limit(5)
+      .toArray();
+    
+    const activeChats = await chatSessionsCollection.countDocuments({ status: 'active' });
+    
+    // Follow-up stats
+    const followupStats = {
+      noReplySent: await followupCollection.countDocuments({ type: 'no_reply', sentAt: { $gte: today } }),
+      waitingSent: await followupCollection.countDocuments({ type: 'waiting', sentAt: { $gte: today } }),
+      escalations: await followupCollection.countDocuments({ type: 'escalation', sentAt: { $gte: today } }),
+      totalFollowups: await followupCollection.countDocuments()
+    };
+    
+    res.json({
       totalPatients,
       pendingCount,
       convertedCount,
       waitingCount,
       notConvertedCount,
+      connectedCount,
+      actionTakenCount,
+      actionPendingCount,
       stageStats,
       missCallTotal,
       missCallToday,
-      missCallYesterday,
-      missCallLast7Days,
-      branchMissCalls,
-      branchMissCallsToday,
-      branchMissCallsLast7Days,
-      branchMissCallsLast30Days,
-      branchTests,
-      branchConversion,
-      dailyMissCalls,
-      overallTests,
+      branchMissCallMap,
       recentPatients,
       recentMissCalls,
       topMissCallPatients,
-      executiveStats,
-      executivePatients,
-      patientsWithoutReply,
-      singleMissCallPatients,
-      templateSentPatients,
-      highMissCallPatients,
-      waitingPatients,
-      escalatedPatients,
-      managerView,
+      activeChats,
       followupStats,
-      recentFollowups,
-      EXECUTIVES
-    }));
-    
+      uptime: process.uptime()
+    });
   } catch (error) {
-    console.error('Dashboard error:', error);
-    res.status(500).send(`<h2>Error: ${error.message}</h2><pre>${error.stack}</pre>`);
+    console.error('API Stats Error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-function getDashboardHTML(data) {
-  const {
-    totalPatients,
-    pendingCount,
-    convertedCount,
-    waitingCount,
-    notConvertedCount,
-    stageStats,
-    missCallTotal,
-    missCallToday,
-    missCallYesterday,
-    missCallLast7Days,
-    branchMissCalls,
-    branchMissCallsToday,
-    branchMissCallsLast7Days,
-    branchMissCallsLast30Days,
-    branchTests,
-    branchConversion,
-    dailyMissCalls,
-    overallTests,
-    recentPatients,
-    recentMissCalls,
-    topMissCallPatients,
-    executiveStats,
-    executivePatients,
-    patientsWithoutReply,
-    singleMissCallPatients,
-    templateSentPatients,
-    highMissCallPatients,
-    waitingPatients,
-    escalatedPatients,
-    managerView,
-    followupStats,
-    recentFollowups,
-    EXECUTIVES
-  } = data;
-  
-  const dailyMissCallLabels = dailyMissCalls.map(d => d.date);
-  const dailyMissCallValues = dailyMissCalls.map(d => d.count);
-  
-  const branchNames = Object.keys(branchTests);
-  const branchMRIData = branchNames.map(b => branchTests[b]?.MRI || 0);
-  const branchCTData = branchNames.map(b => branchTests[b]?.CT || 0);
-  const branchXRayData = branchNames.map(b => branchTests[b]?.['X-RAY'] || 0);
-  const branchUSGData = branchNames.map(b => branchTests[b]?.USG || 0);
-  
-  return `
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <title>Executive Dashboard - Complete Analytics</title>
-    <meta http-equiv="refresh" content="60">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { font-family: 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
-      .container { max-width: 1600px; margin: 0 auto; }
-      h1 { color: white; margin-bottom: 20px; font-size: 2.2em; }
-      h2 { color: white; margin: 30px 0 15px; font-size: 1.6em; border-left: 4px solid #ffd700; padding-left: 15px; }
-      h3 { color: #333; margin-bottom: 10px; font-size: 1.1em; }
-      .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 25px; }
-      .stat-card { background: white; border-radius: 12px; padding: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); transition: transform 0.2s; }
-      .stat-card:hover { transform: translateY(-3px); }
-      .stat-title { font-size: 0.7em; color: #666; text-transform: uppercase; letter-spacing: 1px; }
-      .stat-value { font-size: 1.6em; font-weight: bold; color: #333; margin-top: 5px; }
-      .misscall-card { background: linear-gradient(135deg, #ff6b6b, #ff8e8e); }
-      .misscall-card .stat-title, .misscall-card .stat-value { color: white; }
-      .alert-card { background: linear-gradient(135deg, #f59e0b, #ef4444); color: white; }
-      .alert-card .stat-title, .alert-card .stat-value { color: white; }
-      .escalation-card { background: linear-gradient(135deg, #dc2626, #991b1b); color: white; }
-      .escalation-card .stat-title, .escalation-card .stat-value { color: white; }
-      
-      .branch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-bottom: 30px; }
-      .branch-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-      .branch-header { background: linear-gradient(135deg, #075e54, #128C7E); color: white; padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; }
-      .branch-name { font-weight: bold; font-size: 1.1em; }
-      .branch-phone { font-size: 0.7em; opacity: 0.9; }
-      .branch-stats { padding: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background: #f8f9fa; }
-      .branch-stat { text-align: center; padding: 5px; border-radius: 8px; background: white; }
-      .branch-stat-number { font-size: 1.2em; font-weight: bold; }
-      .branch-stat-label { font-size: 0.6em; color: #666; }
-      .alert-row { background: #fff3e0; padding: 8px 12px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 0.7em; border-top: 1px solid #fed7aa; }
-      .alert-number { font-weight: bold; color: #f97316; }
-      .blink-red { animation: blink 1s infinite; background-color: #ff6b6b !important; color: white !important; padding: 2px 8px; border-radius: 10px; display: inline-block; }
-      @keyframes blink { 0% { opacity: 1; background-color: #ff6b6b; } 50% { opacity: 0.6; background-color: #ef4444; } 100% { opacity: 1; background-color: #ff6b6b; } }
-      .high-miss-call { border-left: 4px solid #ff6b6b; background-color: #fff5f5; }
-      .conversion-rate { padding: 8px 12px; text-align: center; background: #f0fdf4; border-top: 1px solid #bbf7d0; }
-      .conversion-number { font-size: 1.2em; font-weight: bold; color: #16a34a; }
-      
-      .executive-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 20px; margin-bottom: 30px; }
-      .executive-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-      .executive-header { background: linear-gradient(135deg, #7c3aed, #8b5cf6); color: white; padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; }
-      .executive-name { font-weight: bold; font-size: 1.1em; }
-      .executive-phone { font-size: 0.7em; opacity: 0.9; }
-      .executive-stats { padding: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background: #f8f9fa; }
-      .executive-stat { text-align: center; }
-      .executive-stat-number { font-size: 1em; font-weight: bold; }
-      .executive-stat-label { font-size: 0.6em; color: #666; }
-      .stage-row { padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px; border-top: 1px solid #eee; background: #fefce8; font-size: 0.7em; }
-      .stage-badge { padding: 3px 8px; border-radius: 15px; font-size: 0.65em; }
-      .alert-row-exec { padding: 8px 12px; display: flex; flex-wrap: wrap; justify-content: space-between; background: #fef2f2; border-top: 1px solid #fecaca; font-size: 0.7em; }
-      .executive-detail-btn { background: #128C7E; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 0.7em; margin: 8px 15px; width: calc(100% - 30px); }
-      .patient-list { display: none; margin: 0 15px 15px 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; max-height: 250px; overflow-y: auto; font-size: 0.7em; }
-      .patient-list.show { display: block; }
-      .patient-item { padding: 6px; border-bottom: 1px solid #eee; }
-      .no-reply { color: #ef4444; font-weight: bold; }
-      
-      .manager-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; margin-bottom: 30px; }
-      .manager-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.1); border-top: 4px solid #dc2626; }
-      .manager-header { background: linear-gradient(135deg, #dc2626, #991b1b); color: white; padding: 12px 15px; }
-      .escalated-patient { padding: 10px; border-bottom: 1px solid #eee; }
-      .escalated-patient:last-child { border-bottom: none; }
-      .escalated-action-btn { background: #128C7E; color: white; border: none; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 0.7em; margin-top: 5px; }
-      
-      .stage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; margin-bottom: 25px; }
-      .stage-card { background: white; border-radius: 10px; padding: 8px; text-align: center; border-left: 3px solid; }
-      .stage-name { font-size: 0.6em; color: #666; text-transform: uppercase; }
-      .stage-value { font-size: 1.2em; font-weight: bold; margin-top: 3px; }
-      
-      .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-bottom: 30px; }
-      .chart-card { background: white; border-radius: 12px; padding: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-      .recent-section { background: white; border-radius: 12px; padding: 20px; margin-bottom: 25px; overflow-x: auto; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-      table { width: 100%; border-collapse: collapse; font-size: 0.75em; }
-      th { background: #f8f9fa; padding: 8px; text-align: left; font-weight: 600; }
-      td { padding: 8px; border-bottom: 1px solid #e2e8f0; }
-      .badge { padding: 2px 6px; border-radius: 10px; font-size: 0.65em; font-weight: 600; }
-      .badge-pending { background: #fef3c7; color: #92400e; }
-      .badge-converted { background: #d1fae5; color: #065f46; }
-      .badge-waiting { background: #dbeafe; color: #1e40af; }
-      .top-patients-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
-      .top-patient-card { background: #f8f9fa; border-radius: 10px; padding: 10px; border-left: 3px solid #ff6b6b; }
-      .refresh-btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; margin-bottom: 15px; font-weight: bold; }
-      .refresh-btn:hover { background: #5a67d8; }
-      .last-updated { color: white; margin-bottom: 15px; font-size: 0.8em; }
-    </style>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  </head>
-  <body>
-    <div class="container">
-      <h1>🏥 Executive Dashboard - Complete Analytics</h1>
-      
-      <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
-      <div class="last-updated">Last updated: ${new Date().toLocaleString()}</div>
-      
-      <!-- Alert Cards -->
-      <div class="stats-grid">
-        <div class="stat-card alert-card"><div class="stat-title">⚠️ No Reply</div><div class="stat-value">${patientsWithoutReply.length}</div></div>
-        <div class="stat-card alert-card"><div class="stat-title">📞 Single Miss Call</div><div class="stat-value">${singleMissCallPatients.length}</div></div>
-        <div class="stat-card alert-card"><div class="stat-title">🔴 High Miss Call (3+)</div><div class="stat-value">${highMissCallPatients.length}</div></div>
-        <div class="stat-card alert-card"><div class="stat-title">⏳ Waiting >2hrs</div><div class="stat-value">${waitingPatients.length}</div></div>
-        <div class="stat-card escalation-card"><div class="stat-title">🚨 Escalated</div><div class="stat-value">${escalatedPatients.length}</div></div>
-        <div class="stat-card"><div class="stat-title">📨 Template Sent</div><div class="stat-value">${templateSentPatients.length}</div></div>
-      </div>
-      
-      <!-- Follow-up Stats -->
-      <div class="stats-grid">
-        <div class="stat-card"><div class="stat-title">📢 Total Follow-ups</div><div class="stat-value">${followupStats.total}</div></div>
-        <div class="stat-card"><div class="stat-title">⏰ No Reply</div><div class="stat-value">${followupStats.noReply}</div></div>
-        <div class="stat-card"><div class="stat-title">⏳ Waiting</div><div class="stat-value">${followupStats.waiting}</div></div>
-        <div class="stat-card escalation-card"><div class="stat-title">🚨 Escalations</div><div class="stat-value">${followupStats.escalation}</div></div>
-        <div class="stat-card"><div class="stat-title">👨‍💼 Manager Actions</div><div class="stat-value">${followupStats.managerAction}</div></div>
-        <div class="stat-card"><div class="stat-title">📅 Today</div><div class="stat-value">${followupStats.today}</div></div>
-      </div>
-      
-      <!-- Overall Stats -->
-      <div class="stats-grid">
-        <div class="stat-card"><div class="stat-title">Total Patients</div><div class="stat-value">${totalPatients}</div></div>
-        <div class="stat-card"><div class="stat-title">Pending</div><div class="stat-value">${pendingCount}</div></div>
-        <div class="stat-card"><div class="stat-title">Converted</div><div class="stat-value">${convertedCount}</div></div>
-        <div class="stat-card"><div class="stat-title">Waiting</div><div class="stat-value">${waitingCount}</div></div>
-        <div class="stat-card"><div class="stat-title">Not Converted</div><div class="stat-value">${notConvertedCount}</div></div>
-        <div class="stat-card misscall-card"><div class="stat-title">Total Miss Calls</div><div class="stat-value">${missCallTotal}</div></div>
-        <div class="stat-card misscall-card"><div class="stat-title">Today's Miss Calls</div><div class="stat-value">${missCallToday}</div></div>
-        <div class="stat-card"><div class="stat-title">Yesterday</div><div class="stat-value">${missCallYesterday}</div></div>
-        <div class="stat-card"><div class="stat-title">Last 7 Days</div><div class="stat-value">${missCallLast7Days}</div></div>
-      </div>
-      
-      <!-- Overall Test Distribution -->
-      <h2>📊 Overall Test Distribution</h2>
-      <div class="stats-grid">
-        <div class="stat-card"><div class="stat-title">MRI</div><div class="stat-value">${overallTests.MRI}</div></div>
-        <div class="stat-card"><div class="stat-title">CT</div><div class="stat-value">${overallTests.CT}</div></div>
-        <div class="stat-card"><div class="stat-title">X-RAY</div><div class="stat-value">${overallTests['X-RAY']}</div></div>
-        <div class="stat-card"><div class="stat-title">USG</div><div class="stat-value">${overallTests.USG}</div></div>
-        <div class="stat-card"><div class="stat-title">Others</div><div class="stat-value">${overallTests.OTHER}</div></div>
-      </div>
-      
-      <!-- Manager View - Escalated Patients -->
-      <h2>🚨 Manager View - Escalated Patients</h2>
-      <div class="manager-grid">
-        <div class="manager-card">
-          <div class="manager-header">
-            <strong>⚠️ Escalated Patients (${managerView.totalEscalated})</strong>
-            <div style="font-size: 0.7em;">Resolved Today: ${managerView.resolvedToday} | Pending Actions: ${managerView.pendingActions}</div>
-          </div>
-          <div style="max-height: 400px; overflow-y: auto;">
-            ${managerView.escalatedPatients.length > 0 ? managerView.escalatedPatients.map(p => `
-              <div class="escalated-patient">
-                <strong>${p.patientName}</strong> (${p.patientPhone})<br>
-                <small>Branch: ${p.branch} | Test: ${p.testType} - ${p.testDetails}</small><br>
-                <small>Executive: ${p.executiveName} (${p.executiveNumber})</small><br>
-                <small>Waiting: ${p.waitingTime} hours | Escalated: ${p.escalatedCount} times</small><br>
-                <small>Escalated At: ${new Date(p.escalatedAt).toLocaleString()}</small><br>
-                <button class="escalated-action-btn" onclick="alert('Action taken! In production, this would send reminder to executive.')">📢 Send Reminder to Executive</button>
-              </div>
-            `).join('') : '<div style="padding: 20px; text-align: center;">✅ No escalated patients</div>'}
-          </div>
-        </div>
-      </div>
-      
-      <!-- Branch Wise Analytics -->
-      <h2>🏢 Branch Wise Analytics</h2>
-      <div class="branch-grid">
-        ${Object.entries(branchTests).map(([branch, tests]) => `
-          <div class="branch-card">
-            <div class="branch-header">
-              <div><div class="branch-name">${branch}</div><div class="branch-phone">📞 ${EXECUTIVES[branch] || 'Not set'}</div></div>
-              <div style="font-size: 1.2em; font-weight: bold;">${tests.total} patients</div>
-            </div>
-            <div class="branch-stats">
-              <div class="branch-stat"><div class="branch-stat-number" style="color: #10b981;">${tests.converted}</div><div class="branch-stat-label">Converted</div></div>
-              <div class="branch-stat"><div class="branch-stat-number" style="color: #f59e0b;">${tests.pending}</div><div class="branch-stat-label">Pending</div></div>
-              <div class="branch-stat"><div class="branch-stat-number" style="color: #3b82f6;">${tests.waiting}</div><div class="branch-stat-label">Waiting</div></div>
-              <div class="branch-stat"><div class="branch-stat-number" style="color: #ef4444;">${tests.notConverted}</div><div class="branch-stat-label">Not Converted</div></div>
-            </div>
-            <div class="alert-row">
-              <span>⚠️ No Reply: <span class="alert-number">${tests.patientsWithNoReply || 0}</span></span>
-              <span>📞 Single Call: <span class="alert-number">${tests.singleMissCall || 0}</span></span>
-              <span>🔴 High Call: <span class="alert-number ${tests.highMissCall > 0 ? 'blink-red' : ''}">${tests.highMissCall || 0}</span></span>
-              <span>🚨 Escalated: <span class="alert-number">${tests.escalated || 0}</span></span>
-              <span>⏳ Waiting >2hr: <span class="alert-number">${tests.waitingLong || 0}</span></span>
-            </div>
-            <div class="conversion-rate">
-              <span class="conversion-number">${branchConversion[branch]?.rate || 0}%</span> Conversion Rate
-              (${branchConversion[branch]?.converted || 0}/${branchConversion[branch]?.total || 0})
-            </div>
-          </div>
-        `).join('')}
-      </div>
-      
-      <!-- Executive Wise Stats -->
-      <h2>👥 Executive Performance & Patient Tracking</h2>
-      <div class="executive-grid">
-        ${Object.entries(executiveStats).map(([branch, stats]) => `
-          <div class="executive-card">
-            <div class="executive-header">
-              <div><div class="executive-name">${branch} Executive</div><div class="executive-phone">📞 ${stats.execNumber}</div></div>
-              <div style="font-size: 1.2em; font-weight: bold;">${stats.total} patients</div>
-            </div>
-            <div class="executive-stats">
-              <div class="executive-stat"><div class="executive-stat-number" style="color: #f59e0b;">${stats.pending}</div><div class="executive-stat-label">Pending</div></div>
-              <div class="executive-stat"><div class="executive-stat-number" style="color: #10b981;">${stats.converted}</div><div class="executive-stat-label">Converted</div></div>
-              <div class="executive-stat"><div class="executive-stat-number" style="color: #3b82f6;">${stats.waiting}</div><div class="executive-stat-label">Waiting</div></div>
-              <div class="executive-stat"><div class="executive-stat-number" style="color: #ef4444;">${stats.notConverted}</div><div class="executive-stat-label">Not Converted</div></div>
-            </div>
-            <div class="stage-row">
-              <span class="stage-badge" style="background:#fef3c7;">📌 Awaiting: ${stats.awaitingBranch}</span>
-              <span class="stage-badge" style="background:#dbeafe;">✅ Selected: ${stats.branchSelected}</span>
-              <span class="stage-badge" style="background:#fef3c7;">📝 Name: ${stats.awaitingName}</span>
-              <span class="stage-badge" style="background:#fef3c7;">🔬 Test: ${stats.awaitingTestType + stats.awaitingTestDetails}</span>
-              <span class="stage-badge" style="background:#ede9fe;">📢 Notified: ${stats.executiveNotified}</span>
-              <span class="stage-badge" style="background:#c8e6e9;">💬 Connected: ${stats.connected}</span>
-            </div>
-            <div class="alert-row-exec">
-              <span>⚠️ No Reply: <strong style="color:#ef4444;">${stats.noReply}</strong></span>
-              <span>📞 Single Call: <strong style="color:#f97316;">${stats.singleMissCall}</strong></span>
-              <span>🔴 High Call: <strong class="${stats.highMissCall > 0 ? 'blink-red' : ''}" style="color:#dc2626;">${stats.highMissCall}</strong></span>
-              <span>🚨 Escalated: <strong style="color:#991b1b;">${stats.escalated}</strong></span>
-              <span>⏳ Waiting >2hr: <strong style="color:#f97316;">${stats.waitingLong}</strong></span>
-              <span>📨 Template Sent: <strong style="color:#10b981;">${stats.templateSent}</strong></span>
-            </div>
-            <button class="executive-detail-btn" onclick="togglePatientList('${branch}')">📋 View ${stats.total} Patients</button>
-            <div id="patient-list-${branch}" class="patient-list">
-              ${executivePatients[branch] && executivePatients[branch].length > 0 ? executivePatients[branch].slice(0, 30).map(p => `
-                <div class="patient-item ${p.missCallCount >= 3 ? 'high-miss-call' : ''}">
-                  <strong>${p.patientName || 'Unknown'}</strong> (${p.patientPhone})<br>
-                  <small>Test: ${p.testDetails || p.testType || 'N/A'} | ${p.missCallCount} calls</small><br>
-                  <small>Stage: ${p.currentStage || 'N/A'} | Status: ${p.status || 'N/A'}</small>
-                  ${!p.executiveActionTaken ? '<span class="no-reply"> ⚠️ No reply</span>' : ''}
-                  ${p.missCallCount >= 3 ? '<span class="blink-red"> 🔴 High Miss Call</span>' : ''}
-                  ${p.escalatedToManager ? '<span style="color:#dc2626;"> 🚨 Escalated</span>' : ''}
-                </div>
-              `).join('') : '<div class="patient-item">No patients</div>'}
-            </div>
-          </div>
-        `).join('')}
-      </div>
-      
-      <!-- Stage Tracking -->
-      <h2>📈 Stage Wise Tracking</h2>
-      <div class="stage-grid">
-        <div class="stage-card"><div class="stage-name">Awaiting Branch</div><div class="stage-value">${stageStats.awaiting_branch || 0}</div></div>
-        <div class="stage-card"><div class="stage-name">Branch Selected</div><div class="stage-value">${stageStats.branch_selected || 0}</div></div>
-        <div class="stage-card"><div class="stage-name">Awaiting Name</div><div class="stage-value">${stageStats.awaiting_name || 0}</div></div>
-        <div class="stage-card"><div class="stage-name">Awaiting Test</div><div class="stage-value">${(stageStats.awaiting_test_type || 0) + (stageStats.awaiting_test_details || 0)}</div></div>
-        <div class="stage-card"><div class="stage-name">Notified</div><div class="stage-value">${stageStats.executive_notified || 0}</div></div>
-        <div class="stage-card"><div class="stage-name">Connected</div><div class="stage-value">${stageStats.connected || 0}</div></div>
-        <div class="stage-card"><div class="stage-name">Converted</div><div class="stage-value">${stageStats.converted || 0}</div></div>
-        <div class="stage-card"><div class="stage-name">Waiting</div><div class="stage-value">${stageStats.waiting || 0}</div></div>
-        <div class="stage-card"><div class="stage-name">Escalated</div><div class="stage-value">${stageStats.escalated || 0}</div></div>
-      </div>
-      
-      <!-- Charts -->
-      <div class="charts-grid">
-        <div class="chart-card"><canvas id="dailyMissCallsChart"></canvas></div>
-        <div class="chart-card"><canvas id="branchTestsChart"></canvas></div>
-      </div>
-      
-      <!-- Top Miss Call Patients -->
-      <h2>📞 Top Miss Call Patients (Most Active)</h2>
-      <div class="top-patients-grid">
-        ${topMissCallPatients.map(p => `
-          <div class="top-patient-card ${p.missCallCount >= 3 ? 'high-miss-call' : ''}">
-            <div style="font-weight: bold;">${p.patientName || 'Unknown'}</div>
-            <div style="font-size: 0.75em;">${p.patientPhone}</div>
-            <div style="color: #ff6b6b; font-weight: bold;">${p.missCallCount || 1} calls</div>
-            <div style="font-size: 0.65em;">Branch: ${p.branch || 'N/A'} | ${p.status || 'pending'}</div>
-            ${p.missCallCount >= 3 ? '<div class="blink-red" style="display:inline-block; margin-top:5px;">⚠️ High Miss Call</div>' : ''}
-          </div>
-        `).join('')}
-      </div>
-      
-      <!-- Recent Patients -->
-      <h2>🕒 Recent Patients (Last 50)</h2>
-      <div class="recent-section">
-        <table>
-          <thead><tr><th>Patient</th><th>Phone</th><th>Branch</th><th>Tests</th><th>Stage</th><th>Status</th><th>Calls</th><th>Time</th></tr></thead>
-          <tbody>
-            ${recentPatients.slice(0, 50).map(p => `
-              <tr class="${p.missCallCount >= 3 ? 'high-miss-call' : ''}">
-                <td>${p.patientName || 'N/A'}${p.escalatedToManager ? ' 🚨' : ''}</td>
-                <td>${p.patientPhone || 'N/A'}</td>
-                <td>${p.branch || 'N/A'}</td>
-                <td>${p.testDetails || p.testType || 'N/A'}</td>
-                <td><span class="badge">${(p.currentStage || 'pending').replace(/_/g, ' ')}</span></td>
-                <td><span class="badge badge-${p.status || 'pending'}">${p.status || 'pending'}</span></td>
-                <td>${p.missCallCount || 1}${p.missCallCount >= 3 ? ' 🔴' : ''}</td>
-                <td>${new Date(p.createdAt).toLocaleString()}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-      
-      <!-- Recent Follow-ups -->
-      <h2>📢 Recent Follow-ups</h2>
-      <div class="recent-section">
-        <table>
-          <thead><tr><th>Type</th><th>Patient Phone</th><th>Executive</th><th>Count</th><th>Time</th></tr></thead>
-          <tbody>
-            ${recentFollowups.slice(0, 30).map(f => `
-              <tr>
-                <td><span class="badge">${f.type}</span></td>
-                <td>${f.patientPhone || 'N/A'}</td>
-                <td>${f.executiveNumber || 'N/A'}</td>
-                <td>${f.waitingCount || f.noReplyFollowupCount || '-'}</td>
-                <td>${new Date(f.sentAt).toLocaleString()}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-      
-      <!-- Recent Miss Calls -->
-      <h2>📞 Recent Miss Calls</h2>
-      <div class="recent-section">
-        <table>
-          <thead><tr><th>Phone</th><th>Branch</th><th>Time</th></tr></thead>
-          <tbody>
-            ${recentMissCalls.slice(0, 30).map(m => `
-              <tr><td>${m.phoneNumber || 'N/A'}</td><td>${m.branch || 'N/A'}</td><td>${new Date(m.createdAt).toLocaleString()}</td></tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-    
-    <script>
-      function togglePatientList(branch) {
-        document.getElementById('patient-list-' + branch).classList.toggle('show');
-      }
-      
-      new Chart(document.getElementById('dailyMissCallsChart'), {
-        type: 'line', data: { labels: ${JSON.stringify(dailyMissCallLabels)}, datasets: [{ label: 'Miss Calls', data: ${JSON.stringify(dailyMissCallValues)}, borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true }] },
-        options: { responsive: true }
-      });
-      
-      new Chart(document.getElementById('branchTestsChart'), {
-        type: 'bar', data: { labels: ${JSON.stringify(branchNames)}, datasets: [{ label: 'MRI', data: ${JSON.stringify(branchMRIData)}, backgroundColor: '#10b981' }, { label: 'CT', data: ${JSON.stringify(branchCTData)}, backgroundColor: '#3b82f6' }, { label: 'X-RAY', data: ${JSON.stringify(branchXRayData)}, backgroundColor: '#f59e0b' }, { label: 'USG', data: ${JSON.stringify(branchUSGData)}, backgroundColor: '#8b5cf6' }] },
-        options: { responsive: true, scales: { y: { beginAtZero: true } } }
-      });
-      
-      setTimeout(() => location.reload(), 60000);
-    </script>
-  </body>
-  </html>
-  `;
+// ============================================
+// ✅ HEALTH CHECK
+// ============================================
+app.get('/health', async (req, res) => {
+  res.json({
+    success: true,
+    uptime: process.uptime(),
+    mongodb: 'connected',
+    template: LEAD_TEMPLATE_NAME,
+    followupTemplates: {
+      noReply: FOLLOWUP_NO_REPLY_TEMPLATE,
+      waiting: FOLLOWUP_WAITING_TEMPLATE,
+      escalation: ESCALATION_MANAGER_TEMPLATE,
+      report: EXECUTIVE_REPORT_TEMPLATE
+    },
+    time: new Date().toISOString()
+  });
+});
+
+// ============================================
+// ✅ HOME ROUTE
+// ============================================
+app.get('/', (req, res) => {
+  res.json({
+    message: '🚀 Tata-WATI Executive System',
+    version: '10.0.0',
+    template: LEAD_TEMPLATE_NAME,
+    features: [
+      'Auto follow-up every 20 min for no reply',
+      'Auto follow-up every hour for waiting status',
+      'Escalation to manager after 4 waiting follow-ups',
+      '2-hour report to manager',
+      'Executive quick replies: Convert Done, Waiting, Not Convert',
+      'Manager quick replies: Send Executive Pt Details'
+    ],
+    endpoints: {
+      executive_chat: '/executive-chat/:token',
+      connect_chat: '/connect-chat/:token',
+      health: '/health',
+      api_stats: '/api/stats',
+      admin_dashboard: '/admin'
+    }
+  });
+});
+
+// ============================================
+// ✅ DASHBOARD ROUTE
+// ============================================
+const dashboardRouter = require('./dashboard');
+app.use('/admin', (req, res, next) => {
+  if (!patientsCollection || !processedCollection) {
+    return res.status(503).send('Dashboard unavailable');
+  }
+  req.patientsCollection = patientsCollection;
+  req.processedCollection = processedCollection;
+  req.missCallsCollection = missCallsCollection;
+  req.chatSessionsCollection = chatSessionsCollection;
+  req.chatMessagesCollection = chatMessagesCollection;
+  req.followupCollection = followupCollection;
+  req.STAGES = STAGES;
+  req.PORT = PORT;
+  next();
+}, dashboardRouter);
+
+// ============================================
+// ✅ ESCAPE HTML HELPER
+// ============================================
+function escapeHtml(text) {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-module.exports = router;
+// ============================================
+// ✅ START SERVER
+// ============================================
+async function startServer() {
+  try {
+    console.log('🔄 Starting server...');
+    await connectDB();
+    
+    const HOST = '0.0.0.0';
+    app.listen(PORT, HOST, () => {
+      console.log('\n' + '='.repeat(60));
+      console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
+      console.log(`📍 Lead Template: ${LEAD_TEMPLATE_NAME}`);
+      console.log(`📍 Follow-up Templates:`);
+      console.log(`   - No Reply: ${FOLLOWUP_NO_REPLY_TEMPLATE} (every 20 min)`);
+      console.log(`   - Waiting: ${FOLLOWUP_WAITING_TEMPLATE} (every hour)`);
+      console.log(`   - Escalation: ${ESCALATION_MANAGER_TEMPLATE} (after 4 waiting)`);
+      console.log(`   - Report: ${EXECUTIVE_REPORT_TEMPLATE} (every 2 hours)`);
+      console.log(`📍 Admin Dashboard: ${SELF_URL}/admin`);
+      console.log(`📍 OCR Processing: Active`);
+      console.log(`📍 AI Model: gpt-4o-mini`);
+      console.log('='.repeat(60) + '\n');
+    });
+  } catch (error) {
+    console.error('❌ Failed to start:', error.message);
+    process.exit(1);
+  }
+}
+
+startServer();
