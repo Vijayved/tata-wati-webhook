@@ -92,18 +92,18 @@ async function connectDB() {
 }
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS MAPPING - MOVED TO ENV
+// ✅ EXECUTIVE NUMBERS MAPPING - FINAL
 // ============================================
 const EXECUTIVES = {
-  'Naroda Team': process.env.NARODA_EXECUTIVE || '917880261858',
-  'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '917880261858',
-  'Vadaj Team': process.env.VADAJ_EXECUTIVE || '917880261858',
-  'Satellite Team': process.env.SATELLITE_EXECUTIVE || '917880261858',
-  'Maninagar Team': process.env.MANINAGAR_EXECUTIVE || '917880261858',
-  'Bapunagar Team': process.env.BAPUNAGAR_EXECUTIVE || '917880261858',
-  'Juhapura Team': process.env.JUHAPURA_EXECUTIVE || '917880261858',
-  'Gandhinagar Team': process.env.GANDHINAGAR_EXECUTIVE || '917880261858',
-  'Manager': process.env.MANAGER_NUMBER || '917880261858'
+  'Naroda Team': process.env.NARODA_EXECUTIVE || '919106959092',
+  'Usmanpura Team': process.env.USMANPURA_EXECUTIVE || '917490029085',
+  'Vadaj Team': process.env.VADAJ_EXECUTIVE || '918488931212',
+  'Satellite Team': process.env.SATELLITE_EXECUTIVE || '917490029085',
+  'Maninagar Team': process.env.MANINAGAR_EXECUTIVE || '918488931212',
+  'Bapunagar Team': process.env.BAPUNAGAR_EXECUTIVE || '919274682553',
+  'Juhapura Team': process.env.JUHAPURA_EXECUTIVE || '919274682553',
+  'Gandhinagar Team': process.env.GANDHINAGAR_EXECUTIVE || '919558591212',
+  'Manager': process.env.MANAGER_NUMBER || '917698011233'  // ✅ Updated manager number
 };
 
 console.log('✅ Executive numbers loaded:', EXECUTIVES);
