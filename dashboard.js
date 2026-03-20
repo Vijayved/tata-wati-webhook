@@ -1,19 +1,34 @@
-// dashboard.js - Complete Admin Dashboard with Executive Tracking
+// dashboard.js - Complete Admin Dashboard
 const express = require('express');
 const router = express.Router();
 
 router.get('/', async (req, res) => {
   try {
+    // ✅ Collections ko req se directly le lo
     const patientsCollection = req.patientsCollection;
     const processedCollection = req.processedCollection;
     const missCallsCollection = req.missCallsCollection;
     const chatSessionsCollection = req.chatSessionsCollection;
     const chatMessagesCollection = req.chatMessagesCollection;
     const STAGES = req.STAGES;
-    const PORT = req.PORT;
     
-    if (!patientsCollection || !processedCollection) {
-      throw new Error('Database collections not available');
+    // ✅ Check if collections exist
+    if (!patientsCollection || !processedCollection || !missCallsCollection) {
+      console.log('Collections missing:', { 
+        patients: !!patientsCollection, 
+        processed: !!processedCollection, 
+        missCalls: !!missCallsCollection 
+      });
+      return res.status(503).send(`
+        <html>
+          <head><title>Dashboard Unavailable</title></head>
+          <body style="font-family: Arial; padding: 30px; text-align: center;">
+            <h2>⏳ Dashboard is loading...</h2>
+            <p>Database collections are being initialized. Please refresh in a few seconds.</p>
+            <button onclick="location.reload()" style="padding: 10px 20px; background: #075e54; color: white; border: none; border-radius: 5px;">Refresh</button>
+          </body>
+        </html>
+      `);
     }
     
     // Executive numbers mapping
@@ -31,18 +46,16 @@ router.get('/', async (req, res) => {
     };
     
     // Get all data
-    const allPatients = await patientsCollection.find().toArray();
-    const allMissCalls = await missCallsCollection.find().toArray();
-    const allSessions = await chatSessionsCollection.find().toArray();
-    const allMessages = await chatMessagesCollection.find().toArray();
+    const allPatients = await patientsCollection.find({}).toArray();
+    const allMissCalls = await missCallsCollection.find({}).toArray();
     
     // ============================================
-    // ✅ PATIENTS WITHOUT REPLY (No executive action)
+    // ✅ PATIENTS WITHOUT REPLY
     // ============================================
     const patientsWithoutReply = allPatients.filter(p => 
       p.executiveActionTaken === false && 
-      p.currentStage !== STAGES.CONVERTED &&
-      p.currentStage !== STAGES.NOT_CONVERTED
+      p.currentStage !== STAGES?.CONVERTED &&
+      p.currentStage !== STAGES?.NOT_CONVERTED
     );
     
     // ============================================
@@ -51,11 +64,11 @@ router.get('/', async (req, res) => {
     const singleMissCallPatients = allPatients.filter(p => (p.missCallCount || 1) === 1);
     
     // ============================================
-    // ✅ TEMPLATE SENT STATUS (Stage executive_notified)
+    // ✅ TEMPLATE SENT STATUS
     // ============================================
     const templateSentPatients = allPatients.filter(p => 
-      p.currentStage === STAGES.EXECUTIVE_NOTIFIED ||
-      p.currentStage === STAGES.CONNECTED
+      p.currentStage === STAGES?.EXECUTIVE_NOTIFIED ||
+      p.currentStage === STAGES?.CONNECTED
     );
     
     // ============================================
@@ -86,7 +99,6 @@ router.get('/', async (req, res) => {
       const callDate = new Date(call.createdAt);
       
       branchMissCalls[branch] = (branchMissCalls[branch] || 0) + 1;
-      
       if (callDate >= today) branchMissCallsToday[branch] = (branchMissCallsToday[branch] || 0) + 1;
       if (callDate >= last7Days) branchMissCallsLast7Days[branch] = (branchMissCallsLast7Days[branch] || 0) + 1;
       if (callDate >= last30Days) branchMissCallsLast30Days[branch] = (branchMissCallsLast30Days[branch] || 0) + 1;
@@ -193,13 +205,11 @@ router.get('/', async (req, res) => {
       if (branch && EXECUTIVES[branch]) {
         executiveStats[branch].total++;
         
-        // Status wise
         if (patient.status === 'pending') executiveStats[branch].pending++;
         else if (patient.status === 'converted') executiveStats[branch].converted++;
         else if (patient.status === 'waiting') executiveStats[branch].waiting++;
         else if (patient.status === 'not_converted') executiveStats[branch].notConverted++;
         
-        // Stage wise
         if (patient.currentStage === 'awaiting_branch') executiveStats[branch].awaitingBranch++;
         else if (patient.currentStage === 'branch_selected') executiveStats[branch].branchSelected++;
         else if (patient.currentStage === 'awaiting_name') executiveStats[branch].awaitingName++;
@@ -208,7 +218,6 @@ router.get('/', async (req, res) => {
         else if (patient.currentStage === 'executive_notified') executiveStats[branch].executiveNotified++;
         else if (patient.currentStage === 'connected') executiveStats[branch].connected++;
         
-        // Special flags
         if (patient.executiveActionTaken === false) executiveStats[branch].noReply++;
         if ((patient.missCallCount || 1) === 1) executiveStats[branch].singleMissCall++;
         if (patient.currentStage === 'executive_notified' || patient.currentStage === 'connected') executiveStats[branch].templateSent++;
@@ -238,8 +247,10 @@ router.get('/', async (req, res) => {
     const notConvertedCount = await patientsCollection.countDocuments({ status: 'not_converted' });
     
     const stageStats = {};
-    for (const stage of Object.values(STAGES)) {
-      stageStats[stage] = await patientsCollection.countDocuments({ currentStage: stage }) || 0;
+    if (STAGES) {
+      for (const stage of Object.values(STAGES)) {
+        stageStats[stage] = await patientsCollection.countDocuments({ currentStage: stage }) || 0;
+      }
     }
     
     const missCallTotal = allMissCalls.length;
@@ -293,13 +304,12 @@ router.get('/', async (req, res) => {
       patientsWithoutReply,
       singleMissCallPatients,
       templateSentPatients,
-      EXECUTIVES,
-      PORT
+      EXECUTIVES
     }));
     
   } catch (error) {
     console.error('Dashboard error:', error);
-    res.status(500).send(`<h2>Error: ${error.message}</h2>`);
+    res.status(500).send(`<h2>Error: ${error.message}</h2><pre>${error.stack}</pre>`);
   }
 });
 
@@ -331,8 +341,7 @@ function getDashboardHTML(data) {
     patientsWithoutReply,
     singleMissCallPatients,
     templateSentPatients,
-    EXECUTIVES,
-    PORT
+    EXECUTIVES
   } = data;
   
   const dailyMissCallLabels = dailyMissCalls.map(d => d.date);
@@ -357,15 +366,11 @@ function getDashboardHTML(data) {
       .container { max-width: 1600px; margin: 0 auto; }
       h1 { color: white; margin-bottom: 20px; font-size: 2.2em; }
       h2 { color: white; margin: 30px 0 15px; font-size: 1.6em; border-left: 4px solid #ffd700; padding-left: 15px; }
-      h3 { color: #333; margin-bottom: 10px; font-size: 1.2em; }
       .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 25px; }
       .stat-card { background: white; border-radius: 12px; padding: 18px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); transition: transform 0.2s; }
       .stat-card:hover { transform: translateY(-3px); }
       .stat-title { font-size: 0.75em; color: #666; text-transform: uppercase; letter-spacing: 1px; }
       .stat-value { font-size: 1.8em; font-weight: bold; color: #333; margin-top: 5px; }
-      .stat-change { font-size: 0.7em; margin-top: 5px; }
-      .stat-up { color: #10b981; }
-      .stat-down { color: #ef4444; }
       .misscall-card { background: linear-gradient(135deg, #ff6b6b, #ff8e8e); }
       .misscall-card .stat-title, .misscall-card .stat-value { color: white; }
       .alert-card { background: linear-gradient(135deg, #f59e0b, #ef4444); color: white; }
@@ -396,47 +401,30 @@ function getDashboardHTML(data) {
       .executive-stat-label { font-size: 0.6em; color: #666; }
       .stage-row { padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid #eee; background: #fefce8; }
       .stage-badge { padding: 3px 8px; border-radius: 15px; font-size: 0.65em; }
-      .status-badge { padding: 3px 8px; border-radius: 15px; font-size: 0.65em; display: inline-block; margin: 2px; }
-      .status-pending { background: #fef3c7; color: #92400e; }
-      .status-converted { background: #d1fae5; color: #065f46; }
-      .status-waiting { background: #dbeafe; color: #1e40af; }
-      .status-not-converted { background: #fee2e2; color: #991b1b; }
-      .stage-awaiting { background: #fef3c7; color: #b45309; }
-      .stage-notified { background: #ede9fe; color: #5b21b6; }
-      .stage-connected { background: #c8e6e9; color: #00695c; }
+      .alert-row-exec { padding: 8px 12px; display: flex; justify-content: space-between; background: #fef2f2; border-top: 1px solid #fecaca; }
+      .executive-detail-btn { background: #128C7E; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 0.7em; margin: 8px 15px; width: calc(100% - 30px); }
+      .patient-list { display: none; margin: 0 15px 15px 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; max-height: 250px; overflow-y: auto; font-size: 0.7em; }
+      .patient-list.show { display: block; }
+      .patient-item { padding: 6px; border-bottom: 1px solid #eee; }
+      .no-reply { color: #ef4444; font-weight: bold; }
       
       .stage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 25px; }
       .stage-card { background: white; border-radius: 10px; padding: 10px; text-align: center; border-left: 3px solid; }
-      .stage-card.awaiting_branch { border-color: #f59e0b; }
-      .stage-card.branch_selected { border-color: #3b82f6; }
-      .stage-card.executive_notified { border-color: #8b5cf6; }
-      .stage-card.converted { border-color: #10b981; }
       .stage-name { font-size: 0.65em; color: #666; text-transform: uppercase; }
       .stage-value { font-size: 1.3em; font-weight: bold; margin-top: 3px; }
       
       .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-bottom: 30px; }
       .chart-card { background: white; border-radius: 12px; padding: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-      
       .recent-section { background: white; border-radius: 12px; padding: 20px; margin-bottom: 25px; overflow-x: auto; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
       table { width: 100%; border-collapse: collapse; font-size: 0.8em; }
       th { background: #f8f9fa; padding: 8px; text-align: left; font-weight: 600; }
       td { padding: 8px; border-bottom: 1px solid #e2e8f0; }
       .badge { padding: 2px 6px; border-radius: 10px; font-size: 0.65em; font-weight: 600; }
-      .badge-pending { background: #fef3c7; color: #92400e; }
-      .badge-converted { background: #d1fae5; color: #065f46; }
-      .badge-waiting { background: #dbeafe; color: #1e40af; }
-      
       .top-patients-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
       .top-patient-card { background: #f8f9fa; border-radius: 10px; padding: 10px; border-left: 3px solid #ff6b6b; }
       .refresh-btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; margin-bottom: 15px; font-weight: bold; }
       .refresh-btn:hover { background: #5a67d8; }
       .last-updated { color: white; margin-bottom: 15px; font-size: 0.8em; }
-      .executive-detail-btn { background: #128C7E; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 0.7em; margin: 8px 15px; width: calc(100% - 30px); }
-      .patient-list { display: none; margin: 0 15px 15px 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; max-height: 250px; overflow-y: auto; font-size: 0.7em; }
-      .patient-list.show { display: block; }
-      .patient-item { padding: 6px; border-bottom: 1px solid #eee; }
-      .patient-item:last-child { border-bottom: none; }
-      .no-reply { color: #ef4444; font-weight: bold; }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   </head>
@@ -447,14 +435,12 @@ function getDashboardHTML(data) {
       <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
       <div class="last-updated">Last updated: ${new Date().toLocaleString()}</div>
       
-      <!-- Alert Cards -->
       <div class="stats-grid">
-        <div class="stat-card alert-card"><div class="stat-title">⚠️ No Reply</div><div class="stat-value">${patientsWithoutReply.length}</div><div class="stat-change">Patients awaiting executive action</div></div>
-        <div class="stat-card alert-card"><div class="stat-title">📞 Single Miss Call</div><div class="stat-value">${singleMissCallPatients.length}</div><div class="stat-change">First time callers</div></div>
-        <div class="stat-card alert-card"><div class="stat-title">📨 Template Sent</div><div class="stat-value">${templateSentPatients.length}</div><div class="stat-change">Executive notified</div></div>
+        <div class="stat-card alert-card"><div class="stat-title">⚠️ No Reply</div><div class="stat-value">${patientsWithoutReply.length}</div></div>
+        <div class="stat-card alert-card"><div class="stat-title">📞 Single Miss Call</div><div class="stat-value">${singleMissCallPatients.length}</div></div>
+        <div class="stat-card alert-card"><div class="stat-title">📨 Template Sent</div><div class="stat-value">${templateSentPatients.length}</div></div>
       </div>
       
-      <!-- Overall Stats -->
       <div class="stats-grid">
         <div class="stat-card"><div class="stat-title">Total Patients</div><div class="stat-value">${totalPatients}</div></div>
         <div class="stat-card"><div class="stat-title">Pending</div><div class="stat-value">${pendingCount}</div></div>
@@ -463,11 +449,10 @@ function getDashboardHTML(data) {
         <div class="stat-card"><div class="stat-title">Not Converted</div><div class="stat-value">${notConvertedCount}</div></div>
         <div class="stat-card misscall-card"><div class="stat-title">Total Miss Calls</div><div class="stat-value">${missCallTotal}</div></div>
         <div class="stat-card misscall-card"><div class="stat-title">Today's Miss Calls</div><div class="stat-value">${missCallToday}</div></div>
-        <div class="stat-card"><div class="stat-title">Yesterday</div><div class="stat-value">${missCallYesterday}</div><div class="stat-change ${missCallToday > missCallYesterday ? 'stat-up' : 'stat-down'}">${missCallToday > missCallYesterday ? '↑' : '↓'} ${Math.abs(missCallToday - missCallYesterday)}</div></div>
+        <div class="stat-card"><div class="stat-title">Yesterday</div><div class="stat-value">${missCallYesterday}</div></div>
         <div class="stat-card"><div class="stat-title">Last 7 Days</div><div class="stat-value">${missCallLast7Days}</div></div>
       </div>
       
-      <!-- Overall Test Distribution -->
       <h2>📊 Overall Test Distribution</h2>
       <div class="stats-grid">
         <div class="stat-card"><div class="stat-title">MRI</div><div class="stat-value">${overallTests.MRI}</div></div>
@@ -477,7 +462,6 @@ function getDashboardHTML(data) {
         <div class="stat-card"><div class="stat-title">Others</div><div class="stat-value">${overallTests.OTHER}</div></div>
       </div>
       
-      <!-- Branch Wise Analytics -->
       <h2>🏢 Branch Wise Analytics</h2>
       <div class="branch-grid">
         ${Object.entries(branchTests).map(([branch, tests]) => `
@@ -504,8 +488,7 @@ function getDashboardHTML(data) {
         `).join('')}
       </div>
       
-      <!-- Executive Wise Stats -->
-      <h2>👥 Executive Performance & Patient Tracking</h2>
+      <h2>👥 Executive Performance</h2>
       <div class="executive-grid">
         ${Object.entries(executiveStats).map(([branch, stats]) => `
           <div class="executive-card">
@@ -520,135 +503,88 @@ function getDashboardHTML(data) {
               <div class="executive-stat"><div class="executive-stat-number" style="color: #ef4444;">${stats.notConverted}</div><div class="executive-stat-label">Not Converted</div></div>
             </div>
             <div class="stage-row">
-              <span class="stage-badge stage-awaiting">📌 Awaiting Branch: ${stats.awaitingBranch}</span>
-              <span class="stage-badge" style="background:#dbeafe;color:#1e40af;">✅ Branch Selected: ${stats.branchSelected}</span>
-              <span class="stage-badge" style="background:#fef3c7;color:#b45309;">📝 Awaiting Name: ${stats.awaitingName}</span>
-              <span class="stage-badge" style="background:#fef3c7;color:#b45309;">🔬 Awaiting Test: ${stats.awaitingTestType + stats.awaitingTestDetails}</span>
-              <span class="stage-badge stage-notified">📢 Notified: ${stats.executiveNotified}</span>
-              <span class="stage-badge stage-connected">💬 Connected: ${stats.connected}</span>
+              <span class="stage-badge" style="background:#fef3c7;">📌 Awaiting: ${stats.awaitingBranch}</span>
+              <span class="stage-badge" style="background:#dbeafe;">✅ Selected: ${stats.branchSelected}</span>
+              <span class="stage-badge" style="background:#fef3c7;">📝 Name: ${stats.awaitingName}</span>
+              <span class="stage-badge" style="background:#fef3c7;">🔬 Test: ${stats.awaitingTestType + stats.awaitingTestDetails}</span>
+              <span class="stage-badge" style="background:#ede9fe;">📢 Notified: ${stats.executiveNotified}</span>
+              <span class="stage-badge" style="background:#c8e6e9;">💬 Connected: ${stats.connected}</span>
             </div>
-            <div style="padding: 8px 12px; display: flex; justify-content: space-between; background: #fef2f2; border-top: 1px solid #fecaca;">
+            <div class="alert-row-exec">
               <span>⚠️ No Reply: <strong style="color:#ef4444;">${stats.noReply}</strong></span>
-              <span>📞 Single Miss Call: <strong style="color:#f97316;">${stats.singleMissCall}</strong></span>
+              <span>📞 Single Call: <strong style="color:#f97316;">${stats.singleMissCall}</strong></span>
               <span>📨 Template Sent: <strong style="color:#10b981;">${stats.templateSent}</strong></span>
             </div>
-            <button class="executive-detail-btn" onclick="togglePatientList('${branch}')">📋 View All ${stats.total} Patients</button>
+            <button class="executive-detail-btn" onclick="togglePatientList('${branch}')">📋 View ${stats.total} Patients</button>
             <div id="patient-list-${branch}" class="patient-list">
-              ${executivePatients[branch] && executivePatients[branch].length > 0 ? executivePatients[branch].map(p => `
+              ${executivePatients[branch] && executivePatients[branch].length > 0 ? executivePatients[branch].slice(0, 20).map(p => `
                 <div class="patient-item">
                   <strong>${p.patientName || 'Unknown'}</strong> (${p.patientPhone})<br>
                   <small>Test: ${p.testDetails || p.testType || 'N/A'} | ${p.missCallCount} calls</small><br>
                   <small>Stage: ${p.currentStage || 'N/A'} | Status: ${p.status || 'N/A'}</small>
-                  ${!p.executiveActionTaken ? '<span class="no-reply"> ⚠️ No reply yet</span>' : ''}
+                  ${!p.executiveActionTaken ? '<span class="no-reply"> ⚠️ No reply</span>' : ''}
                 </div>
-              `).join('') : '<div class="patient-item">No patients assigned</div>'}
+              `).join('') : '<div class="patient-item">No patients</div>'}
             </div>
           </div>
         `).join('')}
       </div>
       
-      <!-- Stage Tracking -->
-      <h2>📈 Stage Wise Tracking</h2>
+      <h2>📈 Stage Tracking</h2>
       <div class="stage-grid">
-        <div class="stage-card awaiting_branch"><div class="stage-name">Awaiting Branch</div><div class="stage-value">${stageStats.awaiting_branch || 0}</div></div>
-        <div class="stage-card branch_selected"><div class="stage-name">Branch Selected</div><div class="stage-value">${stageStats.branch_selected || 0}</div></div>
+        <div class="stage-card"><div class="stage-name">Awaiting Branch</div><div class="stage-value">${stageStats.awaiting_branch || 0}</div></div>
+        <div class="stage-card"><div class="stage-name">Branch Selected</div><div class="stage-value">${stageStats.branch_selected || 0}</div></div>
         <div class="stage-card"><div class="stage-name">Awaiting Name</div><div class="stage-value">${stageStats.awaiting_name || 0}</div></div>
         <div class="stage-card"><div class="stage-name">Awaiting Test</div><div class="stage-value">${(stageStats.awaiting_test_type || 0) + (stageStats.awaiting_test_details || 0)}</div></div>
-        <div class="stage-card executive_notified"><div class="stage-name">Executive Notified</div><div class="stage-value">${stageStats.executive_notified || 0}</div></div>
-        <div class="stage-card converted"><div class="stage-name">Connected</div><div class="stage-value">${stageStats.connected || 0}</div></div>
-        <div class="stage-card converted"><div class="stage-name">Converted</div><div class="stage-value">${stageStats.converted || 0}</div></div>
+        <div class="stage-card"><div class="stage-name">Notified</div><div class="stage-value">${stageStats.executive_notified || 0}</div></div>
+        <div class="stage-card"><div class="stage-name">Connected</div><div class="stage-value">${stageStats.connected || 0}</div></div>
+        <div class="stage-card"><div class="stage-name">Converted</div><div class="stage-value">${stageStats.converted || 0}</div></div>
         <div class="stage-card"><div class="stage-name">Waiting</div><div class="stage-value">${stageStats.waiting || 0}</div></div>
         <div class="stage-card"><div class="stage-name">Not Converted</div><div class="stage-value">${stageStats.not_converted || 0}</div></div>
       </div>
       
-      <!-- Charts -->
       <div class="charts-grid">
-        <div class="chart-card">
-          <canvas id="dailyMissCallsChart" style="width:100%; max-height:300px;"></canvas>
-        </div>
-        <div class="chart-card">
-          <canvas id="branchTestsChart" style="width:100%; max-height:300px;"></canvas>
-        </div>
+        <div class="chart-card"><canvas id="dailyMissCallsChart"></canvas></div>
+        <div class="chart-card"><canvas id="branchTestsChart"></canvas></div>
       </div>
       
-      <!-- Top Miss Call Patients -->
-      <h2>📞 Top Miss Call Patients (Most Active)</h2>
+      <h2>📞 Top Miss Call Patients</h2>
       <div class="top-patients-grid">
         ${topMissCallPatients.map(p => `
           <div class="top-patient-card">
             <div style="font-weight: bold;">${p.patientName || 'Unknown'}</div>
-            <div style="color: #666; font-size: 0.75em;">${p.patientPhone}</div>
-            <div style="color: #ff6b6b; font-weight: bold;">${p.missCallCount || 1} calls</div>
-            <div style="font-size: 0.65em; color: #888;">Branch: ${p.branch || 'N/A'} | ${p.status || 'pending'}</div>
+            <div style="font-size: 0.75em;">${p.patientPhone}</div>
+            <div style="color: #ff6b6b;">${p.missCallCount || 1} calls</div>
+            <div style="font-size: 0.65em;">Branch: ${p.branch || 'N/A'}</div>
           </div>
         `).join('')}
       </div>
       
-      <!-- Recent Patients -->
-      <h2>🕒 Recent Patients (Last 30)</h2>
+      <h2>🕒 Recent Patients</h2>
       <div class="recent-section">
-        <table>
-          <thead><tr><th>Patient</th><th>Phone</th><th>Branch</th><th>Tests</th><th>Stage</th><th>Status</th><th>Miss Calls</th><th>Time</th></tr></thead>
-          <tbody>
-            ${recentPatients.slice(0, 30).map(p => `
-              <tr>
-                <td>${p.patientName || 'N/A'}</td>
-                <td>${p.patientPhone || 'N/A'}</td>
-                <td>${p.branch || 'N/A'}</td>
-                <td>${p.testDetails || p.testType || 'N/A'}</td>
-                <td><span class="badge badge-${p.currentStage || 'pending'}">${(p.currentStage || 'pending').replace(/_/g, ' ')}</span></td>
-                <td><span class="badge badge-${p.status || 'pending'}">${p.status || 'pending'}</span></td>
-                <td>${p.missCallCount || 1}</td>
-                <td>${new Date(p.createdAt).toLocaleString()}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+        <table><thead><tr><th>Patient</th><th>Phone</th><th>Branch</th><th>Tests</th><th>Stage</th><th>Status</th><th>Calls</th><th>Time</th></tr></thead>
+        <tbody>${recentPatients.slice(0, 20).map(p => `<tr><td>${p.patientName || 'N/A'}</td><td>${p.patientPhone || 'N/A'}</td><td>${p.branch || 'N/A'}</td><td>${p.testDetails || p.testType || 'N/A'}</td><td>${(p.currentStage || 'pending').replace(/_/g, ' ')}</td><td>${p.status || 'pending'}</td><td>${p.missCallCount || 1}</td><td>${new Date(p.createdAt).toLocaleString()}</td></tr>`).join('')}</tbody></table>
       </div>
       
-      <!-- Recent Miss Calls -->
       <h2>📞 Recent Miss Calls</h2>
       <div class="recent-section">
-        <table>
-          <thead><tr><th>Phone</th><th>Branch</th><th>Time</th></tr></thead>
-          <tbody>
-            ${recentMissCalls.slice(0, 30).map(m => `
-              <tr><td>${m.phoneNumber || 'N/A'}</td><td>${m.branch || 'N/A'}</td><td>${new Date(m.createdAt).toLocaleString()}</td></tr>
-            `).join('')}
-          </tbody>
-        </table>
+        <table><thead><tr><th>Phone</th><th>Branch</th><th>Time</th></tr></thead>
+        <tbody>${recentMissCalls.slice(0, 20).map(m => `<tr><td>${m.phoneNumber || 'N/A'}</td><td>${m.branch || 'N/A'}</td><td>${new Date(m.createdAt).toLocaleString()}</td></tr>`).join('')}</tbody></table>
       </div>
     </div>
     
     <script>
       function togglePatientList(branch) {
-        const element = document.getElementById('patient-list-' + branch);
-        element.classList.toggle('show');
+        document.getElementById('patient-list-' + branch).classList.toggle('show');
       }
-      
       new Chart(document.getElementById('dailyMissCallsChart'), {
-        type: 'line',
-        data: {
-          labels: ${JSON.stringify(dailyMissCallLabels)},
-          datasets: [{ label: 'Miss Calls', data: ${JSON.stringify(dailyMissCallValues)}, borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true, tension: 0.3 }]
-        },
-        options: { responsive: true, maintainAspectRatio: true }
+        type: 'line', data: { labels: ${JSON.stringify(dailyMissCallLabels)}, datasets: [{ label: 'Miss Calls', data: ${JSON.stringify(dailyMissCallValues)}, borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true }] },
+        options: { responsive: true }
       });
-      
       new Chart(document.getElementById('branchTestsChart'), {
-        type: 'bar',
-        data: {
-          labels: ${JSON.stringify(branchNames)},
-          datasets: [
-            { label: 'MRI', data: ${JSON.stringify(branchMRIData)}, backgroundColor: '#10b981' },
-            { label: 'CT', data: ${JSON.stringify(branchCTData)}, backgroundColor: '#3b82f6' },
-            { label: 'X-RAY', data: ${JSON.stringify(branchXRayData)}, backgroundColor: '#f59e0b' },
-            { label: 'USG', data: ${JSON.stringify(branchUSGData)}, backgroundColor: '#8b5cf6' }
-          ]
-        },
-        options: { responsive: true, maintainAspectRatio: true, scales: { y: { beginAtZero: true } } }
+        type: 'bar', data: { labels: ${JSON.stringify(branchNames)}, datasets: [{ label: 'MRI', data: ${JSON.stringify(branchMRIData)}, backgroundColor: '#10b981' }, { label: 'CT', data: ${JSON.stringify(branchCTData)}, backgroundColor: '#3b82f6' }, { label: 'X-RAY', data: ${JSON.stringify(branchXRayData)}, backgroundColor: '#f59e0b' }, { label: 'USG', data: ${JSON.stringify(branchUSGData)}, backgroundColor: '#8b5cf6' }] },
+        options: { responsive: true, scales: { y: { beginAtZero: true } } }
       });
-      
       setTimeout(() => location.reload(), 60000);
     </script>
   </body>
