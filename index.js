@@ -392,6 +392,36 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 }
 
 // ============================================
+// ✅ SEND SESSION MESSAGE TO PATIENT (FROM EXECUTIVE)
+// ============================================
+async function sendWhatsAppMessageToPatient(executiveNumber, patientPhone, message) {
+  console.log(`📤 Sending message from executive ${executiveNumber} to patient ${patientPhone}`);
+  console.log(`   Message: ${message.substring(0, 100)}...`);
+  
+  const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${patientPhone}`;
+  
+  const payload = {
+    messageText: message
+  };
+  
+  try {
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Authorization': WATI_TOKEN,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+    
+    console.log(`✅ Message sent successfully to patient`);
+    return response.data;
+  } catch (error) {
+    console.error(`❌ Failed to send message to patient:`, error.message);
+    throw error;
+  }
+}
+
+// ============================================
 // ✅ LEAD NOTIFICATION - WITH 7 PARAMETERS
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
@@ -1008,40 +1038,21 @@ app.post('/wati-webhook', async (req, res) => {
           status: 'active'
         });
         
-        if (existingSession) {
-          await sendLeadNotification(
-            senderNumber,
-            patient.patientName || 'Patient',
-            patient.patientPhone,
-            patient.branch || 'Branch',
-            patient.testDetails || 'Not specified',
-            patient.testType || 'Miss Call',
-            existingSession.sessionToken
-          );
-          console.log(`✅ Existing session link sent to executive`);
-        } else {
-          const sessionToken = crypto.randomBytes(16).toString('hex');
+        let sessionToken = existingSession?.sessionToken;
+        
+        if (!existingSession) {
+          sessionToken = crypto.randomBytes(16).toString('hex');
           
           await chatSessionsCollection.insertOne({
             sessionToken,
             executiveNumber: senderNumber,
             patientPhone: patient.patientPhone,
-            patientName: patient.patientName,
+            patientName: patient.patientName || 'Patient',
             createdAt: new Date(),
             lastActivity: new Date(),
             status: 'active',
             expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
           });
-          
-          await sendLeadNotification(
-            senderNumber,
-            patient.patientName || 'Patient',
-            patient.patientPhone,
-            patient.branch || 'Branch',
-            patient.testDetails || 'Not specified',
-            patient.testType || 'Miss Call',
-            sessionToken
-          );
           
           await patientsCollection.updateOne(
             { _id: patient._id },
@@ -1056,6 +1067,39 @@ app.post('/wati-webhook', async (req, res) => {
           );
           console.log(`✅ New chat session created: ${sessionToken}`);
         }
+        
+        // Send welcome message to patient from executive's number
+        const welcomeMessage = `Hi, I am UIC Support Team\n\nYour name is: ${patient.patientName || 'Patient'}\nTest: ${patient.testType || 'Not specified'}\nBranch: ${patient.branch || 'Main Branch'}`;
+        
+        try {
+          await sendWhatsAppMessageToPatient(senderNumber, patient.patientPhone, welcomeMessage);
+          console.log(`✅ Welcome message sent to patient from executive ${senderNumber}`);
+          
+          // Store welcome message in chat history
+          await chatMessagesCollection.insertOne({
+            sessionToken: sessionToken,
+            sender: 'executive',
+            text: welcomeMessage,
+            timestamp: new Date(),
+            isWelcomeMessage: true
+          });
+          
+        } catch (error) {
+          console.error(`❌ Failed to send welcome message:`, error.message);
+        }
+        
+        // Send notification to executive with chat link
+        await sendLeadNotification(
+          senderNumber,
+          patient.patientName || 'Patient',
+          patient.patientPhone,
+          patient.branch || 'Branch',
+          patient.testDetails || 'Not specified',
+          patient.testType || 'Miss Call',
+          sessionToken
+        );
+        
+        console.log(`✅ Executive notification sent with chat link`);
       }
       else if (text === 'CONVERT DONE') {
         await patientsCollection.updateOne(
@@ -1240,7 +1284,7 @@ app.post('/wati-webhook', async (req, res) => {
 });
 
 // ============================================
-// ✅ EXECUTIVE CHAT INTERFACE
+// ✅ EXECUTIVE CHAT INTERFACE - COMPLETE WITH AUTO WELCOME DISPLAY
 // ============================================
 app.get('/executive-chat/:token', async (req, res) => {
   const { token } = req.params;
@@ -1255,7 +1299,7 @@ app.get('/executive-chat/:token', async (req, res) => {
     if (patient && patient.chatSessionToken) {
       return res.redirect(`/executive-chat/${patient.chatSessionToken}`);
     }
-    return res.send(`<h2>❌ Invalid or Expired Session</h2>`);
+    return res.send(`<h2>❌ Invalid or Expired Session</h2><p>Please click "Connect to Patient" again from WhatsApp.</p>`);
   }
   
   if (session.expiresAt && new Date() > new Date(session.expiresAt)) {
@@ -1263,7 +1307,7 @@ app.get('/executive-chat/:token', async (req, res) => {
       { sessionToken: token },
       { $set: { status: 'expired' } }
     );
-    return res.send(`<h2>⏰ Session Expired</h2>`);
+    return res.send(`<h2>⏰ Session Expired (24 hours)</h2><p>Please click "Connect to Patient" again from WhatsApp.</p>`);
   }
   
   const messages = await chatMessagesCollection
@@ -1281,60 +1325,73 @@ app.get('/executive-chat/:token', async (req, res) => {
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; height: 100vh; }
-        .chat-container { max-width: 800px; margin: 0 auto; height: 100vh; display: flex; flex-direction: column; background: white; }
-        .chat-header { background: #075e54; color: white; padding: 15px; display: flex; justify-content: space-between; align-items: center; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; height: 100vh; }
+        .chat-container { max-width: 800px; margin: 0 auto; height: 100vh; display: flex; flex-direction: column; background: white; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
+        .chat-header { background: linear-gradient(135deg, #075e54, #128C7E); color: white; padding: 15px; display: flex; justify-content: space-between; align-items: center; }
         .patient-info { flex: 1; }
         .patient-name { font-weight: bold; font-size: 1.2em; }
-        .patient-phone { font-size: 0.8em; opacity: 0.8; }
-        .test-info { background: #128C7E; padding: 5px 10px; border-radius: 20px; font-size: 0.9em; }
-        .messages-container { flex: 1; overflow-y: auto; padding: 20px; background: #e5ddd5; }
+        .patient-phone { font-size: 0.8em; opacity: 0.9; }
+        .test-info { background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 20px; font-size: 0.85em; }
+        .messages-container { flex: 1; overflow-y: auto; padding: 20px; background: #e5ddd5; background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="rgba(255,255,255,0.05)"/><circle cx="50" cy="50" r="40" fill="none" stroke="rgba(0,0,0,0.03)" stroke-width="2"/></svg>'); }
         .message { margin: 10px 0; display: flex; }
         .message.patient { justify-content: flex-start; }
         .message.executive { justify-content: flex-end; }
-        .message-content { max-width: 70%; padding: 10px 15px; border-radius: 10px; position: relative; }
-        .message.patient .message-content { background: white; border-bottom-left-radius: 0; }
-        .message.executive .message-content { background: #dcf8c6; border-bottom-right-radius: 0; }
+        .message.system { justify-content: center; }
+        .message-content { max-width: 70%; padding: 10px 15px; border-radius: 18px; position: relative; word-wrap: break-word; }
+        .message.patient .message-content { background: white; border-bottom-left-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .message.executive .message-content { background: #dcf8c6; border-bottom-right-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .message.system .message-content { background: #fff3cd; color: #856404; font-style: italic; font-size: 0.9em; text-align: center; max-width: 90%; border-radius: 20px; }
         .message-time { font-size: 0.7em; color: #999; margin-top: 5px; text-align: right; }
+        .message-status { font-size: 0.65em; color: #4caf50; margin-left: 5px; }
         .input-area { display: flex; padding: 15px; background: #f0f0f0; border-top: 1px solid #ddd; }
-        #messageInput { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 25px; outline: none; font-size: 1em; }
-        #sendBtn { width: 60px; height: 60px; border-radius: 50%; background: #075e54; color: white; border: none; margin-left: 10px; cursor: pointer; font-size: 1.2em; }
-        #sendBtn:hover { background: #128C7E; }
+        #messageInput { flex: 1; padding: 12px 15px; border: 1px solid #ddd; border-radius: 25px; outline: none; font-size: 1em; font-family: inherit; }
+        #sendBtn { width: 50px; height: 50px; border-radius: 50%; background: #075e54; color: white; border: none; margin-left: 10px; cursor: pointer; font-size: 1.2em; transition: all 0.3s; }
+        #sendBtn:hover { background: #128C7E; transform: scale(1.02); }
+        #sendBtn:disabled { background: #ccc; cursor: not-allowed; transform: none; }
         .quick-replies { display: flex; gap: 10px; padding: 10px 15px; background: white; border-top: 1px solid #eee; flex-wrap: wrap; }
-        .quick-reply-btn { background: #f0f0f0; border: 1px solid #ddd; padding: 8px 15px; border-radius: 20px; cursor: pointer; font-size: 0.9em; }
-        .quick-reply-btn:hover { background: #e0e0e0; }
+        .quick-reply-btn { background: #f0f0f0; border: 1px solid #ddd; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 0.9em; transition: all 0.2s; }
+        .quick-reply-btn:hover { background: #075e54; color: white; border-color: #075e54; }
+        .typing-indicator { display: none; padding: 10px 20px; color: #666; font-size: 0.85em; font-style: italic; }
+        .welcome-badge { background: #e8f5e9; color: #2e7d32; padding: 8px 15px; border-radius: 20px; font-size: 0.85em; margin-top: 5px; text-align: center; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .message { animation: fadeIn 0.3s ease; }
       </style>
     </head>
     <body>
       <div class="chat-container">
         <div class="chat-header">
           <div class="patient-info">
-            <div class="patient-name">${session.patientName || 'Patient'}</div>
+            <div class="patient-name">${escapeHtml(session.patientName || 'Patient')}</div>
             <div class="patient-phone">${session.patientPhone}</div>
           </div>
-          ${patient ? `<div class="test-info">${patient.testType || 'Miss Call'}</div>` : ''}
+          ${patient ? `<div class="test-info">📋 ${escapeHtml(patient.testType || 'Miss Call')}</div>` : ''}
         </div>
         
         <div class="messages-container" id="messages">
           ${messages.map(msg => `
-            <div class="message ${msg.sender === 'executive' ? 'executive' : 'patient'}">
+            <div class="message ${msg.sender === 'executive' ? 'executive' : msg.sender === 'system' ? 'system' : 'patient'}">
               <div class="message-content">
-                ${msg.text}
-                <div class="message-time">${new Date(msg.timestamp).toLocaleTimeString()}</div>
+                ${escapeHtml(msg.text)}
+                <div class="message-time">
+                  ${new Date(msg.timestamp).toLocaleTimeString()}
+                  ${msg.sender === 'executive' && !msg.isWelcomeMessage ? '<span class="message-status">✓ Sent</span>' : ''}
+                  ${msg.isWelcomeMessage ? '<span class="message-status">✓ Auto-sent</span>' : ''}
+                </div>
               </div>
             </div>
           `).join('')}
+          <div class="typing-indicator" id="typingIndicator">✍️ Patient is typing...</div>
         </div>
         
         <div class="quick-replies">
-          <button class="quick-reply-btn" onclick="sendQuickReply('Thank you')">Thank you</button>
-          <button class="quick-reply-btn" onclick="sendQuickReply('Please wait')">Please wait</button>
-          <button class="quick-reply-btn" onclick="sendQuickReply('I will check')">I will check</button>
-          <button class="quick-reply-btn" onclick="sendQuickReply('Please send reports')">Send reports</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('Thank you')">🙏 Thank you</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('Please wait, I am checking')">⏳ Please wait</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('I will get back to you soon')">📞 Will revert soon</button>
+          <button class="quick-reply-btn" onclick="sendQuickReply('Please send your reports')">📄 Send reports</button>
         </div>
         
         <div class="input-area">
-          <input type="text" id="messageInput" placeholder="Type your message...">
+          <input type="text" id="messageInput" placeholder="Type your message here..." autocomplete="off">
           <button id="sendBtn" onclick="sendMessage()">➤</button>
         </div>
       </div>
@@ -1343,8 +1400,14 @@ app.get('/executive-chat/:token', async (req, res) => {
         const sessionToken = '${token}';
         const messagesDiv = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
         let lastMessageCount = ${messages.length};
+        let lastActivity = Date.now();
         
+        // Auto-scroll to bottom
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        
+        // Check for new messages every 2 seconds
         setInterval(checkNewMessages, 2000);
         
         async function checkNewMessages() {
@@ -1354,8 +1417,17 @@ app.get('/executive-chat/:token', async (req, res) => {
             if (data.messages && data.messages.length > 0) {
               data.messages.forEach(msg => {
                 const messageDiv = document.createElement('div');
-                messageDiv.className = 'message ' + (msg.sender === 'executive' ? 'executive' : 'patient');
-                messageDiv.innerHTML = \`<div class="message-content">\${msg.text}<div class="message-time">\${new Date(msg.timestamp).toLocaleTimeString()}</div></div>\`;
+                messageDiv.className = 'message ' + (msg.sender === 'executive' ? 'executive' : msg.sender === 'system' ? 'system' : 'patient');
+                messageDiv.innerHTML = \`
+                  <div class="message-content">
+                    \${escapeHtml(msg.text)}
+                    <div class="message-time">
+                      \${new Date(msg.timestamp).toLocaleTimeString()}
+                      \${msg.sender === 'executive' && !msg.isWelcomeMessage ? '<span class="message-status">✓ Sent</span>' : ''}
+                      \${msg.isWelcomeMessage ? '<span class="message-status">✓ Auto-sent</span>' : ''}
+                    </div>
+                  </div>
+                \`;
                 messagesDiv.appendChild(messageDiv);
               });
               lastMessageCount += data.messages.length;
@@ -1369,8 +1441,11 @@ app.get('/executive-chat/:token', async (req, res) => {
         async function sendMessage() {
           const text = messageInput.value.trim();
           if (!text) return;
+          
           messageInput.disabled = true;
-          document.getElementById('sendBtn').disabled = true;
+          sendBtn.disabled = true;
+          sendBtn.textContent = '⏳';
+          
           try {
             const response = await fetch('/api/send-to-patient', {
               method: 'POST',
@@ -1381,20 +1456,26 @@ app.get('/executive-chat/:token', async (req, res) => {
             if (result.success) {
               const messageDiv = document.createElement('div');
               messageDiv.className = 'message executive';
-              messageDiv.innerHTML = \`<div class="message-content">\${text}<div class="message-time">Just now</div></div>\`;
+              messageDiv.innerHTML = \`
+                <div class="message-content">
+                  \${escapeHtml(text)}
+                  <div class="message-time">Just now <span class="message-status">✓ Sent</span></div>
+                </div>
+              \`;
               messagesDiv.appendChild(messageDiv);
               lastMessageCount++;
               messageInput.value = '';
               messagesDiv.scrollTop = messagesDiv.scrollHeight;
             } else {
-              alert('Failed to send message: ' + result.error);
+              alert('Failed to send message: ' + (result.error || 'Unknown error'));
             }
           } catch (error) {
-            alert('Error sending message');
-            console.error(error);
+            console.error('Error sending message:', error);
+            alert('Error sending message. Please check your connection.');
           } finally {
             messageInput.disabled = false;
-            document.getElementById('sendBtn').disabled = false;
+            sendBtn.disabled = false;
+            sendBtn.textContent = '➤';
             messageInput.focus();
           }
         }
@@ -1404,11 +1485,17 @@ app.get('/executive-chat/:token', async (req, res) => {
           sendMessage();
         }
         
+        function escapeHtml(text) {
+          const div = document.createElement('div');
+          div.textContent = text;
+          return div.innerHTML;
+        }
+        
         messageInput.addEventListener('keypress', (e) => {
           if (e.key === 'Enter') sendMessage();
         });
         
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        messageInput.focus();
       </script>
     </body>
     </html>
@@ -1428,29 +1515,19 @@ app.post('/api/send-to-patient', async (req, res) => {
     });
     
     if (!session) {
-      return res.status(404).json({ success: false, error: 'Session not found' });
+      return res.status(404).json({ success: false, error: 'Session not found or expired' });
     }
     
-    const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${session.patientPhone}`;
+    // Send message via WATI
+    const result = await sendWhatsAppMessageToPatient(session.executiveNumber, session.patientPhone, text);
     
-    const payload = {
-      messageText: text
-    };
-    
-    const response = await axios.post(url, payload, {
-      headers: {
-        'Authorization': WATI_TOKEN,
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000
-    });
-    
+    // Store message in database
     await chatMessagesCollection.insertOne({
       sessionToken,
       sender: 'executive',
       text: text,
       timestamp: new Date(),
-      watiMessageId: response.data?.messageId
+      watiMessageId: result?.messageId
     });
     
     await chatSessionsCollection.updateOne(
@@ -1458,7 +1535,7 @@ app.post('/api/send-to-patient', async (req, res) => {
       { $set: { lastActivity: new Date() } }
     );
     
-    res.json({ success: true, messageId: response.data?.messageId });
+    res.json({ success: true, messageId: result?.messageId });
     
   } catch (error) {
     console.error('❌ Send message error:', error);
@@ -1484,6 +1561,76 @@ app.get('/api/chat-messages/:token', async (req, res) => {
     messages: newMessages,
     total: messages.length
   });
+});
+
+// ============================================
+// ✅ CONNECT CHAT ENDPOINT - REDIRECT TO EXECUTIVE CHAT
+// ============================================
+app.get('/connect-chat/:token', async (req, res) => {
+  const { token } = req.params;
+  
+  console.log(`🔗 Connect chat requested for token: ${token}`);
+  
+  // Find session by token
+  const session = await chatSessionsCollection.findOne({ 
+    sessionToken: token,
+    status: 'active'
+  });
+  
+  if (!session) {
+    return res.status(404).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Session Not Found</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body { font-family: 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; justify-content: center; align-items: center; margin: 0; padding: 20px; }
+          .card { background: white; border-radius: 20px; padding: 40px; max-width: 500px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
+          h2 { color: #dc3545; margin-bottom: 20px; }
+          p { color: #666; margin-bottom: 20px; line-height: 1.6; }
+          .btn { display: inline-block; background: #075e54; color: white; padding: 12px 24px; text-decoration: none; border-radius: 25px; margin-top: 10px; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>🔗 Session Not Found</h2>
+          <p>The chat session you're trying to access is not active.</p>
+          <p>Please click "Connect to Patient" again from your WhatsApp to start a new chat.</p>
+          <a href="javascript:history.back()" class="btn">Go Back</a>
+        </div>
+      </body>
+      </html>
+    `);
+  }
+  
+  // Redirect to executive chat interface
+  res.redirect(`/executive-chat/${token}`);
+});
+
+// ============================================
+// ✅ EXECUTIVE ACTION HANDLER
+// ============================================
+app.get('/exec-action', async (req, res) => {
+  const { action, chat } = req.query;
+  
+  const status = action === 'convert' ? 'converted' : action === 'waiting' ? 'waiting' : 'not_converted';
+  const stage = action === 'convert' ? STAGES.CONVERTED : action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
+  
+  await patientsCollection.updateOne(
+    { chatId: chat },
+    { 
+      $set: { 
+        status, 
+        currentStage: stage, 
+        updatedAt: new Date(),
+        executiveActionTaken: true
+      },
+      $push: { stageHistory: { stage: stage, timestamp: new Date() } }
+    }
+  );
+  
+  res.send(`✅ Patient marked as ${status}`);
 });
 
 // ============================================
@@ -1629,194 +1776,6 @@ app.get('/api/stats', async (req, res) => {
 });
 
 // ============================================
-// ✅ CONNECT CHAT ENDPOINT - FIXED
-// ============================================
-app.get('/connect-chat/:chatId', async (req, res) => {
-  const { chatId } = req.params;
-  const { token } = req.query;
-  
-  // Find patient by chatId
-  const patient = await patientsCollection.findOne({ chatId });
-  
-  if (!patient) {
-    return res.status(404).send(`
-      <html>
-        <head><title>Patient Not Found</title></head>
-        <body style="font-family: Arial; padding: 30px;">
-          <h2>❌ Patient Not Found</h2>
-          <p>No patient found with ID: ${chatId}</p>
-        </body>
-      </html>
-    `);
-  }
-  
-  // Check if token matches session token
-  if (!patient.chatSessionToken || patient.chatSessionToken !== token) {
-    return res.status(403).send(`
-      <html>
-        <head><title>Unauthorized</title></head>
-        <body style="font-family: Arial; padding: 30px;">
-          <h2>🔒 Unauthorized Access</h2>
-          <p>Invalid or expired session token.</p>
-          <p>Please click "Connect to Patient" again from WhatsApp.</p>
-          <p><a href="javascript:history.back()">Go Back</a></p>
-        </body>
-      </html>
-    `);
-  }
-  
-  // Check session expiry
-  const session = await chatSessionsCollection.findOne({ 
-    sessionToken: token,
-    status: 'active'
-  });
-  
-  if (!session) {
-    return res.status(403).send(`
-      <html>
-        <head><title>Session Expired</title></head>
-        <body style="font-family: Arial; padding: 30px;">
-          <h2>⏰ Session Expired</h2>
-          <p>This chat session is no longer active.</p>
-          <p>Please click "Connect to Patient" again from WhatsApp.</p>
-        </body>
-      </html>
-    `);
-  }
-  
-  if (session.expiresAt && new Date() > new Date(session.expiresAt)) {
-    await chatSessionsCollection.updateOne(
-      { sessionToken: token },
-      { $set: { status: 'expired' } }
-    );
-    return res.status(403).send(`
-      <html>
-        <head><title>Session Expired</title></head>
-        <body style="font-family: Arial; padding: 30px;">
-          <h2>⏰ Session Expired (24 hours)</h2>
-          <p>This chat session has expired.</p>
-          <p>Please click "Connect to Patient" again from WhatsApp.</p>
-        </body>
-      </html>
-    `);
-  }
-  
-  // Return patient details in HTML format
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Patient Details - ${patient.patientName || 'Patient'}</title>
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; background: white; border-radius: 15px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
-        .header { background: linear-gradient(135deg, #075e54, #128C7E); color: white; padding: 20px; text-align: center; }
-        .header h1 { font-size: 1.8em; margin-bottom: 5px; }
-        .header p { opacity: 0.9; }
-        .content { padding: 25px; }
-        .detail-card { background: #f8f9fa; border-radius: 10px; padding: 15px; margin-bottom: 15px; border-left: 4px solid #075e54; }
-        .detail-label { font-size: 0.8em; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
-        .detail-value { font-size: 1.2em; font-weight: bold; color: #333; }
-        .test-info { background: #e8f5e9; border-left-color: #4caf50; }
-        .misscall-info { background: #fff3e0; border-left-color: #ff9800; }
-        .stage-badge { display: inline-block; padding: 5px 12px; border-radius: 20px; font-size: 0.8em; font-weight: bold; margin-top: 10px; }
-        .stage-pending { background: #fff3e0; color: #f57c00; }
-        .stage-converted { background: #e8f5e9; color: #388e3c; }
-        .stage-waiting { background: #e3f2fd; color: #1976d2; }
-        .btn-whatsapp { display: inline-block; background: #25D366; color: white; padding: 12px 24px; text-decoration: none; border-radius: 25px; margin-top: 15px; font-weight: bold; text-align: center; width: 100%; }
-        .btn-whatsapp:hover { background: #128C7E; }
-        .footer { background: #f8f9fa; padding: 15px; text-align: center; color: #666; font-size: 0.8em; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h1>🏥 Patient Details</h1>
-          <p>Click below to chat with patient on WhatsApp</p>
-        </div>
-        <div class="content">
-          <div class="detail-card">
-            <div class="detail-label">👤 Patient Name</div>
-            <div class="detail-value">${patient.patientName || 'Not specified'}</div>
-          </div>
-          <div class="detail-card">
-            <div class="detail-label">📞 Phone Number</div>
-            <div class="detail-value">${patient.patientPhone || 'Not specified'}</div>
-          </div>
-          <div class="detail-card">
-            <div class="detail-label">📍 Branch</div>
-            <div class="detail-value">${patient.branch || 'Not specified'}</div>
-          </div>
-          <div class="detail-card test-info">
-            <div class="detail-label">🔬 Test Type</div>
-            <div class="detail-value">${patient.testType || 'Not specified'}</div>
-          </div>
-          <div class="detail-card test-info">
-            <div class="detail-label">📋 Test Details</div>
-            <div class="detail-value">${patient.testDetails || 'Not specified'}</div>
-          </div>
-          ${patient.missCallTime ? `
-          <div class="detail-card misscall-info">
-            <div class="detail-label">📞 Miss Call Time</div>
-            <div class="detail-value">${new Date(patient.missCallTime).toLocaleString()}</div>
-          </div>
-          ` : ''}
-          <div class="detail-card">
-            <div class="detail-label">📊 Current Status</div>
-            <div class="detail-value">
-              ${patient.status || 'pending'}
-              <span class="stage-badge stage-${patient.status || 'pending'}">${patient.currentStage || 'pending'}</span>
-            </div>
-          </div>
-          ${patient.imageUrl ? `
-          <div class="detail-card">
-            <div class="detail-label">📄 Prescription Image</div>
-            <div class="detail-value">
-              <a href="${patient.imageUrl}" target="_blank" style="color: #075e54;">Click to view prescription</a>
-            </div>
-          </div>
-          ` : ''}
-          <a href="https://wa.me/${patient.patientPhone}" target="_blank" class="btn-whatsapp">
-            💬 Chat with Patient on WhatsApp
-          </a>
-        </div>
-        <div class="footer">
-          Powered by Executive System | Session Active
-        </div>
-      </div>
-    </body>
-    </html>
-  `);
-});
-
-// ============================================
-// ✅ EXECUTIVE ACTION HANDLER
-// ============================================
-app.get('/exec-action', async (req, res) => {
-  const { action, chat } = req.query;
-  
-  const status = action === 'convert' ? 'converted' : action === 'waiting' ? 'waiting' : 'not_converted';
-  const stage = action === 'convert' ? STAGES.CONVERTED : action === 'waiting' ? STAGES.WAITING : STAGES.NOT_CONVERTED;
-  
-  await patientsCollection.updateOne(
-    { chatId: chat },
-    { 
-      $set: { 
-        status, 
-        currentStage: stage, 
-        updatedAt: new Date(),
-        executiveActionTaken: true
-      },
-      $push: { stageHistory: { stage: stage, timestamp: new Date() } }
-    }
-  );
-  
-  res.send(`✅ Patient marked as ${status}`);
-});
-
-// ============================================
 // ✅ HEALTH CHECK
 // ============================================
 app.get('/health', async (req, res) => {
@@ -1834,7 +1793,15 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 Tata-WATI Executive System (ULTIMATE EDITION)',
-    version: '7.0.0',
+    version: '8.0.0',
+    features: [
+      'Auto welcome message from executive to patient',
+      'Real-time chat interface',
+      'Session management (24h expiry)',
+      'OCR for prescriptions',
+      'AI classification',
+      'Executive dashboard'
+    ],
     endpoints: {
       admin_dashboard: '/admin',
       api_stats: '/api/stats',
@@ -1842,7 +1809,9 @@ app.get('/', (req, res) => {
       test_misscall: '/test-misscall',
       fix_database: '/fix-database',
       webhook_wati: '/wati-webhook',
-      webhook_tata: '/tata-misscall-whatsapp'
+      webhook_tata: '/tata-misscall-whatsapp',
+      executive_chat: '/executive-chat/:token',
+      connect_chat: '/connect-chat/:token'
     }
   });
 });
@@ -1865,6 +1834,19 @@ app.use('/admin', (req, res, next) => {
 }, dashboardRouter);
 
 // ============================================
+// ✅ ESCAPE HTML HELPER
+// ============================================
+function escapeHtml(text) {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ============================================
 // ✅ START SERVER
 // ============================================
 async function startServer() {
@@ -1878,13 +1860,11 @@ async function startServer() {
       console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
       console.log(`📍 Admin Dashboard: http://localhost:${PORT}/admin`);
       console.log(`📍 Chat System: Active (24h expiry)`);
+      console.log(`📍 Auto Welcome Message: ✅ Active`);
       console.log(`📍 Executive Numbers: Clean & Trimmed`);
       console.log(`📍 OCR Processing: ✅ Active (JPG, PNG, PDF)`);
-      console.log(`📍 DEDUPE WINDOW: 5 seconds`);
       console.log(`📍 AI Model: gpt-4o-mini`);
       console.log(`📍 Confidence Threshold: 0.8`);
-      console.log(`📍 Stage-Based Logic: ✅ Active`);
-      console.log(`📍 Parameters: 7 ({{1}} to {{7}})`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
