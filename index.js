@@ -392,7 +392,7 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION
+// ✅ LEAD NOTIFICATION - WITH 7 PARAMETERS (UPDATED)
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
   console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
@@ -400,13 +400,15 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
   console.log(`   Test Details: ${testDetails}, Test Type: ${testType}`);
   console.log(`   Chat Token: ${chatToken}`);
   
+  // ✅ 7 parameters ({{7}} ke liye connect-chat link)
   const parameters = [
     { name: "1", value: patientName || "Miss Call Patient" },
     { name: "2", value: patientPhone },
     { name: "3", value: branch },
     { name: "4", value: testDetails || "Not specified" },
     { name: "5", value: testType || "Miss Call" },
-    { name: "6", value: `${SELF_URL}/executive-chat/${chatToken}` }
+    { name: "6", value: `${SELF_URL}/executive-chat/${chatToken}` },
+    { name: "7", value: `${SELF_URL}/connect-chat/${chatToken}` }   // 👈 NEW
   ];
   
   return await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
@@ -1744,6 +1746,7 @@ async function startServer() {
       console.log(`📍 AI Model: gpt-4o-mini`);
       console.log(`📍 Confidence Threshold: 0.8`);
       console.log(`📍 Stage-Based Logic: ✅ Active`);
+      console.log(`📍 Parameters: 7 ({{1}} to {{7}})`);
       console.log('='.repeat(60) + '\n');
     });
   } catch (error) {
