@@ -1,34 +1,20 @@
-// dashboard.js - Complete Admin Dashboard
+// dashboard.js - Complete Admin Dashboard with Executive & Manager Tracking
 const express = require('express');
 const router = express.Router();
 
 router.get('/', async (req, res) => {
   try {
-    // ✅ Collections ko req se directly le lo
     const patientsCollection = req.patientsCollection;
     const processedCollection = req.processedCollection;
     const missCallsCollection = req.missCallsCollection;
     const chatSessionsCollection = req.chatSessionsCollection;
     const chatMessagesCollection = req.chatMessagesCollection;
+    const followupCollection = req.followupCollection;
     const STAGES = req.STAGES;
+    const PORT = req.PORT;
     
-    // ✅ Check if collections exist
-    if (!patientsCollection || !processedCollection || !missCallsCollection) {
-      console.log('Collections missing:', { 
-        patients: !!patientsCollection, 
-        processed: !!processedCollection, 
-        missCalls: !!missCallsCollection 
-      });
-      return res.status(503).send(`
-        <html>
-          <head><title>Dashboard Unavailable</title></head>
-          <body style="font-family: Arial; padding: 30px; text-align: center;">
-            <h2>⏳ Dashboard is loading...</h2>
-            <p>Database collections are being initialized. Please refresh in a few seconds.</p>
-            <button onclick="location.reload()" style="padding: 10px 20px; background: #075e54; color: white; border: none; border-radius: 5px;">Refresh</button>
-          </body>
-        </html>
-      `);
+    if (!patientsCollection || !processedCollection) {
+      throw new Error('Database collections not available');
     }
     
     // Executive numbers mapping
@@ -42,15 +28,34 @@ router.get('/', async (req, res) => {
       'Juhapura': process.env.JUHAPURA_EXECUTIVE || '919274682553',
       'Gandhinagar': process.env.GANDHINAGAR_EXECUTIVE || '919558591212',
       'Rajkot': process.env.RAJKOT_EXECUTIVE || '917880261858',
-      'Sabarmati': process.env.SABARMATI_EXECUTIVE || '917880261858'
+      'Sabarmati': process.env.SABARMATI_EXECUTIVE || '917880261858',
+      'Manager': process.env.MANAGER_NUMBER || '917698011233'
     };
     
     // Get all data
     const allPatients = await patientsCollection.find({}).toArray();
     const allMissCalls = await missCallsCollection.find({}).toArray();
+    const allFollowups = await followupCollection.find({}).toArray();
+    const allSessions = await chatSessionsCollection.find({}).toArray();
+    const allMessages = await chatMessagesCollection.find({}).toArray();
     
     // ============================================
-    // ✅ PATIENTS WITHOUT REPLY
+    // ✅ DATE RANGES
+    // ============================================
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    
+    const last7Days = new Date(today);
+    last7Days.setDate(last7Days.getDate() - 7);
+    
+    const last30Days = new Date(today);
+    last30Days.setDate(last30Days.getDate() - 30);
+    
+    // ============================================
+    // ✅ PATIENTS WITHOUT REPLY (No executive action)
     // ============================================
     const patientsWithoutReply = allPatients.filter(p => 
       p.executiveActionTaken === false && 
@@ -72,19 +77,40 @@ router.get('/', async (req, res) => {
     );
     
     // ============================================
-    // ✅ DATE RANGES
+    // ✅ ESCALATED PATIENTS (Waiting for manager action)
     // ============================================
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const escalatedPatients = allPatients.filter(p => 
+      p.escalatedToManager === true && 
+      p.escalatedResolved !== true
+    );
     
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
+    // ============================================
+    // ✅ HIGH MISS CALL PATIENTS (3+ calls)
+    // ============================================
+    const highMissCallPatients = allPatients.filter(p => (p.missCallCount || 1) >= 3);
     
-    const last7Days = new Date(today);
-    last7Days.setDate(last7Days.getDate() - 7);
+    // ============================================
+    // ✅ WAITING PATIENTS (More than 2 hours)
+    // ============================================
+    const waitingPatients = allPatients.filter(p => {
+      if (p.currentStage !== 'waiting') return false;
+      const waitingTime = Date.now() - new Date(p.updatedAt);
+      return waitingTime > 2 * 60 * 60 * 1000; // 2 hours
+    });
     
-    const last30Days = new Date(today);
-    last30Days.setDate(last30Days.getDate() - 30);
+    // ============================================
+    // ✅ FOLLOW-UP STATS
+    // ============================================
+    const followupStats = {
+      total: allFollowups.length,
+      noReply: allFollowups.filter(f => f.type === 'no_reply').length,
+      waiting: allFollowups.filter(f => f.type === 'waiting').length,
+      escalation: allFollowups.filter(f => f.type === 'escalation').length,
+      managerAction: allFollowups.filter(f => f.type === 'manager_action').length,
+      today: allFollowups.filter(f => new Date(f.sentAt) >= today).length,
+      last7Days: allFollowups.filter(f => new Date(f.sentAt) >= last7Days).length,
+      last30Days: allFollowups.filter(f => new Date(f.sentAt) >= last30Days).length
+    };
     
     // ============================================
     // ✅ BRANCH WISE MISS CALLS
@@ -105,7 +131,7 @@ router.get('/', async (req, res) => {
     }
     
     // ============================================
-    // ✅ BRANCH WISE TEST DISTRIBUTION
+    // ✅ BRANCH WISE TEST DISTRIBUTION & ALERTS
     // ============================================
     const branchTests = {};
     for (const patient of allPatients) {
@@ -114,7 +140,8 @@ router.get('/', async (req, res) => {
         branchTests[branch] = {
           MRI: 0, CT: 0, 'X-RAY': 0, USG: 0, OTHER: 0,
           total: 0, converted: 0, pending: 0, waiting: 0, notConverted: 0,
-          patientsWithNoReply: 0, singleMissCall: 0
+          patientsWithNoReply: 0, singleMissCall: 0, highMissCall: 0,
+          escalated: 0, waitingLong: 0
         };
       }
       
@@ -136,10 +163,18 @@ router.get('/', async (req, res) => {
       
       if (patient.executiveActionTaken === false) branchTests[branch].patientsWithNoReply++;
       if ((patient.missCallCount || 1) === 1) branchTests[branch].singleMissCall++;
+      if ((patient.missCallCount || 1) >= 3) branchTests[branch].highMissCall++;
+      if (patient.escalatedToManager === true) branchTests[branch].escalated++;
+      
+      // Check waiting > 2 hours
+      if (patient.currentStage === 'waiting') {
+        const waitingTime = Date.now() - new Date(patient.updatedAt);
+        if (waitingTime > 2 * 60 * 60 * 1000) branchTests[branch].waitingLong++;
+      }
     }
     
     // ============================================
-    // ✅ DAILY MISS CALLS
+    // ✅ DAILY MISS CALLS (Last 7 Days)
     // ============================================
     const dailyMissCalls = [];
     for (let i = 6; i >= 0; i--) {
@@ -179,6 +214,7 @@ router.get('/', async (req, res) => {
     const executivePatients = {};
     
     for (const [branch, execNumber] of Object.entries(EXECUTIVES)) {
+      if (branch === 'Manager') continue;
       executiveStats[branch] = {
         execNumber: execNumber,
         total: 0,
@@ -195,21 +231,26 @@ router.get('/', async (req, res) => {
         connected: 0,
         noReply: 0,
         singleMissCall: 0,
-        templateSent: 0
+        highMissCall: 0,
+        templateSent: 0,
+        escalated: 0,
+        waitingLong: 0
       };
       executivePatients[branch] = [];
     }
     
     for (const patient of allPatients) {
       const branch = patient.branch;
-      if (branch && EXECUTIVES[branch]) {
+      if (branch && EXECUTIVES[branch] && branch !== 'Manager') {
         executiveStats[branch].total++;
         
+        // Status wise
         if (patient.status === 'pending') executiveStats[branch].pending++;
         else if (patient.status === 'converted') executiveStats[branch].converted++;
         else if (patient.status === 'waiting') executiveStats[branch].waiting++;
         else if (patient.status === 'not_converted') executiveStats[branch].notConverted++;
         
+        // Stage wise
         if (patient.currentStage === 'awaiting_branch') executiveStats[branch].awaitingBranch++;
         else if (patient.currentStage === 'branch_selected') executiveStats[branch].branchSelected++;
         else if (patient.currentStage === 'awaiting_name') executiveStats[branch].awaitingName++;
@@ -218,9 +259,18 @@ router.get('/', async (req, res) => {
         else if (patient.currentStage === 'executive_notified') executiveStats[branch].executiveNotified++;
         else if (patient.currentStage === 'connected') executiveStats[branch].connected++;
         
+        // Special flags
         if (patient.executiveActionTaken === false) executiveStats[branch].noReply++;
         if ((patient.missCallCount || 1) === 1) executiveStats[branch].singleMissCall++;
+        if ((patient.missCallCount || 1) >= 3) executiveStats[branch].highMissCall++;
         if (patient.currentStage === 'executive_notified' || patient.currentStage === 'connected') executiveStats[branch].templateSent++;
+        if (patient.escalatedToManager === true) executiveStats[branch].escalated++;
+        
+        // Check waiting > 2 hours
+        if (patient.currentStage === 'waiting') {
+          const waitingTime = Date.now() - new Date(patient.updatedAt);
+          if (waitingTime > 2 * 60 * 60 * 1000) executiveStats[branch].waitingLong++;
+        }
         
         executivePatients[branch].push({
           patientName: patient.patientName || 'Unknown',
@@ -232,10 +282,36 @@ router.get('/', async (req, res) => {
           createdAt: patient.createdAt,
           missCallCount: patient.missCallCount || 1,
           executiveActionTaken: patient.executiveActionTaken,
-          lastMessageAt: patient.lastMessageAt
+          lastMessageAt: patient.lastMessageAt,
+          updatedAt: patient.updatedAt,
+          escalatedToManager: patient.escalatedToManager,
+          waitingFollowupCount: patient.waitingFollowupCount || 0,
+          noReplyFollowupCount: patient.noReplyFollowupCount || 0
         });
       }
     }
+    
+    // ============================================
+    // ✅ MANAGER VIEW - Escalated Patients
+    // ============================================
+    const managerView = {
+      escalatedPatients: escalatedPatients.map(p => ({
+        patientName: p.patientName || 'Unknown',
+        patientPhone: p.patientPhone,
+        branch: p.branch,
+        testType: p.testType,
+        testDetails: p.testDetails,
+        waitingCount: p.waitingFollowupCount || 0,
+        escalatedCount: p.escalatedCount || 0,
+        escalatedAt: p.escalatedAt,
+        executiveNumber: p.executiveNumber,
+        executiveName: Object.keys(EXECUTIVES).find(key => EXECUTIVES[key] === p.executiveNumber) || 'Unknown',
+        waitingTime: Math.floor((Date.now() - new Date(p.updatedAt)) / (1000 * 60 * 60))
+      })),
+      totalEscalated: escalatedPatients.length,
+      resolvedToday: allFollowups.filter(f => f.type === 'manager_action' && new Date(f.sentAt) >= today).length,
+      pendingActions: allFollowups.filter(f => f.type === 'escalation' && f.status === 'escalated').length
+    };
     
     // ============================================
     // ✅ OVERALL STATS
@@ -273,9 +349,10 @@ router.get('/', async (req, res) => {
       else overallTests.OTHER++;
     }
     
-    const recentPatients = await patientsCollection.find().sort({ createdAt: -1 }).limit(30).toArray();
-    const recentMissCalls = await missCallsCollection.find().sort({ createdAt: -1 }).limit(30).toArray();
+    const recentPatients = await patientsCollection.find().sort({ createdAt: -1 }).limit(50).toArray();
+    const recentMissCalls = await missCallsCollection.find().sort({ createdAt: -1 }).limit(50).toArray();
     const topMissCallPatients = await patientsCollection.find().sort({ missCallCount: -1 }).limit(10).toArray();
+    const recentFollowups = await followupCollection.find().sort({ sentAt: -1 }).limit(30).toArray();
     
     res.send(getDashboardHTML({
       totalPatients,
@@ -304,6 +381,12 @@ router.get('/', async (req, res) => {
       patientsWithoutReply,
       singleMissCallPatients,
       templateSentPatients,
+      highMissCallPatients,
+      waitingPatients,
+      escalatedPatients,
+      managerView,
+      followupStats,
+      recentFollowups,
       EXECUTIVES
     }));
     
@@ -341,6 +424,12 @@ function getDashboardHTML(data) {
     patientsWithoutReply,
     singleMissCallPatients,
     templateSentPatients,
+    highMissCallPatients,
+    waitingPatients,
+    escalatedPatients,
+    managerView,
+    followupStats,
+    recentFollowups,
     EXECUTIVES
   } = data;
   
@@ -366,15 +455,18 @@ function getDashboardHTML(data) {
       .container { max-width: 1600px; margin: 0 auto; }
       h1 { color: white; margin-bottom: 20px; font-size: 2.2em; }
       h2 { color: white; margin: 30px 0 15px; font-size: 1.6em; border-left: 4px solid #ffd700; padding-left: 15px; }
-      .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 25px; }
-      .stat-card { background: white; border-radius: 12px; padding: 18px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); transition: transform 0.2s; }
+      h3 { color: #333; margin-bottom: 10px; font-size: 1.1em; }
+      .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 25px; }
+      .stat-card { background: white; border-radius: 12px; padding: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); transition: transform 0.2s; }
       .stat-card:hover { transform: translateY(-3px); }
-      .stat-title { font-size: 0.75em; color: #666; text-transform: uppercase; letter-spacing: 1px; }
-      .stat-value { font-size: 1.8em; font-weight: bold; color: #333; margin-top: 5px; }
+      .stat-title { font-size: 0.7em; color: #666; text-transform: uppercase; letter-spacing: 1px; }
+      .stat-value { font-size: 1.6em; font-weight: bold; color: #333; margin-top: 5px; }
       .misscall-card { background: linear-gradient(135deg, #ff6b6b, #ff8e8e); }
       .misscall-card .stat-title, .misscall-card .stat-value { color: white; }
       .alert-card { background: linear-gradient(135deg, #f59e0b, #ef4444); color: white; }
       .alert-card .stat-title, .alert-card .stat-value { color: white; }
+      .escalation-card { background: linear-gradient(135deg, #dc2626, #991b1b); color: white; }
+      .escalation-card .stat-title, .escalation-card .stat-value { color: white; }
       
       .branch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-bottom: 30px; }
       .branch-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
@@ -385,41 +477,54 @@ function getDashboardHTML(data) {
       .branch-stat { text-align: center; padding: 5px; border-radius: 8px; background: white; }
       .branch-stat-number { font-size: 1.2em; font-weight: bold; }
       .branch-stat-label { font-size: 0.6em; color: #666; }
-      .alert-row { background: #fff3e0; padding: 8px 12px; display: flex; justify-content: space-between; font-size: 0.75em; border-top: 1px solid #fed7aa; }
+      .alert-row { background: #fff3e0; padding: 8px 12px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 0.7em; border-top: 1px solid #fed7aa; }
       .alert-number { font-weight: bold; color: #f97316; }
+      .blink-red { animation: blink 1s infinite; background-color: #ff6b6b !important; color: white !important; padding: 2px 8px; border-radius: 10px; display: inline-block; }
+      @keyframes blink { 0% { opacity: 1; background-color: #ff6b6b; } 50% { opacity: 0.6; background-color: #ef4444; } 100% { opacity: 1; background-color: #ff6b6b; } }
+      .high-miss-call { border-left: 4px solid #ff6b6b; background-color: #fff5f5; }
       .conversion-rate { padding: 8px 12px; text-align: center; background: #f0fdf4; border-top: 1px solid #bbf7d0; }
       .conversion-number { font-size: 1.2em; font-weight: bold; color: #16a34a; }
       
-      .executive-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; margin-bottom: 30px; }
+      .executive-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 20px; margin-bottom: 30px; }
       .executive-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
       .executive-header { background: linear-gradient(135deg, #7c3aed, #8b5cf6); color: white; padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; }
       .executive-name { font-weight: bold; font-size: 1.1em; }
       .executive-phone { font-size: 0.7em; opacity: 0.9; }
       .executive-stats { padding: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background: #f8f9fa; }
       .executive-stat { text-align: center; }
-      .executive-stat-number { font-size: 1.1em; font-weight: bold; }
+      .executive-stat-number { font-size: 1em; font-weight: bold; }
       .executive-stat-label { font-size: 0.6em; color: #666; }
-      .stage-row { padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid #eee; background: #fefce8; }
+      .stage-row { padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px; border-top: 1px solid #eee; background: #fefce8; font-size: 0.7em; }
       .stage-badge { padding: 3px 8px; border-radius: 15px; font-size: 0.65em; }
-      .alert-row-exec { padding: 8px 12px; display: flex; justify-content: space-between; background: #fef2f2; border-top: 1px solid #fecaca; }
+      .alert-row-exec { padding: 8px 12px; display: flex; flex-wrap: wrap; justify-content: space-between; background: #fef2f2; border-top: 1px solid #fecaca; font-size: 0.7em; }
       .executive-detail-btn { background: #128C7E; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 0.7em; margin: 8px 15px; width: calc(100% - 30px); }
       .patient-list { display: none; margin: 0 15px 15px 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; max-height: 250px; overflow-y: auto; font-size: 0.7em; }
       .patient-list.show { display: block; }
       .patient-item { padding: 6px; border-bottom: 1px solid #eee; }
       .no-reply { color: #ef4444; font-weight: bold; }
       
-      .stage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 25px; }
-      .stage-card { background: white; border-radius: 10px; padding: 10px; text-align: center; border-left: 3px solid; }
-      .stage-name { font-size: 0.65em; color: #666; text-transform: uppercase; }
-      .stage-value { font-size: 1.3em; font-weight: bold; margin-top: 3px; }
+      .manager-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; margin-bottom: 30px; }
+      .manager-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.1); border-top: 4px solid #dc2626; }
+      .manager-header { background: linear-gradient(135deg, #dc2626, #991b1b); color: white; padding: 12px 15px; }
+      .escalated-patient { padding: 10px; border-bottom: 1px solid #eee; }
+      .escalated-patient:last-child { border-bottom: none; }
+      .escalated-action-btn { background: #128C7E; color: white; border: none; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 0.7em; margin-top: 5px; }
+      
+      .stage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; margin-bottom: 25px; }
+      .stage-card { background: white; border-radius: 10px; padding: 8px; text-align: center; border-left: 3px solid; }
+      .stage-name { font-size: 0.6em; color: #666; text-transform: uppercase; }
+      .stage-value { font-size: 1.2em; font-weight: bold; margin-top: 3px; }
       
       .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-bottom: 30px; }
       .chart-card { background: white; border-radius: 12px; padding: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
       .recent-section { background: white; border-radius: 12px; padding: 20px; margin-bottom: 25px; overflow-x: auto; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-      table { width: 100%; border-collapse: collapse; font-size: 0.8em; }
+      table { width: 100%; border-collapse: collapse; font-size: 0.75em; }
       th { background: #f8f9fa; padding: 8px; text-align: left; font-weight: 600; }
       td { padding: 8px; border-bottom: 1px solid #e2e8f0; }
       .badge { padding: 2px 6px; border-radius: 10px; font-size: 0.65em; font-weight: 600; }
+      .badge-pending { background: #fef3c7; color: #92400e; }
+      .badge-converted { background: #d1fae5; color: #065f46; }
+      .badge-waiting { background: #dbeafe; color: #1e40af; }
       .top-patients-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
       .top-patient-card { background: #f8f9fa; border-radius: 10px; padding: 10px; border-left: 3px solid #ff6b6b; }
       .refresh-btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; margin-bottom: 15px; font-weight: bold; }
@@ -435,12 +540,27 @@ function getDashboardHTML(data) {
       <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
       <div class="last-updated">Last updated: ${new Date().toLocaleString()}</div>
       
+      <!-- Alert Cards -->
       <div class="stats-grid">
         <div class="stat-card alert-card"><div class="stat-title">⚠️ No Reply</div><div class="stat-value">${patientsWithoutReply.length}</div></div>
         <div class="stat-card alert-card"><div class="stat-title">📞 Single Miss Call</div><div class="stat-value">${singleMissCallPatients.length}</div></div>
-        <div class="stat-card alert-card"><div class="stat-title">📨 Template Sent</div><div class="stat-value">${templateSentPatients.length}</div></div>
+        <div class="stat-card alert-card"><div class="stat-title">🔴 High Miss Call (3+)</div><div class="stat-value">${highMissCallPatients.length}</div></div>
+        <div class="stat-card alert-card"><div class="stat-title">⏳ Waiting >2hrs</div><div class="stat-value">${waitingPatients.length}</div></div>
+        <div class="stat-card escalation-card"><div class="stat-title">🚨 Escalated</div><div class="stat-value">${escalatedPatients.length}</div></div>
+        <div class="stat-card"><div class="stat-title">📨 Template Sent</div><div class="stat-value">${templateSentPatients.length}</div></div>
       </div>
       
+      <!-- Follow-up Stats -->
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-title">📢 Total Follow-ups</div><div class="stat-value">${followupStats.total}</div></div>
+        <div class="stat-card"><div class="stat-title">⏰ No Reply</div><div class="stat-value">${followupStats.noReply}</div></div>
+        <div class="stat-card"><div class="stat-title">⏳ Waiting</div><div class="stat-value">${followupStats.waiting}</div></div>
+        <div class="stat-card escalation-card"><div class="stat-title">🚨 Escalations</div><div class="stat-value">${followupStats.escalation}</div></div>
+        <div class="stat-card"><div class="stat-title">👨‍💼 Manager Actions</div><div class="stat-value">${followupStats.managerAction}</div></div>
+        <div class="stat-card"><div class="stat-title">📅 Today</div><div class="stat-value">${followupStats.today}</div></div>
+      </div>
+      
+      <!-- Overall Stats -->
       <div class="stats-grid">
         <div class="stat-card"><div class="stat-title">Total Patients</div><div class="stat-value">${totalPatients}</div></div>
         <div class="stat-card"><div class="stat-title">Pending</div><div class="stat-value">${pendingCount}</div></div>
@@ -453,6 +573,7 @@ function getDashboardHTML(data) {
         <div class="stat-card"><div class="stat-title">Last 7 Days</div><div class="stat-value">${missCallLast7Days}</div></div>
       </div>
       
+      <!-- Overall Test Distribution -->
       <h2>📊 Overall Test Distribution</h2>
       <div class="stats-grid">
         <div class="stat-card"><div class="stat-title">MRI</div><div class="stat-value">${overallTests.MRI}</div></div>
@@ -462,6 +583,30 @@ function getDashboardHTML(data) {
         <div class="stat-card"><div class="stat-title">Others</div><div class="stat-value">${overallTests.OTHER}</div></div>
       </div>
       
+      <!-- Manager View - Escalated Patients -->
+      <h2>🚨 Manager View - Escalated Patients</h2>
+      <div class="manager-grid">
+        <div class="manager-card">
+          <div class="manager-header">
+            <strong>⚠️ Escalated Patients (${managerView.totalEscalated})</strong>
+            <div style="font-size: 0.7em;">Resolved Today: ${managerView.resolvedToday} | Pending Actions: ${managerView.pendingActions}</div>
+          </div>
+          <div style="max-height: 400px; overflow-y: auto;">
+            ${managerView.escalatedPatients.length > 0 ? managerView.escalatedPatients.map(p => `
+              <div class="escalated-patient">
+                <strong>${p.patientName}</strong> (${p.patientPhone})<br>
+                <small>Branch: ${p.branch} | Test: ${p.testType} - ${p.testDetails}</small><br>
+                <small>Executive: ${p.executiveName} (${p.executiveNumber})</small><br>
+                <small>Waiting: ${p.waitingTime} hours | Escalated: ${p.escalatedCount} times</small><br>
+                <small>Escalated At: ${new Date(p.escalatedAt).toLocaleString()}</small><br>
+                <button class="escalated-action-btn" onclick="alert('Action taken! In production, this would send reminder to executive.')">📢 Send Reminder to Executive</button>
+              </div>
+            `).join('') : '<div style="padding: 20px; text-align: center;">✅ No escalated patients</div>'}
+          </div>
+        </div>
+      </div>
+      
+      <!-- Branch Wise Analytics -->
       <h2>🏢 Branch Wise Analytics</h2>
       <div class="branch-grid">
         ${Object.entries(branchTests).map(([branch, tests]) => `
@@ -478,7 +623,10 @@ function getDashboardHTML(data) {
             </div>
             <div class="alert-row">
               <span>⚠️ No Reply: <span class="alert-number">${tests.patientsWithNoReply || 0}</span></span>
-              <span>📞 Single Miss Call: <span class="alert-number">${tests.singleMissCall || 0}</span></span>
+              <span>📞 Single Call: <span class="alert-number">${tests.singleMissCall || 0}</span></span>
+              <span>🔴 High Call: <span class="alert-number ${tests.highMissCall > 0 ? 'blink-red' : ''}">${tests.highMissCall || 0}</span></span>
+              <span>🚨 Escalated: <span class="alert-number">${tests.escalated || 0}</span></span>
+              <span>⏳ Waiting >2hr: <span class="alert-number">${tests.waitingLong || 0}</span></span>
             </div>
             <div class="conversion-rate">
               <span class="conversion-number">${branchConversion[branch]?.rate || 0}%</span> Conversion Rate
@@ -488,7 +636,8 @@ function getDashboardHTML(data) {
         `).join('')}
       </div>
       
-      <h2>👥 Executive Performance</h2>
+      <!-- Executive Wise Stats -->
+      <h2>👥 Executive Performance & Patient Tracking</h2>
       <div class="executive-grid">
         ${Object.entries(executiveStats).map(([branch, stats]) => `
           <div class="executive-card">
@@ -513,16 +662,21 @@ function getDashboardHTML(data) {
             <div class="alert-row-exec">
               <span>⚠️ No Reply: <strong style="color:#ef4444;">${stats.noReply}</strong></span>
               <span>📞 Single Call: <strong style="color:#f97316;">${stats.singleMissCall}</strong></span>
+              <span>🔴 High Call: <strong class="${stats.highMissCall > 0 ? 'blink-red' : ''}" style="color:#dc2626;">${stats.highMissCall}</strong></span>
+              <span>🚨 Escalated: <strong style="color:#991b1b;">${stats.escalated}</strong></span>
+              <span>⏳ Waiting >2hr: <strong style="color:#f97316;">${stats.waitingLong}</strong></span>
               <span>📨 Template Sent: <strong style="color:#10b981;">${stats.templateSent}</strong></span>
             </div>
             <button class="executive-detail-btn" onclick="togglePatientList('${branch}')">📋 View ${stats.total} Patients</button>
             <div id="patient-list-${branch}" class="patient-list">
-              ${executivePatients[branch] && executivePatients[branch].length > 0 ? executivePatients[branch].slice(0, 20).map(p => `
-                <div class="patient-item">
+              ${executivePatients[branch] && executivePatients[branch].length > 0 ? executivePatients[branch].slice(0, 30).map(p => `
+                <div class="patient-item ${p.missCallCount >= 3 ? 'high-miss-call' : ''}">
                   <strong>${p.patientName || 'Unknown'}</strong> (${p.patientPhone})<br>
                   <small>Test: ${p.testDetails || p.testType || 'N/A'} | ${p.missCallCount} calls</small><br>
                   <small>Stage: ${p.currentStage || 'N/A'} | Status: ${p.status || 'N/A'}</small>
                   ${!p.executiveActionTaken ? '<span class="no-reply"> ⚠️ No reply</span>' : ''}
+                  ${p.missCallCount >= 3 ? '<span class="blink-red"> 🔴 High Miss Call</span>' : ''}
+                  ${p.escalatedToManager ? '<span style="color:#dc2626;"> 🚨 Escalated</span>' : ''}
                 </div>
               `).join('') : '<div class="patient-item">No patients</div>'}
             </div>
@@ -530,7 +684,8 @@ function getDashboardHTML(data) {
         `).join('')}
       </div>
       
-      <h2>📈 Stage Tracking</h2>
+      <!-- Stage Tracking -->
+      <h2>📈 Stage Wise Tracking</h2>
       <div class="stage-grid">
         <div class="stage-card"><div class="stage-name">Awaiting Branch</div><div class="stage-value">${stageStats.awaiting_branch || 0}</div></div>
         <div class="stage-card"><div class="stage-name">Branch Selected</div><div class="stage-value">${stageStats.branch_selected || 0}</div></div>
@@ -540,36 +695,81 @@ function getDashboardHTML(data) {
         <div class="stage-card"><div class="stage-name">Connected</div><div class="stage-value">${stageStats.connected || 0}</div></div>
         <div class="stage-card"><div class="stage-name">Converted</div><div class="stage-value">${stageStats.converted || 0}</div></div>
         <div class="stage-card"><div class="stage-name">Waiting</div><div class="stage-value">${stageStats.waiting || 0}</div></div>
-        <div class="stage-card"><div class="stage-name">Not Converted</div><div class="stage-value">${stageStats.not_converted || 0}</div></div>
+        <div class="stage-card"><div class="stage-name">Escalated</div><div class="stage-value">${stageStats.escalated || 0}</div></div>
       </div>
       
+      <!-- Charts -->
       <div class="charts-grid">
         <div class="chart-card"><canvas id="dailyMissCallsChart"></canvas></div>
         <div class="chart-card"><canvas id="branchTestsChart"></canvas></div>
       </div>
       
-      <h2>📞 Top Miss Call Patients</h2>
+      <!-- Top Miss Call Patients -->
+      <h2>📞 Top Miss Call Patients (Most Active)</h2>
       <div class="top-patients-grid">
         ${topMissCallPatients.map(p => `
-          <div class="top-patient-card">
+          <div class="top-patient-card ${p.missCallCount >= 3 ? 'high-miss-call' : ''}">
             <div style="font-weight: bold;">${p.patientName || 'Unknown'}</div>
             <div style="font-size: 0.75em;">${p.patientPhone}</div>
-            <div style="color: #ff6b6b;">${p.missCallCount || 1} calls</div>
-            <div style="font-size: 0.65em;">Branch: ${p.branch || 'N/A'}</div>
+            <div style="color: #ff6b6b; font-weight: bold;">${p.missCallCount || 1} calls</div>
+            <div style="font-size: 0.65em;">Branch: ${p.branch || 'N/A'} | ${p.status || 'pending'}</div>
+            ${p.missCallCount >= 3 ? '<div class="blink-red" style="display:inline-block; margin-top:5px;">⚠️ High Miss Call</div>' : ''}
           </div>
         `).join('')}
       </div>
       
-      <h2>🕒 Recent Patients</h2>
+      <!-- Recent Patients -->
+      <h2>🕒 Recent Patients (Last 50)</h2>
       <div class="recent-section">
-        <table><thead><tr><th>Patient</th><th>Phone</th><th>Branch</th><th>Tests</th><th>Stage</th><th>Status</th><th>Calls</th><th>Time</th></tr></thead>
-        <tbody>${recentPatients.slice(0, 20).map(p => `<tr><td>${p.patientName || 'N/A'}</td><td>${p.patientPhone || 'N/A'}</td><td>${p.branch || 'N/A'}</td><td>${p.testDetails || p.testType || 'N/A'}</td><td>${(p.currentStage || 'pending').replace(/_/g, ' ')}</td><td>${p.status || 'pending'}</td><td>${p.missCallCount || 1}</td><td>${new Date(p.createdAt).toLocaleString()}</td></tr>`).join('')}</tbody></table>
+        <table>
+          <thead><tr><th>Patient</th><th>Phone</th><th>Branch</th><th>Tests</th><th>Stage</th><th>Status</th><th>Calls</th><th>Time</th></tr></thead>
+          <tbody>
+            ${recentPatients.slice(0, 50).map(p => `
+              <tr class="${p.missCallCount >= 3 ? 'high-miss-call' : ''}">
+                <td>${p.patientName || 'N/A'}${p.escalatedToManager ? ' 🚨' : ''}</td>
+                <td>${p.patientPhone || 'N/A'}</td>
+                <td>${p.branch || 'N/A'}</td>
+                <td>${p.testDetails || p.testType || 'N/A'}</td>
+                <td><span class="badge">${(p.currentStage || 'pending').replace(/_/g, ' ')}</span></td>
+                <td><span class="badge badge-${p.status || 'pending'}">${p.status || 'pending'}</span></td>
+                <td>${p.missCallCount || 1}${p.missCallCount >= 3 ? ' 🔴' : ''}</td>
+                <td>${new Date(p.createdAt).toLocaleString()}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
       </div>
       
+      <!-- Recent Follow-ups -->
+      <h2>📢 Recent Follow-ups</h2>
+      <div class="recent-section">
+        <table>
+          <thead><tr><th>Type</th><th>Patient Phone</th><th>Executive</th><th>Count</th><th>Time</th></tr></thead>
+          <tbody>
+            ${recentFollowups.slice(0, 30).map(f => `
+              <tr>
+                <td><span class="badge">${f.type}</span></td>
+                <td>${f.patientPhone || 'N/A'}</td>
+                <td>${f.executiveNumber || 'N/A'}</td>
+                <td>${f.waitingCount || f.noReplyFollowupCount || '-'}</td>
+                <td>${new Date(f.sentAt).toLocaleString()}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      
+      <!-- Recent Miss Calls -->
       <h2>📞 Recent Miss Calls</h2>
       <div class="recent-section">
-        <table><thead><tr><th>Phone</th><th>Branch</th><th>Time</th></tr></thead>
-        <tbody>${recentMissCalls.slice(0, 20).map(m => `<tr><td>${m.phoneNumber || 'N/A'}</td><td>${m.branch || 'N/A'}</td><td>${new Date(m.createdAt).toLocaleString()}</td></tr>`).join('')}</tbody></table>
+        <table>
+          <thead><tr><th>Phone</th><th>Branch</th><th>Time</th></tr></thead>
+          <tbody>
+            ${recentMissCalls.slice(0, 30).map(m => `
+              <tr><td>${m.phoneNumber || 'N/A'}</td><td>${m.branch || 'N/A'}</td><td>${new Date(m.createdAt).toLocaleString()}</td></tr>
+            `).join('')}
+          </tbody>
+        </table>
       </div>
     </div>
     
@@ -577,14 +777,17 @@ function getDashboardHTML(data) {
       function togglePatientList(branch) {
         document.getElementById('patient-list-' + branch).classList.toggle('show');
       }
+      
       new Chart(document.getElementById('dailyMissCallsChart'), {
         type: 'line', data: { labels: ${JSON.stringify(dailyMissCallLabels)}, datasets: [{ label: 'Miss Calls', data: ${JSON.stringify(dailyMissCallValues)}, borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true }] },
         options: { responsive: true }
       });
+      
       new Chart(document.getElementById('branchTestsChart'), {
         type: 'bar', data: { labels: ${JSON.stringify(branchNames)}, datasets: [{ label: 'MRI', data: ${JSON.stringify(branchMRIData)}, backgroundColor: '#10b981' }, { label: 'CT', data: ${JSON.stringify(branchCTData)}, backgroundColor: '#3b82f6' }, { label: 'X-RAY', data: ${JSON.stringify(branchXRayData)}, backgroundColor: '#f59e0b' }, { label: 'USG', data: ${JSON.stringify(branchUSGData)}, backgroundColor: '#8b5cf6' }] },
         options: { responsive: true, scales: { y: { beginAtZero: true } } }
       });
+      
       setTimeout(() => location.reload(), 60000);
     </script>
   </body>
