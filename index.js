@@ -392,7 +392,7 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION - WITH 7 PARAMETERS (UPDATED)
+// ✅ LEAD NOTIFICATION - WITH 7 PARAMETERS
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
   console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
@@ -400,7 +400,6 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
   console.log(`   Test Details: ${testDetails}, Test Type: ${testType}`);
   console.log(`   Chat Token: ${chatToken}`);
   
-  // ✅ 7 parameters ({{7}} ke liye connect-chat link)
   const parameters = [
     { name: "1", value: patientName || "Miss Call Patient" },
     { name: "2", value: patientPhone },
@@ -408,7 +407,7 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
     { name: "4", value: testDetails || "Not specified" },
     { name: "5", value: testType || "Miss Call" },
     { name: "6", value: `${SELF_URL}/executive-chat/${chatToken}` },
-    { name: "7", value: `${SELF_URL}/connect-chat/${chatToken}` }   // 👈 NEW
+    { name: "7", value: `${SELF_URL}/connect-chat/${chatToken}` }
   ];
   
   return await sendWatiTemplateMessage(executiveNumber, LEAD_TEMPLATE_NAME, parameters);
@@ -481,7 +480,7 @@ function getFileUrlFromMessage(msg) {
 }
 
 // ============================================
-// ✅ OPENAI OCR FUNCTION (Handles Images & PDFs)
+// ✅ OPENAI OCR FUNCTION
 // ============================================
 async function extractWithOpenAI(fileUrl) {
   console.log(`🔍 Performing OCR on: ${fileUrl.substring(0, 50)}...`);
@@ -526,7 +525,7 @@ async function extractWithOpenAI(fileUrl) {
 }
 
 // ============================================
-// ✅ PROCESS IMAGE/PDF UPLOAD WITH OCR
+// ✅ PROCESS FILE UPLOAD WITH OCR
 // ============================================
 async function processFileUpload(messageId, patientName, branch, fileUrl, patientPhone) {
   console.log(`\n📎 Processing file upload for ${patientPhone}`);
@@ -841,9 +840,7 @@ app.post('/wati-webhook', async (req, res) => {
     const text = (messageText || '').toUpperCase().trim();
     console.log(`📝 Processed message: "${text}" from ${senderNumber} (type: ${messageType})`);
     
-    // ============================================
-    // ✅ FILE/IMAGE HANDLING
-    // ============================================
+    // FILE/IMAGE HANDLING
     if (msg.type === 'image' || msg.messageType === 'image' || msg.image || msg.document || msg.file || msg.media) {
       console.log(`📎 File/Image detected from ${senderNumber}`);
       
@@ -873,9 +870,7 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
-    // ============================================
-    // ✅ HANDLE PATIENT REPLIES
-    // ============================================
+    // HANDLE PATIENT REPLIES
     const activeSession = await chatSessionsCollection.findOne({
       patientPhone: senderNumber,
       status: 'active'
@@ -898,9 +893,7 @@ app.post('/wati-webhook', async (req, res) => {
       );
     }
     
-    // ============================================
-    // ✅ HYBRID CLASSIFICATION
-    // ============================================
+    // HYBRID CLASSIFICATION
     if (!text.endsWith('_BRANCH') && !text.startsWith('CONNECT') && !text.startsWith('CONVERT') && !text.startsWith('WAITING') && !text.startsWith('NOT')) {
       
       let patient = await patientsCollection.findOne({ patientPhone: senderNumber });
@@ -987,9 +980,7 @@ app.post('/wati-webhook', async (req, res) => {
       }
     }
     
-    // ============================================
-    // ✅ HANDLE EXECUTIVE BUTTON CLICKS
-    // ============================================
+    // HANDLE EXECUTIVE BUTTON CLICKS
     if (text === 'CONNECT TO PATIENT' || text === 'CONVERT DONE' || text === 'WAITING' || text === 'NOT CONVERT') {
       console.log(`🔘 Executive button clicked: ${text} from ${senderNumber}`);
       
@@ -1138,9 +1129,7 @@ app.post('/wati-webhook', async (req, res) => {
       }
     }
     
-    // ============================================
-    // ✅ HANDLE _BRANCH MESSAGES
-    // ============================================
+    // HANDLE _BRANCH MESSAGES
     else if (text.endsWith('_BRANCH')) {
       const branchUpper = text.replace('_BRANCH', '');
       const branch = branchUpper.charAt(0).toUpperCase() + branchUpper.slice(1).toLowerCase();
@@ -1640,22 +1629,171 @@ app.get('/api/stats', async (req, res) => {
 });
 
 // ============================================
-// ✅ CONNECT CHAT ENDPOINT
+// ✅ CONNECT CHAT ENDPOINT - FIXED
 // ============================================
 app.get('/connect-chat/:chatId', async (req, res) => {
   const { chatId } = req.params;
   const { token } = req.query;
   
-  if (!verifyToken(chatId, token)) {
-    return res.status(403).send('<h2>🔒 Unauthorized Access</h2>');
+  // Find patient by chatId
+  const patient = await patientsCollection.findOne({ chatId });
+  
+  if (!patient) {
+    return res.status(404).send(`
+      <html>
+        <head><title>Patient Not Found</title></head>
+        <body style="font-family: Arial; padding: 30px;">
+          <h2>❌ Patient Not Found</h2>
+          <p>No patient found with ID: ${chatId}</p>
+        </body>
+      </html>
+    `);
   }
   
-  const patient = await patientsCollection.findOne({ chatId });
-  if (!patient) return res.send('<h2>❌ Patient not found</h2>');
+  // Check if token matches session token
+  if (!patient.chatSessionToken || patient.chatSessionToken !== token) {
+    return res.status(403).send(`
+      <html>
+        <head><title>Unauthorized</title></head>
+        <body style="font-family: Arial; padding: 30px;">
+          <h2>🔒 Unauthorized Access</h2>
+          <p>Invalid or expired session token.</p>
+          <p>Please click "Connect to Patient" again from WhatsApp.</p>
+          <p><a href="javascript:history.back()">Go Back</a></p>
+        </body>
+      </html>
+    `);
+  }
   
-  res.json(patient);
+  // Check session expiry
+  const session = await chatSessionsCollection.findOne({ 
+    sessionToken: token,
+    status: 'active'
+  });
+  
+  if (!session) {
+    return res.status(403).send(`
+      <html>
+        <head><title>Session Expired</title></head>
+        <body style="font-family: Arial; padding: 30px;">
+          <h2>⏰ Session Expired</h2>
+          <p>This chat session is no longer active.</p>
+          <p>Please click "Connect to Patient" again from WhatsApp.</p>
+        </body>
+      </html>
+    `);
+  }
+  
+  if (session.expiresAt && new Date() > new Date(session.expiresAt)) {
+    await chatSessionsCollection.updateOne(
+      { sessionToken: token },
+      { $set: { status: 'expired' } }
+    );
+    return res.status(403).send(`
+      <html>
+        <head><title>Session Expired</title></head>
+        <body style="font-family: Arial; padding: 30px;">
+          <h2>⏰ Session Expired (24 hours)</h2>
+          <p>This chat session has expired.</p>
+          <p>Please click "Connect to Patient" again from WhatsApp.</p>
+        </body>
+      </html>
+    `);
+  }
+  
+  // Return patient details in HTML format
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Patient Details - ${patient.patientName || 'Patient'}</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: white; border-radius: 15px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
+        .header { background: linear-gradient(135deg, #075e54, #128C7E); color: white; padding: 20px; text-align: center; }
+        .header h1 { font-size: 1.8em; margin-bottom: 5px; }
+        .header p { opacity: 0.9; }
+        .content { padding: 25px; }
+        .detail-card { background: #f8f9fa; border-radius: 10px; padding: 15px; margin-bottom: 15px; border-left: 4px solid #075e54; }
+        .detail-label { font-size: 0.8em; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
+        .detail-value { font-size: 1.2em; font-weight: bold; color: #333; }
+        .test-info { background: #e8f5e9; border-left-color: #4caf50; }
+        .misscall-info { background: #fff3e0; border-left-color: #ff9800; }
+        .stage-badge { display: inline-block; padding: 5px 12px; border-radius: 20px; font-size: 0.8em; font-weight: bold; margin-top: 10px; }
+        .stage-pending { background: #fff3e0; color: #f57c00; }
+        .stage-converted { background: #e8f5e9; color: #388e3c; }
+        .stage-waiting { background: #e3f2fd; color: #1976d2; }
+        .btn-whatsapp { display: inline-block; background: #25D366; color: white; padding: 12px 24px; text-decoration: none; border-radius: 25px; margin-top: 15px; font-weight: bold; text-align: center; width: 100%; }
+        .btn-whatsapp:hover { background: #128C7E; }
+        .footer { background: #f8f9fa; padding: 15px; text-align: center; color: #666; font-size: 0.8em; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>🏥 Patient Details</h1>
+          <p>Click below to chat with patient on WhatsApp</p>
+        </div>
+        <div class="content">
+          <div class="detail-card">
+            <div class="detail-label">👤 Patient Name</div>
+            <div class="detail-value">${patient.patientName || 'Not specified'}</div>
+          </div>
+          <div class="detail-card">
+            <div class="detail-label">📞 Phone Number</div>
+            <div class="detail-value">${patient.patientPhone || 'Not specified'}</div>
+          </div>
+          <div class="detail-card">
+            <div class="detail-label">📍 Branch</div>
+            <div class="detail-value">${patient.branch || 'Not specified'}</div>
+          </div>
+          <div class="detail-card test-info">
+            <div class="detail-label">🔬 Test Type</div>
+            <div class="detail-value">${patient.testType || 'Not specified'}</div>
+          </div>
+          <div class="detail-card test-info">
+            <div class="detail-label">📋 Test Details</div>
+            <div class="detail-value">${patient.testDetails || 'Not specified'}</div>
+          </div>
+          ${patient.missCallTime ? `
+          <div class="detail-card misscall-info">
+            <div class="detail-label">📞 Miss Call Time</div>
+            <div class="detail-value">${new Date(patient.missCallTime).toLocaleString()}</div>
+          </div>
+          ` : ''}
+          <div class="detail-card">
+            <div class="detail-label">📊 Current Status</div>
+            <div class="detail-value">
+              ${patient.status || 'pending'}
+              <span class="stage-badge stage-${patient.status || 'pending'}">${patient.currentStage || 'pending'}</span>
+            </div>
+          </div>
+          ${patient.imageUrl ? `
+          <div class="detail-card">
+            <div class="detail-label">📄 Prescription Image</div>
+            <div class="detail-value">
+              <a href="${patient.imageUrl}" target="_blank" style="color: #075e54;">Click to view prescription</a>
+            </div>
+          </div>
+          ` : ''}
+          <a href="https://wa.me/${patient.patientPhone}" target="_blank" class="btn-whatsapp">
+            💬 Chat with Patient on WhatsApp
+          </a>
+        </div>
+        <div class="footer">
+          Powered by Executive System | Session Active
+        </div>
+      </div>
+    </body>
+    </html>
+  `);
 });
 
+// ============================================
+// ✅ EXECUTIVE ACTION HANDLER
+// ============================================
 app.get('/exec-action', async (req, res) => {
   const { action, chat } = req.query;
   
