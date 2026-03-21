@@ -362,13 +362,11 @@ router.get('/', async (req, res) => {
       if (branch && EXECUTIVES[branch] && branch !== 'Manager') {
         executiveStats[branch].total++;
         
-        // Status wise
         if (patient.status === 'pending') executiveStats[branch].pending++;
         else if (patient.status === 'converted') executiveStats[branch].converted++;
         else if (patient.status === 'waiting') executiveStats[branch].waiting++;
         else if (patient.status === 'not_converted') executiveStats[branch].notConverted++;
         
-        // Stage wise
         if (patient.currentStage === 'awaiting_branch') executiveStats[branch].awaitingBranch++;
         else if (patient.currentStage === 'branch_selected') executiveStats[branch].branchSelected++;
         else if (patient.currentStage === 'awaiting_name') executiveStats[branch].awaitingName++;
@@ -377,7 +375,6 @@ router.get('/', async (req, res) => {
         else if (patient.currentStage === 'executive_notified') executiveStats[branch].executiveNotified++;
         else if (patient.currentStage === 'connected') executiveStats[branch].connected++;
         
-        // Active chat check
         const hasActiveSession = allSessions.some(s => 
           s.patientPhone === patient.patientPhone && s.status === 'active'
         );
@@ -385,7 +382,6 @@ router.get('/', async (req, res) => {
           executiveStats[branch].activeChat++;
         }
         
-        // Special flags
         if (patient.executiveActionTaken === false) executiveStats[branch].noReply++;
         if ((patient.missCallCount || 1) === 1) executiveStats[branch].singleMissCall++;
         if ((patient.missCallCount || 1) >= 3) executiveStats[branch].highMissCall++;
@@ -464,7 +460,6 @@ router.get('/', async (req, res) => {
     }).length;
     const missCallLast7Days = allMissCalls.filter(c => new Date(c.createdAt) >= last7Days).length;
     
-    // Test type overall stats
     const overallTests = { MRI: 0, CT: 0, 'X-RAY': 0, USG: 0, OTHER: 0 };
     for (const patient of patients) {
       const testType = patient.testType || patient.testDetails || '';
@@ -481,9 +476,24 @@ router.get('/', async (req, res) => {
     const topMissCallPatients = patients.sort((a, b) => (b.missCallCount || 0) - (a.missCallCount || 0)).slice(0, 10);
     const recentFollowups = followups.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)).slice(0, 30);
     
-    // Get unique branches for filter dropdown
     const branches = [...new Set(allPatients.map(p => p.branch).filter(b => b))];
     const executivesList = Object.keys(EXECUTIVES).filter(e => e !== 'Manager');
+    
+    // Prepare data for Excel export (as JSON string)
+    const exportData = recentPatients.map(p => ({
+      'Patient Name': p.patientName || 'N/A',
+      'Phone': p.patientPhone || 'N/A',
+      'Branch': p.branch || 'N/A',
+      'Test Type': p.testType || 'N/A',
+      'Test Details': p.testDetails || 'N/A',
+      'Status': p.status || 'N/A',
+      'Stage': p.currentStage || 'N/A',
+      'Miss Calls': p.missCallCount || 1,
+      'Active Chat': p.hasActiveSession ? 'Yes' : 'No',
+      'Escalated': p.escalatedToManager ? 'Yes' : 'No',
+      'Created At': new Date(p.createdAt).toLocaleString(),
+      'Last Message': p.lastMessageAt ? new Date(p.lastMessageAt).toLocaleString() : 'N/A'
+    }));
     
     res.send(getDashboardHTML({
       totalPatients,
@@ -496,10 +506,6 @@ router.get('/', async (req, res) => {
       missCallToday,
       missCallYesterday,
       missCallLast7Days,
-      branchMissCalls,
-      branchMissCallsToday,
-      branchMissCallsLast7Days,
-      branchMissCallsLast30Days,
       branchTests,
       branchConversion,
       dailyMissCalls,
@@ -523,6 +529,7 @@ router.get('/', async (req, res) => {
       branches,
       executivesList,
       filters,
+      exportData,
       EXECUTIVES
     }));
     
@@ -567,6 +574,7 @@ function getDashboardHTML(data) {
     branches,
     executivesList,
     filters,
+    exportData,
     EXECUTIVES
   } = data;
   
@@ -578,39 +586,7 @@ function getDashboardHTML(data) {
   const branchConvertedData = branchNames.map(b => branchTests[b]?.converted || 0);
   const branchConnectedData = branchNames.map(b => branchTests[b]?.connected || 0);
   
-  // Build query string for filters
-  const buildQueryString = (updates = {}) => {
-    const params = new URLSearchParams();
-    Object.entries({...filters, ...updates}).forEach(([key, value]) => {
-      if (value && value !== 'all' && value !== '') {
-        params.set(key, value);
-      }
-    });
-    const qs = params.toString();
-    return qs ? `?${qs}` : '';
-  };
-  
-  // Excel export function
-  const exportToExcel = () => {
-    const tableData = ${JSON.stringify(recentPatients.map(p => ({
-      'Patient Name': p.patientName || 'N/A',
-      'Phone': p.patientPhone || 'N/A',
-      'Branch': p.branch || 'N/A',
-      'Test Type': p.testType || 'N/A',
-      'Test Details': p.testDetails || 'N/A',
-      'Status': p.status || 'N/A',
-      'Stage': p.currentStage || 'N/A',
-      'Miss Calls': p.missCallCount || 1,
-      'Active Chat': p.hasActiveSession ? 'Yes' : 'No',
-      'Escalated': p.escalatedToManager ? 'Yes' : 'No',
-      'Created At': new Date(p.createdAt).toLocaleString(),
-      'Last Message': p.lastMessageAt ? new Date(p.lastMessageAt).toLocaleString() : 'N/A'
-    })))};
-    const ws = XLSX.utils.json_to_sheet(tableData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Patients Data');
-    XLSX.writeFile(wb, \`patients_export_\${new Date().toISOString().slice(0,19)}.xlsx\`);
-  };
+  const exportDataJson = JSON.stringify(exportData);
   
   return `
   <!DOCTYPE html>
@@ -625,13 +601,11 @@ function getDashboardHTML(data) {
       h1 { color: white; margin-bottom: 20px; font-size: 2em; }
       h2 { color: white; margin: 25px 0 15px; font-size: 1.4em; border-left: 4px solid #ffd700; padding-left: 15px; }
       
-      /* Filter Bar */
       .filter-bar { background: white; border-radius: 12px; padding: 20px; margin-bottom: 25px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
       .filter-row { display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 15px; align-items: flex-end; }
       .filter-group { flex: 1; min-width: 150px; }
       .filter-group label { display: block; font-size: 0.7em; color: #666; margin-bottom: 5px; text-transform: uppercase; font-weight: bold; }
       .filter-group select, .filter-group input { width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.9em; }
-      .filter-group input:focus, .filter-group select:focus { outline: none; border-color: #075e54; }
       .filter-actions { display: flex; gap: 10px; align-items: center; }
       .btn-filter { background: #075e54; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
       .btn-filter:hover { background: #128C7E; }
@@ -640,7 +614,6 @@ function getDashboardHTML(data) {
       .btn-export { background: #10b981; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
       .btn-export:hover { background: #059669; }
       
-      /* Stats Grid */
       .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px; }
       .stat-card { background: white; border-radius: 12px; padding: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); text-align: center; }
       .stat-title { font-size: 0.7em; color: #666; text-transform: uppercase; }
@@ -654,7 +627,6 @@ function getDashboardHTML(data) {
       .blink-red { animation: blink 1s infinite; background-color: #ff6b6b !important; color: white !important; padding: 2px 6px; border-radius: 8px; display: inline-block; }
       @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
       
-      /* Executive Grid */
       .executive-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; margin-bottom: 30px; }
       .executive-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
       .executive-header { background: linear-gradient(135deg, #075e54, #128C7E); color: white; padding: 12px 15px; display: flex; justify-content: space-between; }
@@ -710,24 +682,11 @@ function getDashboardHTML(data) {
       }
       
       function exportToExcel() {
-        const tableData = ${JSON.stringify(recentPatients.map(p => ({
-          'Patient Name': p.patientName || 'N/A',
-          'Phone': p.patientPhone || 'N/A',
-          'Branch': p.branch || 'N/A',
-          'Test Type': p.testType || 'N/A',
-          'Test Details': p.testDetails || 'N/A',
-          'Status': p.status || 'N/A',
-          'Stage': p.currentStage || 'N/A',
-          'Miss Calls': p.missCallCount || 1,
-          'Active Chat': p.hasActiveSession ? 'Yes' : 'No',
-          'Escalated': p.escalatedToManager ? 'Yes' : 'No',
-          'Created At': new Date(p.createdAt).toLocaleString(),
-          'Last Message': p.lastMessageAt ? new Date(p.lastMessageAt).toLocaleString() : 'N/A'
-        })))};
+        const tableData = ${exportDataJson};
         const ws = XLSX.utils.json_to_sheet(tableData);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, 'Patients Data');
-        XLSX.writeFile(wb, \`patients_export_\${new Date().toISOString().slice(0,19)}.xlsx\`);
+        XLSX.writeFile(wb, 'patients_export_' + new Date().toISOString().slice(0,19) + '.xlsx');
       }
     </script>
   </head>
@@ -979,9 +938,7 @@ function getDashboardHTML(data) {
       <div class="recent-section">
         <table>
           <thead>
-            <tr>
-              <th>Patient</th><th>Phone</th><th>Branch</th><th>Test</th><th>Stage</th><th>Status</th><th>Calls</th><th>Active Chat</th><th>Time</th>
-            </tr>
+            <tr><th>Patient</th><th>Phone</th><th>Branch</th><th>Test</th><th>Stage</th><th>Status</th><th>Calls</th><th>Active Chat</th><th>Time</th></tr>
           </thead>
           <tbody>
             ${recentPatients.slice(0, 100).map(p => `
@@ -991,7 +948,7 @@ function getDashboardHTML(data) {
                 <td>${p.branch || 'N/A'}</td>
                 <td>${p.testDetails || p.testType || 'N/A'}</td>
                 <td><span class="badge">${(p.currentStage || 'pending').replace(/_/g, ' ')}</span></td>
-                <td><span class="badge badge-${p.status || 'pending'}">${p.status || 'pending'}</span></td>
+                <td><span class="badge">${p.status || 'pending'}</span></td>
                 <td>${p.missCallCount || 1}${p.missCallCount >= 3 ? ' 🔴' : ''}</td>
                 <td>${p.hasActiveSession ? '✅ Yes' : '❌ No'}</td>
                 <td>${new Date(p.createdAt).toLocaleString()}</td>
