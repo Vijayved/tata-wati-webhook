@@ -1,4 +1,4 @@
-// dashboard.js - Complete Admin Dashboard with Executive & Manager Tracking
+// dashboard.js - Complete Admin Dashboard with Filters, Search & Excel Export
 const express = require('express');
 const router = express.Router();
 
@@ -17,6 +17,19 @@ router.get('/', async (req, res) => {
       throw new Error('Database collections not available');
     }
     
+    // Get filter parameters from query string
+    const filters = {
+      dateRange: req.query.dateRange || 'all',
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+      branch: req.query.branch || 'all',
+      executive: req.query.executive || 'all',
+      modality: req.query.modality || 'all',
+      status: req.query.status || 'all',
+      stage: req.query.stage || 'all',
+      search: req.query.search || ''
+    };
+    
     // Executive numbers mapping
     const EXECUTIVES = {
       'Naroda': process.env.NARODA_EXECUTIVE || '919106959092',
@@ -32,7 +45,7 @@ router.get('/', async (req, res) => {
       'Manager': process.env.MANAGER_NUMBER || '917698011233'
     };
     
-    // Get all data with deduplication
+    // Get all data
     const allPatients = await patientsCollection.find({}).toArray();
     const allMissCalls = await missCallsCollection.find({}).toArray();
     const allFollowups = await followupCollection.find({}).toArray();
@@ -47,25 +60,98 @@ router.get('/', async (req, res) => {
         uniquePatients.set(patient.patientPhone, patient);
       }
     }
-    const patients = Array.from(uniquePatients.values());
+    let patients = Array.from(uniquePatients.values());
     
     // ============================================
-    // ✅ DATE RANGES
+    // ✅ APPLY FILTERS
     // ============================================
+    
+    // Date filter
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
-    
     const last7Days = new Date(today);
     last7Days.setDate(last7Days.getDate() - 7);
-    
     const last30Days = new Date(today);
     last30Days.setDate(last30Days.getDate() - 30);
     
+    let startDate = null;
+    let endDate = null;
+    
+    if (filters.dateRange === 'today') {
+      startDate = today;
+      endDate = new Date(today);
+      endDate.setHours(23, 59, 59, 999);
+    } else if (filters.dateRange === 'yesterday') {
+      startDate = yesterday;
+      endDate = new Date(today);
+      endDate.setMilliseconds(-1);
+    } else if (filters.dateRange === 'last7days') {
+      startDate = last7Days;
+      endDate = new Date();
+    } else if (filters.dateRange === 'last30days') {
+      startDate = last30Days;
+      endDate = new Date();
+    } else if (filters.dateRange === 'custom' && filters.startDate && filters.endDate) {
+      startDate = new Date(filters.startDate);
+      startDate.setHours(0, 0, 0, 0);
+      endDate = new Date(filters.endDate);
+      endDate.setHours(23, 59, 59, 999);
+    }
+    
+    if (startDate && endDate) {
+      patients = patients.filter(p => {
+        const date = new Date(p.createdAt);
+        return date >= startDate && date <= endDate;
+      });
+    }
+    
+    // Branch filter
+    if (filters.branch !== 'all') {
+      patients = patients.filter(p => p.branch === filters.branch);
+    }
+    
+    // Executive filter
+    if (filters.executive !== 'all') {
+      const execNumber = EXECUTIVES[filters.executive];
+      patients = patients.filter(p => p.executiveNumber === execNumber);
+    }
+    
+    // Modality filter
+    if (filters.modality !== 'all') {
+      patients = patients.filter(p => {
+        const testType = (p.testType || p.testDetails || '').toUpperCase();
+        if (filters.modality === 'MRI') return testType.includes('MRI');
+        if (filters.modality === 'CT') return testType.includes('CT');
+        if (filters.modality === 'X-RAY') return testType.includes('X-RAY') || testType.includes('XRAY');
+        if (filters.modality === 'USG') return testType.includes('USG') || testType.includes('ULTRASOUND');
+        if (filters.modality === 'OTHER') return !testType.includes('MRI') && !testType.includes('CT') && !testType.includes('X-RAY') && !testType.includes('XRAY') && !testType.includes('USG') && !testType.includes('ULTRASOUND');
+        return true;
+      });
+    }
+    
+    // Status filter
+    if (filters.status !== 'all') {
+      patients = patients.filter(p => p.status === filters.status);
+    }
+    
+    // Stage filter
+    if (filters.stage !== 'all') {
+      patients = patients.filter(p => p.currentStage === filters.stage);
+    }
+    
+    // Search filter (name or phone)
+    if (filters.search) {
+      const searchLower = filters.search.toLowerCase();
+      patients = patients.filter(p => 
+        (p.patientName && p.patientName.toLowerCase().includes(searchLower)) ||
+        (p.patientPhone && p.patientPhone.includes(searchLower))
+      );
+    }
+    
     // ============================================
-    // ✅ ACTIVE CONVERSATIONS (Executive connected with patient)
+    // ✅ ACTIVE CONVERSATIONS
     // ============================================
     const activeConversations = allSessions.filter(s => s.status === 'active');
     const connectedPatients = patients.filter(p => {
@@ -311,12 +397,6 @@ router.get('/', async (req, res) => {
           if (waitingTime > 2 * 60 * 60 * 1000) executiveStats[branch].waitingLong++;
         }
         
-        // Get last message time
-        const lastMessages = allMessages.filter(m => 
-          m.sessionToken === patient.chatSessionToken
-        ).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-        const lastMessage = lastMessages[0];
-        
         executivePatients[branch].push({
           patientName: patient.patientName || 'Unknown',
           patientPhone: patient.patientPhone,
@@ -333,7 +413,7 @@ router.get('/', async (req, res) => {
           waitingFollowupCount: patient.waitingFollowupCount || 0,
           noReplyFollowupCount: patient.noReplyFollowupCount || 0,
           hasActiveSession: allSessions.some(s => s.patientPhone === patient.patientPhone && s.status === 'active'),
-          lastMessage: lastMessage
+          chatSessionToken: patient.chatSessionToken
         });
       }
     }
@@ -396,10 +476,14 @@ router.get('/', async (req, res) => {
       else overallTests.OTHER++;
     }
     
-    const recentPatients = patients.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 50);
+    const recentPatients = patients.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 100);
     const recentMissCalls = allMissCalls.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 50);
     const topMissCallPatients = patients.sort((a, b) => (b.missCallCount || 0) - (a.missCallCount || 0)).slice(0, 10);
     const recentFollowups = followups.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)).slice(0, 30);
+    
+    // Get unique branches for filter dropdown
+    const branches = [...new Set(allPatients.map(p => p.branch).filter(b => b))];
+    const executivesList = Object.keys(EXECUTIVES).filter(e => e !== 'Manager');
     
     res.send(getDashboardHTML({
       totalPatients,
@@ -436,6 +520,9 @@ router.get('/', async (req, res) => {
       recentFollowups,
       activeConversations,
       connectedPatients,
+      branches,
+      executivesList,
+      filters,
       EXECUTIVES
     }));
     
@@ -477,6 +564,9 @@ function getDashboardHTML(data) {
     recentFollowups,
     activeConversations,
     connectedPatients,
+    branches,
+    executivesList,
+    filters,
     EXECUTIVES
   } = data;
   
@@ -488,12 +578,45 @@ function getDashboardHTML(data) {
   const branchConvertedData = branchNames.map(b => branchTests[b]?.converted || 0);
   const branchConnectedData = branchNames.map(b => branchTests[b]?.connected || 0);
   
+  // Build query string for filters
+  const buildQueryString = (updates = {}) => {
+    const params = new URLSearchParams();
+    Object.entries({...filters, ...updates}).forEach(([key, value]) => {
+      if (value && value !== 'all' && value !== '') {
+        params.set(key, value);
+      }
+    });
+    const qs = params.toString();
+    return qs ? `?${qs}` : '';
+  };
+  
+  // Excel export function
+  const exportToExcel = () => {
+    const tableData = ${JSON.stringify(recentPatients.map(p => ({
+      'Patient Name': p.patientName || 'N/A',
+      'Phone': p.patientPhone || 'N/A',
+      'Branch': p.branch || 'N/A',
+      'Test Type': p.testType || 'N/A',
+      'Test Details': p.testDetails || 'N/A',
+      'Status': p.status || 'N/A',
+      'Stage': p.currentStage || 'N/A',
+      'Miss Calls': p.missCallCount || 1,
+      'Active Chat': p.hasActiveSession ? 'Yes' : 'No',
+      'Escalated': p.escalatedToManager ? 'Yes' : 'No',
+      'Created At': new Date(p.createdAt).toLocaleString(),
+      'Last Message': p.lastMessageAt ? new Date(p.lastMessageAt).toLocaleString() : 'N/A'
+    })))};
+    const ws = XLSX.utils.json_to_sheet(tableData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Patients Data');
+    XLSX.writeFile(wb, \`patients_export_\${new Date().toISOString().slice(0,19)}.xlsx\`);
+  };
+  
   return `
   <!DOCTYPE html>
   <html>
   <head>
     <title>Executive Dashboard - Complete Analytics</title>
-    <meta http-equiv="refresh" content="60">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -501,6 +624,23 @@ function getDashboardHTML(data) {
       .container { max-width: 1600px; margin: 0 auto; }
       h1 { color: white; margin-bottom: 20px; font-size: 2em; }
       h2 { color: white; margin: 25px 0 15px; font-size: 1.4em; border-left: 4px solid #ffd700; padding-left: 15px; }
+      
+      /* Filter Bar */
+      .filter-bar { background: white; border-radius: 12px; padding: 20px; margin-bottom: 25px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
+      .filter-row { display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 15px; align-items: flex-end; }
+      .filter-group { flex: 1; min-width: 150px; }
+      .filter-group label { display: block; font-size: 0.7em; color: #666; margin-bottom: 5px; text-transform: uppercase; font-weight: bold; }
+      .filter-group select, .filter-group input { width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.9em; }
+      .filter-group input:focus, .filter-group select:focus { outline: none; border-color: #075e54; }
+      .filter-actions { display: flex; gap: 10px; align-items: center; }
+      .btn-filter { background: #075e54; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+      .btn-filter:hover { background: #128C7E; }
+      .btn-reset { background: #6c757d; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-block; text-align: center; }
+      .btn-reset:hover { background: #5a6268; }
+      .btn-export { background: #10b981; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+      .btn-export:hover { background: #059669; }
+      
+      /* Stats Grid */
       .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px; }
       .stat-card { background: white; border-radius: 12px; padding: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); text-align: center; }
       .stat-title { font-size: 0.7em; color: #666; text-transform: uppercase; }
@@ -514,6 +654,7 @@ function getDashboardHTML(data) {
       .blink-red { animation: blink 1s infinite; background-color: #ff6b6b !important; color: white !important; padding: 2px 6px; border-radius: 8px; display: inline-block; }
       @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
       
+      /* Executive Grid */
       .executive-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; margin-bottom: 30px; }
       .executive-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
       .executive-header { background: linear-gradient(135deg, #075e54, #128C7E); color: white; padding: 12px 15px; display: flex; justify-content: space-between; }
@@ -551,11 +692,141 @@ function getDashboardHTML(data) {
       .last-updated { color: white; margin-bottom: 15px; font-size: 0.8em; }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script>
+      function toggleCustomDate() {
+        const dateRange = document.querySelector('select[name="dateRange"]').value;
+        const customDiv = document.getElementById('customDateRange');
+        if (dateRange === 'custom') {
+          customDiv.style.display = 'flex';
+        } else {
+          customDiv.style.display = 'none';
+        }
+      }
+      
+      function togglePatientList(branch) {
+        const el = document.getElementById('patient-list-' + branch);
+        if (el) el.classList.toggle('show');
+      }
+      
+      function exportToExcel() {
+        const tableData = ${JSON.stringify(recentPatients.map(p => ({
+          'Patient Name': p.patientName || 'N/A',
+          'Phone': p.patientPhone || 'N/A',
+          'Branch': p.branch || 'N/A',
+          'Test Type': p.testType || 'N/A',
+          'Test Details': p.testDetails || 'N/A',
+          'Status': p.status || 'N/A',
+          'Stage': p.currentStage || 'N/A',
+          'Miss Calls': p.missCallCount || 1,
+          'Active Chat': p.hasActiveSession ? 'Yes' : 'No',
+          'Escalated': p.escalatedToManager ? 'Yes' : 'No',
+          'Created At': new Date(p.createdAt).toLocaleString(),
+          'Last Message': p.lastMessageAt ? new Date(p.lastMessageAt).toLocaleString() : 'N/A'
+        })))};
+        const ws = XLSX.utils.json_to_sheet(tableData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Patients Data');
+        XLSX.writeFile(wb, \`patients_export_\${new Date().toISOString().slice(0,19)}.xlsx\`);
+      }
+    </script>
   </head>
   <body>
     <div class="container">
       <h1>🏥 Executive Dashboard - Complete Analytics</h1>
-      <button class="refresh-btn" onclick="location.reload()">🔄 Refresh</button>
+      
+      <div class="filter-bar">
+        <form method="GET" action="/admin" id="filterForm">
+          <div class="filter-row">
+            <div class="filter-group">
+              <label>📅 Date Range</label>
+              <select name="dateRange" onchange="toggleCustomDate()">
+                <option value="all" ${filters.dateRange === 'all' ? 'selected' : ''}>All Time</option>
+                <option value="today" ${filters.dateRange === 'today' ? 'selected' : ''}>Today</option>
+                <option value="yesterday" ${filters.dateRange === 'yesterday' ? 'selected' : ''}>Yesterday</option>
+                <option value="last7days" ${filters.dateRange === 'last7days' ? 'selected' : ''}>Last 7 Days</option>
+                <option value="last30days" ${filters.dateRange === 'last30days' ? 'selected' : ''}>Last 30 Days</option>
+                <option value="custom" ${filters.dateRange === 'custom' ? 'selected' : ''}>Custom</option>
+              </select>
+            </div>
+            <div id="customDateRange" style="display: ${filters.dateRange === 'custom' ? 'flex' : 'none'}; gap: 10px;">
+              <div class="filter-group">
+                <label>From</label>
+                <input type="date" name="startDate" value="${filters.startDate || ''}">
+              </div>
+              <div class="filter-group">
+                <label>To</label>
+                <input type="date" name="endDate" value="${filters.endDate || ''}">
+              </div>
+            </div>
+            <div class="filter-group">
+              <label>🏢 Branch</label>
+              <select name="branch">
+                <option value="all" ${filters.branch === 'all' ? 'selected' : ''}>All Branches</option>
+                ${branches.map(b => `<option value="${b}" ${filters.branch === b ? 'selected' : ''}>${b}</option>`).join('')}
+              </select>
+            </div>
+            <div class="filter-group">
+              <label>👤 Executive</label>
+              <select name="executive">
+                <option value="all" ${filters.executive === 'all' ? 'selected' : ''}>All Executives</option>
+                ${executivesList.map(e => `<option value="${e}" ${filters.executive === e ? 'selected' : ''}>${e}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div class="filter-row">
+            <div class="filter-group">
+              <label>🔬 Modality</label>
+              <select name="modality">
+                <option value="all" ${filters.modality === 'all' ? 'selected' : ''}>All</option>
+                <option value="MRI" ${filters.modality === 'MRI' ? 'selected' : ''}>MRI</option>
+                <option value="CT" ${filters.modality === 'CT' ? 'selected' : ''}>CT</option>
+                <option value="X-RAY" ${filters.modality === 'X-RAY' ? 'selected' : ''}>X-RAY</option>
+                <option value="USG" ${filters.modality === 'USG' ? 'selected' : ''}>USG</option>
+                <option value="OTHER" ${filters.modality === 'OTHER' ? 'selected' : ''}>OTHER</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label>📊 Status</label>
+              <select name="status">
+                <option value="all" ${filters.status === 'all' ? 'selected' : ''}>All</option>
+                <option value="pending" ${filters.status === 'pending' ? 'selected' : ''}>Pending</option>
+                <option value="converted" ${filters.status === 'converted' ? 'selected' : ''}>Converted</option>
+                <option value="waiting" ${filters.status === 'waiting' ? 'selected' : ''}>Waiting</option>
+                <option value="not_converted" ${filters.status === 'not_converted' ? 'selected' : ''}>Not Converted</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label>🎯 Stage</label>
+              <select name="stage">
+                <option value="all" ${filters.stage === 'all' ? 'selected' : ''}>All</option>
+                <option value="awaiting_branch" ${filters.stage === 'awaiting_branch' ? 'selected' : ''}>Awaiting Branch</option>
+                <option value="branch_selected" ${filters.stage === 'branch_selected' ? 'selected' : ''}>Branch Selected</option>
+                <option value="awaiting_name" ${filters.stage === 'awaiting_name' ? 'selected' : ''}>Awaiting Name</option>
+                <option value="awaiting_test_type" ${filters.stage === 'awaiting_test_type' ? 'selected' : ''}>Awaiting Test Type</option>
+                <option value="awaiting_test_details" ${filters.stage === 'awaiting_test_details' ? 'selected' : ''}>Awaiting Test Details</option>
+                <option value="executive_notified" ${filters.stage === 'executive_notified' ? 'selected' : ''}>Executive Notified</option>
+                <option value="connected" ${filters.stage === 'connected' ? 'selected' : ''}>Connected</option>
+                <option value="converted" ${filters.stage === 'converted' ? 'selected' : ''}>Converted</option>
+                <option value="waiting" ${filters.stage === 'waiting' ? 'selected' : ''}>Waiting</option>
+                <option value="not_converted" ${filters.stage === 'not_converted' ? 'selected' : ''}>Not Converted</option>
+                <option value="escalated" ${filters.stage === 'escalated' ? 'selected' : ''}>Escalated</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label>🔍 Search</label>
+              <input type="text" name="search" placeholder="Name or Phone" value="${filters.search || ''}">
+            </div>
+            <div class="filter-actions">
+              <button type="submit" class="btn-filter">🔍 Apply Filters</button>
+              <a href="/admin" class="btn-reset">🔄 Reset</a>
+              <button type="button" class="btn-export" onclick="exportToExcel()">📊 Export to Excel</button>
+            </div>
+          </div>
+        </form>
+      </div>
+      
+      <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
       <div class="last-updated">Updated: ${new Date().toLocaleString()}</div>
       
       <!-- Alert Cards -->
@@ -704,62 +975,79 @@ function getDashboardHTML(data) {
       </div>
       
       <!-- Recent Patients -->
-      <h2>🕒 Recent Patients</h2>
+      <h2>🕒 Recent Patients (Filtered)</h2>
       <div class="recent-section">
-        <table><thead><tr><th>Patient</th><th>Phone</th><th>Branch</th><th>Test</th><th>Stage</th><th>Status</th><th>Calls</th><th>Active Chat</th><th>Time</th> </tr</thead>
-        <tbody>${recentPatients.slice(0, 30).map(p => ` <tr class="${p.missCallCount >= 3 ? 'high-miss-call' : ''}">
-          <td>${p.patientName || 'N/A'}${p.escalatedToManager ? ' 🚨' : ''}</td>
-          <td>${p.patientPhone || 'N/A'}</td>
-          <td>${p.branch || 'N/A'}</td>
-          <td>${p.testDetails || p.testType || 'N/A'}</td>
-          <td>${(p.currentStage || 'pending').replace(/_/g, ' ')}</td>
-          <td>${p.status || 'pending'}</td>
-          <td>${p.missCallCount || 1}</td>
-          <td>${p.currentStage === 'connected' ? '✅ Yes' : '❌ No'}</td>
-          <td>${new Date(p.createdAt).toLocaleString()}</td>
-        </tr>`).join('')}</tbody>
+        <table>
+          <thead>
+            <tr>
+              <th>Patient</th><th>Phone</th><th>Branch</th><th>Test</th><th>Stage</th><th>Status</th><th>Calls</th><th>Active Chat</th><th>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${recentPatients.slice(0, 100).map(p => `
+              <tr class="${p.missCallCount >= 3 ? 'high-miss-call' : ''}">
+                <td>${p.patientName || 'N/A'}${p.escalatedToManager ? ' 🚨' : ''}${p.hasActiveSession ? ' 💬' : ''}</td>
+                <td>${p.patientPhone || 'N/A'}</td>
+                <td>${p.branch || 'N/A'}</td>
+                <td>${p.testDetails || p.testType || 'N/A'}</td>
+                <td><span class="badge">${(p.currentStage || 'pending').replace(/_/g, ' ')}</span></td>
+                <td><span class="badge badge-${p.status || 'pending'}">${p.status || 'pending'}</span></td>
+                <td>${p.missCallCount || 1}${p.missCallCount >= 3 ? ' 🔴' : ''}</td>
+                <td>${p.hasActiveSession ? '✅ Yes' : '❌ No'}</td>
+                <td>${new Date(p.createdAt).toLocaleString()}</td>
+              </tr>
+            `).join('')}
+          </tbody>
         </table>
       </div>
       
       <!-- Recent Follow-ups -->
       <h2>📢 Recent Follow-ups</h2>
       <div class="recent-section">
-        <table><thead><tr><th>Type</th><th>Patient Phone</th><th>Executive</th><th>Count</th><th>Time</th></tr></thead>
-        <tbody>${recentFollowups.slice(0, 30).map(f => `<tr>
-          <td><span class="badge">${f.type}</span></td>
-          <td>${f.patientPhone || 'N/A'}</td>
-          <td>${f.executiveNumber || 'N/A'}</td>
-          <td>${f.waitingCount || f.noReplyFollowupCount || '-'}</td>
-          <td>${new Date(f.sentAt).toLocaleString()}</td>
-        </tr>`).join('')}</tbody>
+        <table>
+          <thead><tr><th>Type</th><th>Patient Phone</th><th>Executive</th><th>Count</th><th>Time</th></tr></thead>
+          <tbody>
+            ${recentFollowups.slice(0, 30).map(f => `
+              <tr>
+                <td><span class="badge">${f.type}</span></td>
+                <td>${f.patientPhone || 'N/A'}</td>
+                <td>${f.executiveNumber || 'N/A'}</td>
+                <td>${f.waitingCount || f.noReplyFollowupCount || '-'}</td>
+                <td>${new Date(f.sentAt).toLocaleString()}</td>
+              </tr>
+            `).join('')}
+          </tbody>
         </table>
       </div>
       
       <!-- Recent Miss Calls -->
       <h2>📞 Recent Miss Calls</h2>
       <div class="recent-section">
-        <table><thead><tr><th>Phone</th><th>Branch</th><th>Time</th></tr></thead>
-        <tbody>${recentMissCalls.slice(0, 30).map(m => `<tr>
-          <td>${m.phoneNumber || 'N/A'}</td>
-          <td>${m.branch || 'N/A'}</td>
-          <td>${new Date(m.createdAt).toLocaleString()}</td>
-        </tr>`).join('')}</tbody>
+        <table>
+          <thead><tr><th>Phone</th><th>Branch</th><th>Time</th></tr></thead>
+          <tbody>
+            ${recentMissCalls.slice(0, 30).map(m => `
+              <tr>
+                <td>${m.phoneNumber || 'N/A'}</td>
+                <td>${m.branch || 'N/A'}</td>
+                <td>${new Date(m.createdAt).toLocaleString()}</td>
+              </tr>
+            `).join('')}
+          </tbody>
         </table>
       </div>
     </div>
     
     <script>
-      function togglePatientList(branch) {
-        const el = document.getElementById('patient-list-' + branch);
-        if (el) el.classList.toggle('show');
-      }
       new Chart(document.getElementById('dailyChart'), {
         type: 'line',
-        data: { labels: ${JSON.stringify(dailyMissCallLabels)}, datasets: [{ label: 'Miss Calls', data: ${JSON.stringify(dailyMissCallValues)}, borderColor: '#f97316', fill: true }] }
+        data: { labels: ${JSON.stringify(dailyMissCallLabels)}, datasets: [{ label: 'Miss Calls', data: ${JSON.stringify(dailyMissCallValues)}, borderColor: '#f97316', fill: true }] },
+        options: { responsive: true }
       });
       new Chart(document.getElementById('branchChart'), {
         type: 'bar',
-        data: { labels: ${JSON.stringify(branchNames)}, datasets: [{ label: 'Total', data: ${JSON.stringify(branchTotalData)}, backgroundColor: '#075e54' }, { label: 'Converted', data: ${JSON.stringify(branchConvertedData)}, backgroundColor: '#10b981' }, { label: 'Connected', data: ${JSON.stringify(branchConnectedData)}, backgroundColor: '#3b82f6' }] }
+        data: { labels: ${JSON.stringify(branchNames)}, datasets: [{ label: 'Total', data: ${JSON.stringify(branchTotalData)}, backgroundColor: '#075e54' }, { label: 'Converted', data: ${JSON.stringify(branchConvertedData)}, backgroundColor: '#10b981' }, { label: 'Connected', data: ${JSON.stringify(branchConnectedData)}, backgroundColor: '#3b82f6' }] },
+        options: { responsive: true, scales: { y: { beginAtZero: true } } }
       });
       setTimeout(() => location.reload(), 60000);
     </script>
