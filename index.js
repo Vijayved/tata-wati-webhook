@@ -122,6 +122,7 @@ async function connectDB() {
     await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
     await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
     await followupCollection.createIndex({ patientId: 1, type: 1, createdAt: -1 });
+    await followupCollection.createIndex({ scheduledAt: 1, status: 1 });
     
     console.log('✅ Indexes created');
     return true;
@@ -285,7 +286,6 @@ async function updatePatientStage(patientId, stage) {
 // ✅ SESSION FUNCTIONS (NO EXPIRY)
 // ============================================
 
-// Create new chat session (PERMANENT - no expiry)
 async function createChatSession(executiveNumber, patientPhone, patientName) {
   const sessionToken = crypto.randomBytes(16).toString('hex');
   
@@ -297,15 +297,13 @@ async function createChatSession(executiveNumber, patientPhone, patientName) {
     createdAt: new Date(),
     lastActivity: new Date(),
     status: 'active',
-    expiresAt: null  // ✅ NO EXPIRY - permanent session
+    expiresAt: null
   });
   
   return sessionToken;
 }
 
-// Get or create session (for reminders - ensures link always works)
 async function getOrCreateChatSession(patient) {
-  // Try to find existing active session
   let session = await chatSessionsCollection.findOne({ 
     patientPhone: patient.patientPhone,
     status: 'active'
@@ -316,7 +314,6 @@ async function getOrCreateChatSession(patient) {
     const executiveNumber = getExecutiveNumber(patient.branch);
     const sessionToken = await createChatSession(executiveNumber, patient.patientPhone, patient.patientName);
     
-    // Update patient with new token
     await patientsCollection.updateOne(
       { _id: patient._id },
       { $set: { chatSessionToken: sessionToken } }
@@ -422,21 +419,30 @@ async function sendWhatsAppMessageToPatient(executiveNumber, patientPhone, messa
 }
 
 // ============================================
-// ✅ FOLLOW-UP FUNCTIONS (WITH PERMANENT SESSION)
+// ✅ FOLLOW-UP FUNCTIONS (WITH WHATSAPP DIRECT LINK)
 // ============================================
 
-// 1. No Reply Follow-up (every 20 min)
+// 1. No Reply Follow-up (every 20 min) - WITH WHATSAPP DIRECT LINK
 async function sendNoReplyFollowup(patient) {
   console.log(`📢 Sending no-reply followup for ${patient.patientName}`);
   
-  // ✅ Get or create session - ensures link is always valid
-  const session = await getOrCreateChatSession(patient);
-  const chatLink = `${SELF_URL}/executive-chat/${session.sessionToken}`;
-  
   const executiveNumber = getExecutiveNumber(patient.branch);
   
+  // ✅ Create WhatsApp direct link (not executive-chat link)
+  const welcomeText = `Hi ${patient.patientName}, I am from UIC Support Team.
+
+Your Details:
+Name: ${patient.patientName}
+Test: ${patient.testType} - ${patient.testDetails}
+Branch: ${patient.branch}
+Miss Call Time: ${patient.missCallTimeIST || getISTTime(new Date(patient.missCallTime))}
+
+How can I help you?`;
+  
+  const whatsappLink = `https://wa.me/${patient.patientPhone}?text=${encodeURIComponent(welcomeText)}`;
+  
   // ✅ IST Time Format
-  const istMissCallTime = patient.missCallTime ? getISTTime(new Date(patient.missCallTime)) : "Not recorded";
+  const istMissCallTime = patient.missCallTimeIST || getISTTime(new Date(patient.missCallTime));
   const istLastMessageAt = patient.lastMessageAt ? getISTTime(new Date(patient.lastMessageAt)) : "No message";
   
   const parameters = [
@@ -447,7 +453,7 @@ async function sendNoReplyFollowup(patient) {
     { name: "5", value: patient.testDetails || "Not specified" },
     { name: "6", value: istMissCallTime },
     { name: "7", value: istLastMessageAt },
-    { name: "8", value: chatLink }
+    { name: "8", value: whatsappLink }  // ✅ WhatsApp direct link
   ];
   
   await sendWatiTemplateMessage(executiveNumber, FOLLOWUP_NO_REPLY_TEMPLATE, parameters);
@@ -458,7 +464,8 @@ async function sendNoReplyFollowup(patient) {
     executiveNumber: executiveNumber,
     type: 'no_reply',
     sentAt: new Date(),
-    status: 'sent'
+    status: 'sent',
+    reminderCount: (patient.noReplyFollowupCount || 0) + 1
   });
   
   await patientsCollection.updateOne(
@@ -474,12 +481,9 @@ async function sendNoReplyFollowup(patient) {
 async function sendWaitingFollowup(patient, waitingCount) {
   console.log(`⏳ Sending waiting followup for ${patient.patientName} (count: ${waitingCount})`);
   
-  // ✅ Get or create session - ensures link is always valid
-  const session = await getOrCreateChatSession(patient);
   const executiveNumber = getExecutiveNumber(patient.branch);
   
-  // ✅ IST Time Format
-  const istUpdatedAt = patient.updatedAt ? getISTTime(new Date(patient.updatedAt)) : "Not recorded";
+  const istUpdatedAt = patient.updatedAtIST || getISTTime(new Date(patient.updatedAt));
   
   const parameters = [
     { name: "1", value: patient.patientName || "Patient" },
@@ -584,8 +588,45 @@ async function sendTwoHourReport(patient) {
   );
 }
 
+// 5. Send Status Reminder (30 min after executive reply)
+async function sendStatusReminder(patient) {
+  console.log(`⏰ Sending status reminder for ${patient.patientName}`);
+  
+  const executiveNumber = patient.executiveNumber || getExecutiveNumber(patient.branch);
+  const istWaitingSince = patient.updatedAtIST || getISTTime(new Date(patient.updatedAt));
+  
+  const parameters = [
+    { name: "1", value: patient.patientName || "Patient" },
+    { name: "2", value: patient.patientPhone },
+    { name: "3", value: patient.branch || "Main Branch" },
+    { name: "4", value: patient.testType || "Not specified" },
+    { name: "5", value: patient.testDetails || "Not specified" },
+    { name: "6", value: istWaitingSince }
+  ];
+  
+  await sendWatiTemplateMessage(executiveNumber, FOLLOWUP_WAITING_TEMPLATE, parameters);
+  
+  await followupCollection.insertOne({
+    patientId: patient._id,
+    patientPhone: patient.patientPhone,
+    executiveNumber: executiveNumber,
+    type: 'status_reminder',
+    sentAt: new Date(),
+    status: 'sent',
+    reminderCount: (patient.statusReminderCount || 0) + 1
+  });
+  
+  await patientsCollection.updateOne(
+    { _id: patient._id },
+    { 
+      $inc: { statusReminderCount: 1 },
+      $set: { lastStatusReminderAt: new Date() }
+    }
+  );
+}
+
 // ============================================
-// ✅ CRON JOBS FOR FOLLOW-UPS
+// ✅ CRON JOBS
 // ============================================
 
 // Every 20 minutes - No reply followup
@@ -594,7 +635,7 @@ cron.schedule('*/20 * * * *', async () => {
   try {
     const patients = await patientsCollection.find({
       executiveActionTaken: false,
-      status: { $in: ['pending', 'awaiting_branch', 'branch_selected'] },
+      status: { $in: ['pending', 'awaiting_branch', 'branch_selected', 'executive_notified'] },
       currentStage: { $nin: ['converted', 'not_converted'] },
       createdAt: { $lt: new Date(Date.now() - 20 * 60 * 1000) }
     }).toArray();
@@ -633,6 +674,37 @@ cron.schedule('0 * * * *', async () => {
   }
 });
 
+// Every minute - Check for status reminders (30 min after executive reply)
+cron.schedule('* * * * *', async () => {
+  console.log('⏰ Checking status reminders...');
+  try {
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+    
+    const patients = await patientsCollection.find({
+      executiveReplied: true,
+      statusReminderSent: { $ne: true },
+      executiveRepliedAt: { $lte: thirtyMinutesAgo },
+      currentStage: { $nin: ['converted', 'not_converted'] }
+    }).toArray();
+    
+    for (const patient of patients) {
+      // Check if already converted or not converted
+      if (patient.status === 'converted' || patient.status === 'not_converted') {
+        continue;
+      }
+      
+      await sendStatusReminder(patient);
+      
+      await patientsCollection.updateOne(
+        { _id: patient._id },
+        { $set: { statusReminderSent: true } }
+      );
+    }
+  } catch (error) {
+    console.error('Status reminder error:', error);
+  }
+});
+
 // Every 2 hours - Executive report
 cron.schedule('0 */2 * * *', async () => {
   console.log('📊 Running 2-hour report check...');
@@ -660,7 +732,6 @@ cron.schedule('0 */2 * * *', async () => {
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
   console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
   
-  // ✅ IST Time
   const istTime = getISTDateTime();
   
   const welcomeText = `Hi ${patientName}, I am from UIC Support Team.
@@ -1066,6 +1137,54 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
+    // ============================================
+    // ✅ CHECK IF EXECUTIVE SENT MESSAGE TO PATIENT
+    // ============================================
+    const isExecutive = Object.values(EXECUTIVES).includes(senderNumber);
+    
+    if (isExecutive && messageText && !text.endsWith('_BRANCH') && !text.startsWith('CONVERT') && !text.startsWith('WAITING') && !text.startsWith('NOT')) {
+      // Executive sent a message - find which patient they are assigned to
+      const patient = await patientsCollection.findOne({ 
+        executiveNumber: senderNumber,
+        currentStage: { $nin: ['converted', 'not_converted'] }
+      });
+      
+      if (patient) {
+        console.log(`✅ Executive ${senderNumber} replied to patient ${patient.patientPhone}`);
+        
+        // Mark that executive has taken action - STOP REMINDERS
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $set: { 
+              executiveActionTaken: true,
+              executiveReplied: true,
+              executiveRepliedAt: new Date(),
+              noReplyFollowupCount: 0  // Reset counter
+            }
+          }
+        );
+        
+        // Close all pending no-reply followups for this patient
+        await followupCollection.updateMany(
+          { patientId: patient._id, type: 'no_reply', status: 'sent' },
+          { $set: { status: 'resolved', resolvedAt: new Date(), resolvedBy: 'executive_reply' } }
+        );
+        
+        // Store the message in chat history
+        const session = await getOrCreateChatSession(patient);
+        await chatMessagesCollection.insertOne({
+          sessionToken: session.sessionToken,
+          sender: 'executive',
+          text: messageText,
+          timestamp: new Date(),
+          watiMessageId: msg.id
+        });
+        
+        console.log(`⏰ Status reminder will be sent after 30 minutes`);
+      }
+    }
+    
     // HANDLE PATIENT REPLIES
     const activeSession = await chatSessionsCollection.findOne({
       patientPhone: senderNumber,
@@ -1146,7 +1265,7 @@ app.post('/wati-webhook', async (req, res) => {
     }
     
     // ============================================
-    // ✅ HANDLE EXECUTIVE QUICK REPLIES
+    // ✅ HANDLE EXECUTIVE QUICK REPLIES (Convert Done, Waiting, Not Convert)
     // ============================================
     if (text === 'CONVERT DONE' || text === 'WAITING' || text === 'NOT CONVERT') {
       console.log(`🔘 Executive quick reply: ${text} from ${senderNumber}`);
@@ -1184,7 +1303,8 @@ app.post('/wati-webhook', async (req, res) => {
               convertedAt: new Date(),
               convertedAtIST: getISTTime(),
               noReplyFollowupCount: 0,
-              waitingFollowupCount: 0
+              waitingFollowupCount: 0,
+              statusReminderSent: true
             }
           }
         );
@@ -1230,7 +1350,8 @@ app.post('/wati-webhook', async (req, res) => {
               currentStage: STAGES.NOT_CONVERTED,
               executiveActionTaken: true,
               notConvertedAt: new Date(),
-              notConvertedAtIST: getISTTime()
+              notConvertedAtIST: getISTTime(),
+              statusReminderSent: true
             }
           }
         );
@@ -1264,7 +1385,6 @@ app.post('/wati-webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
-      // ✅ Get or create session (permanent)
       const session = await getOrCreateChatSession(patient);
       
       const welcomeMessage = `Hi, I am UIC Support Team\n\nYour name is: ${patient.patientName || 'Patient'}\nTest: ${patient.testType || 'Not specified'}\nBranch: ${patient.branch || 'Main Branch'}`;
@@ -1316,7 +1436,6 @@ app.post('/wati-webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
-      // ✅ Get session (or create if missing)
       const session = await getOrCreateChatSession(patient);
       const executiveNumber = patient.executiveNumber || getExecutiveNumber(patient.branch);
       const detailsLink = `${SELF_URL}/executive-chat/${session.sessionToken}`;
@@ -1794,6 +1913,7 @@ app.get('/api/stats', async (req, res) => {
       noReplySent: await followupCollection.countDocuments({ type: 'no_reply', sentAt: { $gte: today } }),
       waitingSent: await followupCollection.countDocuments({ type: 'waiting', sentAt: { $gte: today } }),
       escalations: await followupCollection.countDocuments({ type: 'escalation', sentAt: { $gte: today } }),
+      statusReminders: await followupCollection.countDocuments({ type: 'status_reminder', sentAt: { $gte: today } }),
       totalFollowups: await followupCollection.countDocuments()
     };
     
@@ -1849,19 +1969,20 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 Tata-WATI Executive System',
-    version: '10.0.0',
+    version: '11.0.0',
     timezone: 'Asia/Kolkata (IST)',
     istTime: getISTTime(),
     template: LEAD_TEMPLATE_NAME,
     features: [
       '✅ Permanent chat links (never expire)',
+      '✅ WhatsApp direct link in reminders',
       '✅ Auto follow-up every 20 min for no reply',
+      '✅ Executive reply stops reminders',
+      '✅ Status reminder after 30 min',
       '✅ Auto follow-up every hour for waiting status',
       '✅ Escalation to manager after 4 waiting follow-ups',
       '✅ 2-hour report to manager',
-      '✅ IST timezone for all messages',
-      '✅ Executive quick replies: Convert Done, Waiting, Not Convert',
-      '✅ Manager quick replies: Send Executive Pt Details'
+      '✅ IST timezone for all messages'
     ],
     endpoints: {
       executive_chat: '/executive-chat/:token',
@@ -1921,10 +2042,11 @@ async function startServer() {
       console.log(`📍 Current IST Time: ${getISTTime()}`);
       console.log(`📍 Lead Template: ${LEAD_TEMPLATE_NAME}`);
       console.log(`📍 Follow-up Templates:`);
-      console.log(`   - No Reply: ${FOLLOWUP_NO_REPLY_TEMPLATE} (every 20 min)`);
+      console.log(`   - No Reply: ${FOLLOWUP_NO_REPLY_TEMPLATE} (every 20 min) - WhatsApp Direct Link`);
       console.log(`   - Waiting: ${FOLLOWUP_WAITING_TEMPLATE} (every hour)`);
       console.log(`   - Escalation: ${ESCALATION_MANAGER_TEMPLATE} (after 4 waiting)`);
       console.log(`   - Report: ${EXECUTIVE_REPORT_TEMPLATE} (every 2 hours)`);
+      console.log(`📍 Status Reminder: 30 minutes after executive reply`);
       console.log(`📍 Chat Sessions: PERMANENT (never expire)`);
       console.log(`📍 Admin Dashboard: ${SELF_URL}/admin`);
       console.log('='.repeat(60) + '\n');
