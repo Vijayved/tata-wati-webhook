@@ -1,6 +1,63 @@
-// dashboard.js - Complete Admin Dashboard with Filters, Search & Excel Export
+// dashboard.js - Complete Admin Dashboard with Filters, Search & Excel Export + Reset Button
 const express = require('express');
 const router = express.Router();
+
+// ============================================
+// ✅ RESET DATABASE ENDPOINT (Password Protected)
+// ============================================
+router.post('/reset', async (req, res) => {
+  try {
+    const { password } = req.body;
+    
+    // Password check
+    if (password !== '2311') {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'Invalid password. Access denied.' 
+      });
+    }
+    
+    const patientsCollection = req.patientsCollection;
+    const processedCollection = req.processedCollection;
+    const missCallsCollection = req.missCallsCollection;
+    const chatSessionsCollection = req.chatSessionsCollection;
+    const chatMessagesCollection = req.chatMessagesCollection;
+    const followupCollection = req.followupCollection;
+    
+    // Count before deletion
+    const counts = {
+      patients: await patientsCollection.countDocuments(),
+      missCalls: await missCallsCollection.countDocuments(),
+      followups: await followupCollection.countDocuments(),
+      chatSessions: await chatSessionsCollection.countDocuments(),
+      chatMessages: await chatMessagesCollection.countDocuments(),
+      processed: await processedCollection.countDocuments()
+    };
+    
+    // Delete all data
+    await patientsCollection.deleteMany({});
+    await missCallsCollection.deleteMany({});
+    await followupCollection.deleteMany({});
+    await chatSessionsCollection.deleteMany({});
+    await chatMessagesCollection.deleteMany({});
+    await processedCollection.deleteMany({});
+    
+    console.log('🗑️ Database reset by admin');
+    
+    res.json({
+      success: true,
+      message: 'Database reset successfully! All data has been deleted.',
+      deleted: counts
+    });
+    
+  } catch (error) {
+    console.error('Reset error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
 
 router.get('/', async (req, res) => {
   try {
@@ -609,10 +666,12 @@ function getDashboardHTML(data) {
       .filter-actions { display: flex; gap: 10px; align-items: center; }
       .btn-filter { background: #075e54; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
       .btn-filter:hover { background: #128C7E; }
-      .btn-reset { background: #6c757d; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-block; text-align: center; }
-      .btn-reset:hover { background: #5a6268; }
+      .btn-reset-filter { background: #6c757d; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-block; text-align: center; }
+      .btn-reset-filter:hover { background: #5a6268; }
       .btn-export { background: #10b981; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
       .btn-export:hover { background: #059669; }
+      .btn-reset-db { background: #dc2626; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-left: 10px; }
+      .btn-reset-db:hover { background: #b91c1c; }
       
       .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px; }
       .stat-card { background: white; border-radius: 12px; padding: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); text-align: center; }
@@ -687,6 +746,34 @@ function getDashboardHTML(data) {
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, 'Patients Data');
         XLSX.writeFile(wb, 'patients_export_' + new Date().toISOString().slice(0,19) + '.xlsx');
+      }
+      
+      function resetDatabase() {
+        const password = prompt('Enter reset password:');
+        if (password === null) return;
+        
+        fetch('/admin/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: password })
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            alert('✅ Database reset successful!\\n\\nDeleted:\\n' +
+              'Patients: ' + data.deleted.patients + '\\n' +
+              'Miss Calls: ' + data.deleted.missCalls + '\\n' +
+              'Followups: ' + data.deleted.followups + '\\n' +
+              'Chat Sessions: ' + data.deleted.chatSessions + '\\n' +
+              'Messages: ' + data.deleted.chatMessages);
+            location.reload();
+          } else {
+            alert('❌ ' + data.error);
+          }
+        })
+        .catch(err => {
+          alert('Error: ' + err.message);
+        });
       }
     </script>
   </head>
@@ -778,8 +865,9 @@ function getDashboardHTML(data) {
             </div>
             <div class="filter-actions">
               <button type="submit" class="btn-filter">🔍 Apply Filters</button>
-              <a href="/admin" class="btn-reset">🔄 Reset</a>
+              <a href="/admin" class="btn-reset-filter">🔄 Reset Filters</a>
               <button type="button" class="btn-export" onclick="exportToExcel()">📊 Export to Excel</button>
+              <button type="button" class="btn-reset-db" onclick="resetDatabase()">🗑️ Reset Database</button>
             </div>
           </div>
         </form>
@@ -936,9 +1024,11 @@ function getDashboardHTML(data) {
       <!-- Recent Patients -->
       <h2>🕒 Recent Patients (Filtered)</h2>
       <div class="recent-section">
-        <table>
+         <table>
           <thead>
-            <tr><th>Patient</th><th>Phone</th><th>Branch</th><th>Test</th><th>Stage</th><th>Status</th><th>Calls</th><th>Active Chat</th><th>Time</th></tr>
+             <tr>
+              <th>Patient</th><th>Phone</th><th>Branch</th><th>Test</th><th>Stage</th><th>Status</th><th>Calls</th><th>Active Chat</th><th>Time</th>
+             </tr>
           </thead>
           <tbody>
             ${recentPatients.slice(0, 100).map(p => `
@@ -955,7 +1045,7 @@ function getDashboardHTML(data) {
               </tr>
             `).join('')}
           </tbody>
-        </table>
+         </table>
       </div>
       
       <!-- Recent Follow-ups -->
