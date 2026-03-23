@@ -1,7 +1,6 @@
 // dashboard.js - Complete Professional Dashboard with Miss Call & GMB System
 const express = require('express');
 const router = express.Router();
-const ExcelJS = require('exceljs');
 
 // Reset Database Endpoint
 router.post('/reset', async (req, res) => {
@@ -499,10 +498,10 @@ function getDashboardHTML(data) {
         display: flex;
         align-items: center;
         gap: 8px;
+        background: transparent;
+        color: #94a3b8;
       }
-      .tab-btn.misscall { background: transparent; color: #94a3b8; }
       .tab-btn.misscall.active { background: linear-gradient(135deg, #075e54, #128C7E); color: white; box-shadow: 0 4px 15px rgba(18,140,126,0.3); }
-      .tab-btn.gmb { background: transparent; color: #94a3b8; }
       .tab-btn.gmb.active { background: linear-gradient(135deg, #1e40af, #3b82f6); color: white; box-shadow: 0 4px 15px rgba(59,130,246,0.3); }
       .tab-content { display: none; }
       .tab-content.active { display: block; animation: fadeIn 0.4s ease; }
@@ -600,7 +599,13 @@ function getDashboardHTML(data) {
         customDiv.style.display = dateRange === 'custom' ? 'flex' : 'none';
       }
       function togglePatientList(exec) { document.getElementById('patient-list-' + exec).classList.toggle('show'); }
-      function exportToExcel() { const ws = XLSX.utils.json_to_sheet(${exportDataJson}); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Patients'); XLSX.writeFile(wb, 'patients_export.xlsx'); }
+      function exportToExcel() { 
+        const tableData = ${exportDataJson};
+        const ws = XLSX.utils.json_to_sheet(tableData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Patients Data');
+        XLSX.writeFile(wb, 'patients_export_' + new Date().toISOString().slice(0,19) + '.xlsx');
+      }
       function resetDatabase() { const pwd = prompt('Enter reset password:'); if(pwd) fetch('/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})}).then(r=>r.json()).then(d=>{if(d.success){alert('Reset successful!');location.reload();}else alert('Error: '+d.error);}); }
       function switchTab(tab) {
         document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
