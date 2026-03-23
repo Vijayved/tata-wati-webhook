@@ -41,7 +41,6 @@ function getISTDate(date = new Date()) {
 function isNightTime() {
   const now = new Date();
   const hours = now.getHours();
-  // Night time: 8 PM (20) to 8 AM (8)
   return hours >= 20 || hours < 8;
 }
 
@@ -55,6 +54,15 @@ const MONGODB_URI = process.env.MONGODB_URI;
 
 // WATI Number (Same for all branches)
 const WATI_NUMBER = '919725504245';
+
+// Executive Numbers
+const EXECUTIVES = {
+  'Aditi': '8488931212',
+  'Khyati': '7490029085',
+  'Jay': '9274682553',
+  'Mital': '9558591212',
+  'Manager': '7698011233'
+};
 
 // Google Lead Template Names
 const GOOGLE_LEAD_TEMPLATE = 'google_lead_notification_v1';
@@ -74,98 +82,175 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
 }
 
 // ============================================
-// ✅ 15 BRANCHES CONFIGURATION
+// ✅ 20 BRANCHES CONFIGURATION WITH EXECUTIVE MAPPING
 // ============================================
 const BRANCHES_CONFIG = {
+  // Aditi's Branches (8488931212)
   'naroda': {
     name: 'Naroda',
     watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.NARODA_EXECUTIVE || '919106959092',
+    executiveNumber: EXECUTIVES.Aditi,
+    executiveName: 'Aditi',
+    displayName: 'Usmanpura Imaging Centre, Naroda',
     gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Naroda%20branch`
   },
+  'ahmedabad': {
+    name: 'Ahmedabad',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Aditi,
+    executiveName: 'Aditi',
+    displayName: 'Usmanpura Imaging Centre Ahmedabad',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Ahmedabad%20branch`
+  },
+  'gandhinagar': {
+    name: 'Gandhinagar',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Aditi,
+    executiveName: 'Aditi',
+    displayName: 'Usmanpura Imaging Centre, Gandhinagar',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Gandhinagar%20branch`
+  },
+  'sabarmati': {
+    name: 'Sabarmati',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Aditi,
+    executiveName: 'Aditi',
+    displayName: 'Usmanpura Imaging Centre, Sabarmati Branch',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Sabarmati%20branch`
+  },
+  'anand': {
+    name: 'Anand',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Aditi,
+    executiveName: 'Aditi',
+    displayName: 'Usmanpura Imaging Centre Anand',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Anand%20branch`
+  },
+  
+  // Khyati's Branches (7490029085)
   'usmanpura': {
     name: 'Usmanpura',
     watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.USMANPURA_EXECUTIVE || '917490029085',
+    executiveNumber: EXECUTIVES.Khyati,
+    executiveName: 'Khyati',
+    displayName: 'Usmanpura Imaging Centre - Usmanpura Branch',
     gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Usmanpura%20branch`
-  },
-  'vadaj': {
-    name: 'Vadaj',
-    watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.VADAJ_EXECUTIVE || '918488931212',
-    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Vadaj%20branch`
   },
   'satellite': {
     name: 'Satellite',
     watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.SATELLITE_EXECUTIVE || '917490029085',
+    executiveNumber: EXECUTIVES.Khyati,
+    executiveName: 'Khyati',
+    displayName: 'Usmanpura Imaging Centre Satellite',
     gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Satellite%20branch`
   },
-  'maninagar': {
-    name: 'Maninagar',
+  'nadiad': {
+    name: 'Nadiad',
     watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.MANINAGAR_EXECUTIVE || '918488931212',
-    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Maninagar%20branch`
+    executiveNumber: EXECUTIVES.Khyati,
+    executiveName: 'Khyati',
+    displayName: 'Usmanpura Imaging Centre Nadiad',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Nadiad%20branch`
   },
+  'jamnagar': {
+    name: 'Jamnagar',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Khyati,
+    executiveName: 'Khyati',
+    displayName: 'Usmanpura Imaging Centre Jamnagar',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Jamnagar%20branch`
+  },
+  'bhavnagar': {
+    name: 'Bhavnagar',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Khyati,
+    executiveName: 'Khyati',
+    displayName: 'Usmanpura Imaging Centre Bhavnagar',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Bhavnagar%20branch`
+  },
+  
+  // Jay's Branches (9274682553)
   'bapunagar': {
     name: 'Bapunagar',
     watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.BAPUNAGAR_EXECUTIVE || '919274682553',
+    executiveNumber: EXECUTIVES.Jay,
+    executiveName: 'Jay',
+    displayName: 'Usmanpura Imaging Centre, Bapunagar',
     gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Bapunagar%20branch`
   },
   'juhapura': {
     name: 'Juhapura',
     watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.JUHAPURA_EXECUTIVE || '919274682553',
+    executiveNumber: EXECUTIVES.Jay,
+    executiveName: 'Jay',
+    displayName: 'Usmanpura Imaging Centre JUHAPURA',
     gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Juhapura%20branch`
-  },
-  'gandhinagar': {
-    name: 'Gandhinagar',
-    watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.GANDHINAGAR_EXECUTIVE || '919558591212',
-    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Gandhinagar%20branch`
-  },
-  'rajkot': {
-    name: 'Rajkot',
-    watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.RAJKOT_EXECUTIVE || '917880261858',
-    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Rajkot%20branch`
-  },
-  'sabarmati': {
-    name: 'Sabarmati',
-    watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.SABARMATI_EXECUTIVE || '917880261858',
-    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Sabarmati%20branch`
-  },
-  'ahmedabad': {
-    name: 'Ahmedabad',
-    watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.AHMEDABAD_EXECUTIVE || '919106959092',
-    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Ahmedabad%20branch`
   },
   'surat': {
     name: 'Surat',
     watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.SURAT_EXECUTIVE || '919274682553',
+    executiveNumber: EXECUTIVES.Jay,
+    executiveName: 'Jay',
+    displayName: 'Usmanpura Imaging Centre Surat',
     gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Surat%20branch`
+  },
+  'changodar': {
+    name: 'Changodar',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Jay,
+    executiveName: 'Jay',
+    displayName: 'Usmanpura Imaging Centre Changodar',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Changodar%20branch`
+  },
+  'bareja': {
+    name: 'Bareja',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Jay,
+    executiveName: 'Jay',
+    displayName: 'Usmanpura Imaging Centre Bareja',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Bareja%20branch`
+  },
+  
+  // Mital's Branches (9558591212)
+  'vadaj': {
+    name: 'Vadaj',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Mital,
+    executiveName: 'Mital',
+    displayName: 'Usmanpura Imaging Centre, Vadaj',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Vadaj%20branch`
+  },
+  'maninagar': {
+    name: 'Maninagar',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Mital,
+    executiveName: 'Mital',
+    displayName: 'Usmanpura Imaging Centre, Maninagar Branch',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Maninagar%20branch`
+  },
+  'rajkot': {
+    name: 'Rajkot',
+    watiNumber: WATI_NUMBER,
+    executiveNumber: EXECUTIVES.Mital,
+    executiveName: 'Mital',
+    displayName: 'Usmanpura Imaging Centre Mavdi, Rajkot',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Rajkot%20branch`
   },
   'vadodara': {
     name: 'Vadodara',
     watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.VADODARA_EXECUTIVE || '918488931212',
+    executiveNumber: EXECUTIVES.Mital,
+    executiveName: 'Mital',
+    displayName: 'Usmanpura Imaging Centre Vadodara',
     gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Vadodara%20branch`
   },
-  'bhavnagar': {
-    name: 'Bhavnagar',
+  'morbi': {
+    name: 'Morbi',
     watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.BHAVNAGAR_EXECUTIVE || '917880261858',
-    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Bhavnagar%20branch`
-  },
-  'jamnagar': {
-    name: 'Jamnagar',
-    watiNumber: WATI_NUMBER,
-    executiveNumber: process.env.JAMNAGAR_EXECUTIVE || '917490029085',
-    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Jamnagar%20branch`
+    executiveNumber: EXECUTIVES.Mital,
+    executiveName: 'Mital',
+    displayName: 'UIC Imaging and Diagnostics Centre Morbi',
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Morbi%20branch`
   }
 };
 
@@ -175,23 +260,21 @@ const BRANCHES_CONFIG = {
 function detectBranchFromMessage(message) {
   const msgLower = (message || '').toLowerCase();
   
-  if (msgLower.includes('naroda')) return 'Naroda';
-  if (msgLower.includes('usmanpura')) return 'Usmanpura';
-  if (msgLower.includes('vadaj')) return 'Vadaj';
-  if (msgLower.includes('satellite')) return 'Satellite';
-  if (msgLower.includes('maninagar')) return 'Maninagar';
-  if (msgLower.includes('bapunagar')) return 'Bapunagar';
-  if (msgLower.includes('juhapura')) return 'Juhapura';
-  if (msgLower.includes('gandhinagar')) return 'Gandhinagar';
-  if (msgLower.includes('rajkot')) return 'Rajkot';
-  if (msgLower.includes('sabarmati')) return 'Sabarmati';
-  if (msgLower.includes('ahmedabad')) return 'Ahmedabad';
-  if (msgLower.includes('surat')) return 'Surat';
-  if (msgLower.includes('vadodara')) return 'Vadodara';
-  if (msgLower.includes('bhavnagar')) return 'Bhavnagar';
-  if (msgLower.includes('jamnagar')) return 'Jamnagar';
+  const branchKeywords = {
+    'naroda': 'Naroda', 'ahmedabad': 'Ahmedabad', 'gandhinagar': 'Gandhinagar',
+    'sabarmati': 'Sabarmati', 'anand': 'Anand', 'usmanpura': 'Usmanpura',
+    'satellite': 'Satellite', 'nadiad': 'Nadiad', 'jamnagar': 'Jamnagar',
+    'bhavnagar': 'Bhavnagar', 'bapunagar': 'Bapunagar', 'juhapura': 'Juhapura',
+    'surat': 'Surat', 'changodar': 'Changodar', 'bareja': 'Bareja',
+    'vadaj': 'Vadaj', 'maninagar': 'Maninagar', 'rajkot': 'Rajkot',
+    'vadodara': 'Vadodara', 'morbi': 'Morbi'
+  };
   
-  return 'Naroda'; // Default
+  for (const [keyword, branch] of Object.entries(branchKeywords)) {
+    if (msgLower.includes(keyword)) return branch;
+  }
+  
+  return 'Naroda';
 }
 
 // ============================================
@@ -261,11 +344,12 @@ function normalizeWhatsAppNumber(number) {
 
 function getExecutiveNumber(branchName) {
   const branch = BRANCHES_CONFIG[branchName.toLowerCase()];
-  return branch ? branch.executiveNumber : process.env.DEFAULT_EXECUTIVE || '917880261858';
+  return branch ? branch.executiveNumber : EXECUTIVES.Aditi;
 }
 
-function getWatiNumber(branchName) {
-  return WATI_NUMBER;
+function getExecutiveName(branchName) {
+  const branch = BRANCHES_CONFIG[branchName.toLowerCase()];
+  return branch ? branch.executiveName : 'Aditi';
 }
 
 // ============================================
@@ -347,8 +431,8 @@ async function sendWhatsAppMessageToPatient(executiveNumber, patientPhone, messa
 // ============================================
 // ✅ SEND GOOGLE LEAD NOTIFICATION TO EXECUTIVE
 // ============================================
-async function sendGoogleLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
-  console.log(`📤 Sending GOOGLE LEAD notification to executive ${executiveNumber}`);
+async function sendGoogleLeadNotification(executiveNumber, executiveName, patientName, patientPhone, branch, testDetails, testType, chatToken) {
+  console.log(`📤 Sending GOOGLE LEAD notification to executive ${executiveName} (${executiveNumber})`);
   
   const istTime = getISTTime();
   
@@ -384,8 +468,10 @@ How can I help you?`;
 async function sendCustomerWelcome(whatsappNumber, branchName) {
   console.log(`📤 Sending customer welcome template to ${whatsappNumber} for ${branchName}`);
   
+  const branchDisplay = BRANCHES_CONFIG[branchName.toLowerCase()]?.displayName || branchName;
+  
   const parameters = [
-    { name: "1", value: branchName }
+    { name: "1", value: branchDisplay }
   ];
   
   return await sendWatiTemplateMessage(whatsappNumber, CUSTOMER_WELCOME_TEMPLATE, parameters);
@@ -497,9 +583,9 @@ async function sendGoogleWaitingFollowup(patient, waitingCount) {
 async function escalateGoogleLeadToManager(patient, waitingCount) {
   console.log(`🚨 Escalating GOOGLE LEAD ${patient.patientName} to manager (waiting: ${waitingCount} times)`);
   
-  const managerNumber = process.env.MANAGER_NUMBER || '917698011233';
+  const managerNumber = EXECUTIVES.Manager;
   const executiveNumber = getExecutiveNumber(patient.branch);
-  const executiveName = Object.keys(BRANCHES_CONFIG).find(key => BRANCHES_CONFIG[key].executiveNumber === executiveNumber) || 'Unknown Executive';
+  const executiveName = getExecutiveName(patient.branch);
   const hoursWaiting = Math.floor((Date.now() - new Date(patient.updatedAt)) / (1000 * 60 * 60));
   
   const parameters = [
@@ -544,8 +630,8 @@ async function escalateGoogleLeadToManager(patient, waitingCount) {
 // ============================================
 // ✅ SEND EXECUTIVE PERFORMANCE REPORT
 // ============================================
-async function sendGoogleExecutiveReport(executiveNumber) {
-  console.log(`📊 Sending Google Lead Performance Report to executive ${executiveNumber}`);
+async function sendGoogleExecutiveReport(executiveNumber, executiveName) {
+  console.log(`📊 Sending Google Lead Performance Report to executive ${executiveName} (${executiveNumber})`);
   
   const today = new Date();
   today.setHours(23, 59, 59, 999);
@@ -600,7 +686,7 @@ async function sendGoogleExecutiveReport(executiveNumber) {
   ];
   
   await sendWatiTemplateMessage(executiveNumber, GOOGLE_EXECUTIVE_REPORT, parameters);
-  console.log(`✅ Google Executive Report sent to ${executiveNumber}`);
+  console.log(`✅ Google Executive Report sent to ${executiveName}`);
 }
 
 // ============================================
@@ -620,21 +706,26 @@ app.post('/gmb-webhook', async (req, res) => {
       return res.status(400).json({ error: 'No phone number found' });
     }
     
-    // Detect branch from message (since all have same WATI number)
+    // Detect branch from message
     const incomingMessage = message || body || '';
     const branchName = detectBranchFromMessage(incomingMessage);
     
     const branchConfig = BRANCHES_CONFIG[branchName.toLowerCase()] || BRANCHES_CONFIG['naroda'];
     const executiveNumber = branchConfig.executiveNumber;
+    const executiveName = branchConfig.executiveName;
     
-    console.log(`📍 Patient: ${patientPhone}, Branch: ${branchName}, Executive: ${executiveNumber}`);
+    console.log(`📍 Patient: ${patientPhone}`);
+    console.log(`📍 Branch: ${branchName}`);
+    console.log(`📍 Executive: ${executiveName} (${executiveNumber})`);
     console.log(`📝 Message: ${incomingMessage}`);
     
-    // Track Google Lead
+    // ✅ TRACK GOOGLE LEAD - COUNT CLICK
     const leadRecord = {
       phoneNumber: patientPhone,
       branch: branchName,
+      branchDisplay: branchConfig.displayName,
       executiveNumber: executiveNumber,
+      executiveName: executiveName,
       status: 'clicked',
       clickedAt: new Date(),
       clickedAtIST: getISTTime(),
@@ -643,7 +734,8 @@ app.post('/gmb-webhook', async (req, res) => {
     };
     
     const leadResult = await googleLeadsCollection.insertOne(leadRecord);
-    console.log(`✅ Google Lead tracked for ${branchName} branch (ID: ${leadResult.insertedId})`);
+    console.log(`✅ Google Lead COUNTED for ${branchName} branch (ID: ${leadResult.insertedId})`);
+    console.log(`📊 Total Google Leads so far: ${await googleLeadsCollection.countDocuments()}`);
     
     // Create or update patient
     let patient = await patientsCollection.findOne({ patientPhone: patientPhone });
@@ -653,11 +745,13 @@ app.post('/gmb-webhook', async (req, res) => {
         patientName: 'Google Lead',
         patientPhone: patientPhone,
         branch: branchName,
+        branchDisplay: branchConfig.displayName,
         testType: null,
         testDetails: null,
         patientMessages: [{ text: incomingMessage, timestamp: new Date() }],
         sourceType: 'Google My Business',
         executiveNumber: executiveNumber,
+        executiveName: executiveName,
         status: 'pending',
         currentStage: STAGES.AWAITING_NAME,
         createdAt: new Date(),
@@ -674,7 +768,9 @@ app.post('/gmb-webhook', async (req, res) => {
         { 
           $set: { 
             branch: branchName,
+            branchDisplay: branchConfig.displayName,
             executiveNumber: executiveNumber,
+            executiveName: executiveName,
             updatedAt: new Date(),
             source: 'gmb',
             gmbBranch: branchName
@@ -701,7 +797,7 @@ app.post('/gmb-webhook', async (req, res) => {
       { $set: { patientId: patient._id, status: 'template_sent', templateSentAt: new Date() } }
     );
     
-    // Send customer welcome template
+    // ✅ SEND CUSTOMER WELCOME TEMPLATE
     await sendCustomerWelcome(patientPhone, branchName);
     console.log(`✅ Customer welcome template sent to ${patientPhone}`);
     
@@ -709,8 +805,10 @@ app.post('/gmb-webhook', async (req, res) => {
       success: true, 
       message: 'GMB lead processed successfully',
       branch: branchName,
+      executive: executiveName,
       patientPhone: patientPhone,
-      leadId: leadResult.insertedId
+      leadId: leadResult.insertedId,
+      leadCount: await googleLeadsCollection.countDocuments()
     });
     
   } catch (error) {
@@ -749,8 +847,8 @@ app.post('/wati-webhook', async (req, res) => {
     console.log(`📝 Processed message: "${text}" from ${senderNumber}`);
     
     // Check if sender is executive
-    const isExecutive = Object.values(BRANCHES_CONFIG).some(b => b.executiveNumber === senderNumber);
-    const isManager = senderNumber === (process.env.MANAGER_NUMBER || '917698011233');
+    const isExecutive = Object.values(EXECUTIVES).includes(senderNumber);
+    const isManager = senderNumber === EXECUTIVES.Manager;
     
     // ============================================
     // ✅ HANDLE EXECUTIVE BUTTONS
@@ -830,7 +928,6 @@ app.post('/wati-webhook', async (req, res) => {
       let patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'gmb' });
       
       if (patient) {
-        // Update patient messages
         await patientsCollection.updateOne(
           { _id: patient._id },
           { 
@@ -872,10 +969,12 @@ app.post('/wati-webhook', async (req, res) => {
           
           // Send notification to executive
           const executiveNumber = getExecutiveNumber(patient.branch);
+          const executiveName = getExecutiveName(patient.branch);
           const sessionToken = patient.chatSessionToken;
           
           await sendGoogleLeadNotification(
             executiveNumber,
+            executiveName,
             patient.patientName || 'Google Lead',
             senderNumber,
             patient.branch || 'Main Branch',
@@ -884,7 +983,7 @@ app.post('/wati-webhook', async (req, res) => {
             sessionToken
           );
           
-          console.log(`✅ Executive notification sent for ${patient.patientName}`);
+          console.log(`✅ Executive notification sent to ${executiveName}`);
         }
       }
     }
@@ -962,9 +1061,11 @@ cron.schedule('0 * * * *', async () => {
 // Weekly Executive Report - Every Monday at 9:00 AM
 cron.schedule('0 9 * * 1', async () => {
   console.log('📊 Running Google Executive Reports...');
-  const executives = [...new Set(Object.values(BRANCHES_CONFIG).map(b => b.executiveNumber))];
-  for (const execNumber of executives) {
-    await sendGoogleExecutiveReport(execNumber);
+  
+  for (const [execName, execNumber] of Object.entries(EXECUTIVES)) {
+    if (execName !== 'Manager') {
+      await sendGoogleExecutiveReport(execNumber, execName);
+    }
   }
 });
 
@@ -989,6 +1090,8 @@ app.get('/gmb-links', async (req, res) => {
         .link-card { background: white; border-radius: 16px; padding: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); transition: transform 0.2s; }
         .link-card:hover { transform: translateY(-5px); }
         .branch-name { font-size: 1.4em; font-weight: bold; color: #075e54; margin-bottom: 5px; }
+        .branch-display { font-size: 0.8em; color: #666; margin-bottom: 10px; }
+        .executive-info { background: #e8f5e9; padding: 5px 10px; border-radius: 8px; margin: 10px 0; font-size: 0.8em; color: #2e7d32; }
         .wa-number { font-size: 0.8em; color: #666; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #eee; }
         .link { background: #f0f2f5; padding: 12px; border-radius: 10px; word-break: break-all; font-size: 0.7em; margin: 15px 0; font-family: monospace; }
         .copy-btn { background: #075e54; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; margin-right: 10px; }
@@ -1015,6 +1118,8 @@ app.get('/gmb-links', async (req, res) => {
           ${Object.entries(BRANCHES_CONFIG).map(([key, config]) => `
             <div class="link-card">
               <div class="branch-name">📍 ${config.name}</div>
+              <div class="branch-display">🏥 ${config.displayName}</div>
+              <div class="executive-info">👤 Executive: ${config.executiveName} (${config.executiveNumber})</div>
               <div class="wa-number">📞 WhatsApp: ${config.watiNumber}</div>
               <div class="link">${config.gmbLink}</div>
               <button class="copy-btn" onclick="copyLink('${config.gmbLink}', '${config.name}')">📋 Copy Link</button>
@@ -1027,7 +1132,7 @@ app.get('/gmb-links', async (req, res) => {
         
         <div class="footer">
           <strong>📌 How It Works:</strong><br>
-          Patient clicks link → WhatsApp opens with WATI number → Welcome template → Executive gets notification<br>
+          Patient clicks link → WhatsApp opens → Welcome template → Lead COUNTED → Executive gets notification<br>
           <strong>🌙 Night Mode:</strong> Reminders are OFF between 8 PM and 8 AM
         </div>
       </div>
@@ -1057,11 +1162,22 @@ app.get('/api/google-lead-stats', async (req, res) => {
       { $group: { _id: '$branch', count: { $sum: 1 } } }
     ]).toArray();
     
+    const executiveStats = await googleLeadsCollection.aggregate([
+      { $group: { _id: '$executiveName', count: { $sum: 1 } } }
+    ]).toArray();
+    
     const statusStats = await googleLeadsCollection.aggregate([
       { $group: { _id: '$status', count: { $sum: 1 } } }
     ]).toArray();
     
-    res.json({ success: true, totalClicks, todayClicks, branchStats, statusStats });
+    res.json({ 
+      success: true, 
+      totalClicks, 
+      todayClicks, 
+      branchStats, 
+      executiveStats,
+      statusStats 
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1077,6 +1193,7 @@ app.get('/health', async (req, res) => {
     mongodb: 'connected',
     system: 'GMB WhatsApp System',
     watiNumber: WATI_NUMBER,
+    executives: EXECUTIVES,
     branches: Object.keys(BRANCHES_CONFIG).length,
     nightMode: isNightTime() ? 'Active (8PM-8AM)' : 'Inactive',
     time: getISTTime()
@@ -1088,11 +1205,16 @@ app.get('/health', async (req, res) => {
 // ============================================
 app.get('/', (req, res) => {
   res.json({
-    message: '🚀 GMB WhatsApp System - 15 Branches',
-    version: '3.0.0',
+    message: '🚀 GMB WhatsApp System - 20 Branches',
+    version: '5.0.0',
     watiNumber: WATI_NUMBER,
+    executives: EXECUTIVES,
     nightMode: '8 PM to 8 AM - No reminders',
-    branches: Object.keys(BRANCHES_CONFIG).map(k => BRANCHES_CONFIG[k].name),
+    branches: Object.keys(BRANCHES_CONFIG).map(k => ({
+      name: BRANCHES_CONFIG[k].name,
+      display: BRANCHES_CONFIG[k].displayName,
+      executive: BRANCHES_CONFIG[k].executiveName
+    })),
     endpoints: {
       gmb_webhook: '/gmb-webhook',
       gmb_links: '/gmb-links',
@@ -1116,9 +1238,12 @@ async function startServer() {
       console.log(`✅ GMB SYSTEM RUNNING ON PORT ${PORT}`);
       console.log(`📍 WATI Number: ${WATI_NUMBER}`);
       console.log(`📍 Total Branches: ${Object.keys(BRANCHES_CONFIG).length}`);
+      console.log(`📍 Executives:`);
+      Object.entries(EXECUTIVES).forEach(([name, number]) => {
+        console.log(`   - ${name}: ${number}`);
+      });
       console.log(`📍 Night Mode: 8 PM to 8 AM (Reminders OFF)`);
       console.log(`📍 Current Time: ${getISTTime()}`);
-      console.log(`📍 Night Mode Active: ${isNightTime() ? 'YES' : 'NO'}`);
       console.log(`📍 GMB Links Page: ${SELF_URL}:${PORT}/gmb-links`);
       console.log(`📍 GMB Webhook: ${SELF_URL}:${PORT}/gmb-webhook`);
       console.log('='.repeat(60) + '\n');
