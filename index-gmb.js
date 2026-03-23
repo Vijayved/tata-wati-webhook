@@ -53,6 +53,9 @@ const WATI_TOKEN = process.env.WATI_TOKEN;
 const WATI_BASE_URL = process.env.WATI_BASE_URL;
 const MONGODB_URI = process.env.MONGODB_URI;
 
+// WATI Number (Same for all branches)
+const WATI_NUMBER = '919725504245';
+
 // Google Lead Template Names
 const GOOGLE_LEAD_TEMPLATE = 'google_lead_notification_v1';
 const GOOGLE_FOLLOWUP_NO_REPLY = 'google_followup_no_reply';
@@ -60,6 +63,7 @@ const GOOGLE_FOLLOWUP_WAITING = 'google_followup_waiting';
 const GOOGLE_EXECUTIVE_REPORT = 'google_executive_report';
 const GOOGLE_ESCALATION_MANAGER = 'google_escalation_manager';
 const TEXT_MESSAGE_TEMPLATE = 'text_message';
+const CUSTOMER_WELCOME_TEMPLATE = 'gmb_customer_welcome';
 
 // Keep-alive
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || 'https://tata-wati-webhook.onrender.com';
@@ -75,95 +79,120 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
 const BRANCHES_CONFIG = {
   'naroda': {
     name: 'Naroda',
-    watiNumber: '917969690935',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.NARODA_EXECUTIVE || '919106959092',
-    gmbLink: 'https://wa.me/917969690935?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Naroda%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Naroda%20branch`
   },
   'usmanpura': {
     name: 'Usmanpura',
-    watiNumber: '917969690901',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.USMANPURA_EXECUTIVE || '917490029085',
-    gmbLink: 'https://wa.me/917969690901?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Usmanpura%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Usmanpura%20branch`
   },
   'vadaj': {
     name: 'Vadaj',
-    watiNumber: '917969690903',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.VADAJ_EXECUTIVE || '918488931212',
-    gmbLink: 'https://wa.me/917969690903?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Vadaj%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Vadaj%20branch`
   },
   'satellite': {
     name: 'Satellite',
-    watiNumber: '917969690924',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.SATELLITE_EXECUTIVE || '917490029085',
-    gmbLink: 'https://wa.me/917969690924?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Satellite%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Satellite%20branch`
   },
   'maninagar': {
     name: 'Maninagar',
-    watiNumber: '917969690936',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.MANINAGAR_EXECUTIVE || '918488931212',
-    gmbLink: 'https://wa.me/917969690936?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Maninagar%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Maninagar%20branch`
   },
   'bapunagar': {
     name: 'Bapunagar',
-    watiNumber: '917969690923',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.BAPUNAGAR_EXECUTIVE || '919274682553',
-    gmbLink: 'https://wa.me/917969690923?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Bapunagar%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Bapunagar%20branch`
   },
   'juhapura': {
     name: 'Juhapura',
-    watiNumber: '917969690918',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.JUHAPURA_EXECUTIVE || '919274682553',
-    gmbLink: 'https://wa.me/917969690918?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Juhapura%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Juhapura%20branch`
   },
   'gandhinagar': {
     name: 'Gandhinagar',
-    watiNumber: '917969690941',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.GANDHINAGAR_EXECUTIVE || '919558591212',
-    gmbLink: 'https://wa.me/917969690941?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Gandhinagar%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Gandhinagar%20branch`
   },
   'rajkot': {
     name: 'Rajkot',
-    watiNumber: '917969690913',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.RAJKOT_EXECUTIVE || '917880261858',
-    gmbLink: 'https://wa.me/917969690913?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Rajkot%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Rajkot%20branch`
   },
   'sabarmati': {
     name: 'Sabarmati',
-    watiNumber: '917969690942',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.SABARMATI_EXECUTIVE || '917880261858',
-    gmbLink: 'https://wa.me/917969690942?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Sabarmati%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Sabarmati%20branch`
   },
   'ahmedabad': {
     name: 'Ahmedabad',
-    watiNumber: '917969690900',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.AHMEDABAD_EXECUTIVE || '919106959092',
-    gmbLink: 'https://wa.me/917969690900?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Ahmedabad%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Ahmedabad%20branch`
   },
   'surat': {
     name: 'Surat',
-    watiNumber: '917969690911',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.SURAT_EXECUTIVE || '919274682553',
-    gmbLink: 'https://wa.me/917969690911?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Surat%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Surat%20branch`
   },
   'vadodara': {
     name: 'Vadodara',
-    watiNumber: '917969690912',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.VADODARA_EXECUTIVE || '918488931212',
-    gmbLink: 'https://wa.me/917969690912?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Vadodara%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Vadodara%20branch`
   },
   'bhavnagar': {
     name: 'Bhavnagar',
-    watiNumber: '917969690914',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.BHAVNAGAR_EXECUTIVE || '917880261858',
-    gmbLink: 'https://wa.me/917969690914?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Bhavnagar%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Bhavnagar%20branch`
   },
   'jamnagar': {
     name: 'Jamnagar',
-    watiNumber: '917969690915',
+    watiNumber: WATI_NUMBER,
     executiveNumber: process.env.JAMNAGAR_EXECUTIVE || '917490029085',
-    gmbLink: 'https://wa.me/917969690915?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Jamnagar%20branch'
+    gmbLink: `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20Jamnagar%20branch`
   }
 };
+
+// ============================================
+// ✅ DETECT BRANCH FROM MESSAGE
+// ============================================
+function detectBranchFromMessage(message) {
+  const msgLower = (message || '').toLowerCase();
+  
+  if (msgLower.includes('naroda')) return 'Naroda';
+  if (msgLower.includes('usmanpura')) return 'Usmanpura';
+  if (msgLower.includes('vadaj')) return 'Vadaj';
+  if (msgLower.includes('satellite')) return 'Satellite';
+  if (msgLower.includes('maninagar')) return 'Maninagar';
+  if (msgLower.includes('bapunagar')) return 'Bapunagar';
+  if (msgLower.includes('juhapura')) return 'Juhapura';
+  if (msgLower.includes('gandhinagar')) return 'Gandhinagar';
+  if (msgLower.includes('rajkot')) return 'Rajkot';
+  if (msgLower.includes('sabarmati')) return 'Sabarmati';
+  if (msgLower.includes('ahmedabad')) return 'Ahmedabad';
+  if (msgLower.includes('surat')) return 'Surat';
+  if (msgLower.includes('vadodara')) return 'Vadodara';
+  if (msgLower.includes('bhavnagar')) return 'Bhavnagar';
+  if (msgLower.includes('jamnagar')) return 'Jamnagar';
+  
+  return 'Naroda'; // Default
+}
 
 // ============================================
 // ✅ DATABASE CONNECTION
@@ -236,8 +265,7 @@ function getExecutiveNumber(branchName) {
 }
 
 function getWatiNumber(branchName) {
-  const branch = BRANCHES_CONFIG[branchName.toLowerCase()];
-  return branch ? branch.watiNumber : '917969690935';
+  return WATI_NUMBER;
 }
 
 // ============================================
@@ -351,10 +379,22 @@ How can I help you?`;
 }
 
 // ============================================
+// ✅ SEND CUSTOMER WELCOME TEMPLATE
+// ============================================
+async function sendCustomerWelcome(whatsappNumber, branchName) {
+  console.log(`📤 Sending customer welcome template to ${whatsappNumber} for ${branchName}`);
+  
+  const parameters = [
+    { name: "1", value: branchName }
+  ];
+  
+  return await sendWatiTemplateMessage(whatsappNumber, CUSTOMER_WELCOME_TEMPLATE, parameters);
+}
+
+// ============================================
 // ✅ GOOGLE LEAD - NO REPLY FOLLOW-UP (with Night Mode)
 // ============================================
 async function sendGoogleNoReplyFollowup(patient) {
-  // Check if night time (8 PM to 8 AM) - skip sending
   if (isNightTime()) {
     console.log(`🌙 Night time (8PM-8AM) - Skipping Google no-reply followup for ${patient.patientName}`);
     return false;
@@ -404,7 +444,6 @@ async function sendGoogleNoReplyFollowup(patient) {
 // ✅ GOOGLE LEAD - WAITING FOLLOW-UP (with Night Mode)
 // ============================================
 async function sendGoogleWaitingFollowup(patient, waitingCount) {
-  // Check if night time (8 PM to 8 AM) - skip sending
   if (isNightTime()) {
     console.log(`🌙 Night time (8PM-8AM) - Skipping Google waiting followup for ${patient.patientName}`);
     return false;
@@ -570,6 +609,7 @@ async function sendGoogleExecutiveReport(executiveNumber) {
 app.post('/gmb-webhook', async (req, res) => {
   try {
     console.log('\n📍 ========== GMB WEBHOOK RECEIVED ==========');
+    console.log('📝 Request body:', JSON.stringify(req.body, null, 2));
     
     const { from, waId, whatsappNumber, message, body, to } = req.body;
     
@@ -580,20 +620,15 @@ app.post('/gmb-webhook', async (req, res) => {
       return res.status(400).json({ error: 'No phone number found' });
     }
     
-    const receivingNumber = to || req.body.whatsappNumberTo || '';
-    let branchName = 'Naroda';
-    
-    for (const [key, config] of Object.entries(BRANCHES_CONFIG)) {
-      if (receivingNumber.includes(config.watiNumber) || config.watiNumber.includes(receivingNumber)) {
-        branchName = config.name;
-        break;
-      }
-    }
+    // Detect branch from message (since all have same WATI number)
+    const incomingMessage = message || body || '';
+    const branchName = detectBranchFromMessage(incomingMessage);
     
     const branchConfig = BRANCHES_CONFIG[branchName.toLowerCase()] || BRANCHES_CONFIG['naroda'];
     const executiveNumber = branchConfig.executiveNumber;
     
     console.log(`📍 Patient: ${patientPhone}, Branch: ${branchName}, Executive: ${executiveNumber}`);
+    console.log(`📝 Message: ${incomingMessage}`);
     
     // Track Google Lead
     const leadRecord = {
@@ -603,12 +638,12 @@ app.post('/gmb-webhook', async (req, res) => {
       status: 'clicked',
       clickedAt: new Date(),
       clickedAtIST: getISTTime(),
-      message: message || body || 'Initial click',
+      message: incomingMessage.substring(0, 200),
       source: 'google_my_business'
     };
     
     const leadResult = await googleLeadsCollection.insertOne(leadRecord);
-    console.log(`✅ Google Lead tracked for ${branchName} branch`);
+    console.log(`✅ Google Lead tracked for ${branchName} branch (ID: ${leadResult.insertedId})`);
     
     // Create or update patient
     let patient = await patientsCollection.findOne({ patientPhone: patientPhone });
@@ -620,7 +655,7 @@ app.post('/gmb-webhook', async (req, res) => {
         branch: branchName,
         testType: null,
         testDetails: null,
-        patientMessages: [{ text: message || body, timestamp: new Date() }],
+        patientMessages: [{ text: incomingMessage, timestamp: new Date() }],
         sourceType: 'Google My Business',
         executiveNumber: executiveNumber,
         status: 'pending',
@@ -644,7 +679,7 @@ app.post('/gmb-webhook', async (req, res) => {
             source: 'gmb',
             gmbBranch: branchName
           },
-          $push: { patientMessages: { text: message || body, timestamp: new Date() } }
+          $push: { patientMessages: { text: incomingMessage, timestamp: new Date() } }
         }
       );
       console.log(`✅ Existing patient updated`);
@@ -660,13 +695,15 @@ app.post('/gmb-webhook', async (req, res) => {
       );
     }
     
-    // Send welcome template to patient
-    const welcomeTemplate = `Welcome to UIC Support - ${branchName} Branch!\n\nPlease share your name and test details:\n1. Your Name\n2. Test Type (MRI/CT/USG/X-RAY)\n3. Test Details\n\nOur executive will connect with you shortly.`;
+    // Update lead with patient ID
+    await googleLeadsCollection.updateOne(
+      { _id: leadResult.insertedId },
+      { $set: { patientId: patient._id, status: 'template_sent', templateSentAt: new Date() } }
+    );
     
-    await sendWatiTemplateMessage(patientPhone, TEXT_MESSAGE_TEMPLATE, [
-      { name: "1", value: welcomeTemplate }
-    ]);
-    console.log(`✅ Welcome message sent to patient`);
+    // Send customer welcome template
+    await sendCustomerWelcome(patientPhone, branchName);
+    console.log(`✅ Customer welcome template sent to ${patientPhone}`);
     
     res.json({ 
       success: true, 
@@ -683,7 +720,7 @@ app.post('/gmb-webhook', async (req, res) => {
 });
 
 // ============================================
-// ✅ HANDLE GOOGLE LEAD EXECUTIVE BUTTONS
+// ✅ WATI WEBHOOK - FOR PATIENT REPLIES
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -711,16 +748,14 @@ app.post('/wati-webhook', async (req, res) => {
     const text = (messageText || '').toUpperCase().trim();
     console.log(`📝 Processed message: "${text}" from ${senderNumber}`);
     
-    // ============================================
-    // ✅ HANDLE GOOGLE LEAD BUTTONS
-    // ============================================
-    
     // Check if sender is executive
     const isExecutive = Object.values(BRANCHES_CONFIG).some(b => b.executiveNumber === senderNumber);
     const isManager = senderNumber === (process.env.MANAGER_NUMBER || '917698011233');
     
+    // ============================================
+    // ✅ HANDLE EXECUTIVE BUTTONS
+    // ============================================
     if (isExecutive && (text === 'CONVERT DONE' || text === 'WAITING' || text === 'NOT CONVERT')) {
-      // Find Google lead for this executive
       let patient = await patientsCollection.findOne({ 
         executiveNumber: senderNumber,
         source: 'gmb',
@@ -784,59 +819,72 @@ app.post('/wati-webhook', async (req, res) => {
       }
     }
     
-    // Handle READ DONE for executive report
+    // Handle READ DONE
     else if (isExecutive && text === 'READ DONE') {
       await sendWatiTemplateMessage(senderNumber, TEXT_MESSAGE_TEMPLATE, 
         [{ name: "1", value: "✅ Thanks! Keep up the great work with Google Leads! 🎉" }]);
     }
     
-    // Handle manager buttons
-    else if (isManager && (text === 'CONVERT DONE' || text === 'WAITING' || text === 'CALL EXECUTIVE' || text === 'VIEW DETAILS')) {
-      let patient = await patientsCollection.findOne({ 
-        googleEscalatedToManager: true,
-        source: 'gmb'
-      });
+    // Handle patient replies (bot classification)
+    else if (!isExecutive && !isManager && messageText) {
+      let patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'gmb' });
       
       if (patient) {
-        if (text === 'CONVERT DONE') {
+        // Update patient messages
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $push: { patientMessages: { text: messageText, timestamp: new Date() } },
+            $set: { lastMessageAt: new Date(), updatedAt: new Date() }
+          }
+        );
+        
+        // Update Google Lead status
+        const lead = await googleLeadsCollection.findOne({ phoneNumber: senderNumber });
+        if (lead && lead.status === 'template_sent') {
+          await googleLeadsCollection.updateOne(
+            { _id: lead._id },
+            { $set: { status: 'patient_replied', patientRepliedAt: new Date(), patientReply: messageText } }
+          );
+        }
+        
+        // Simple classification
+        if (patient.currentStage === STAGES.AWAITING_NAME) {
           await patientsCollection.updateOne(
             { _id: patient._id },
-            { 
-              $set: { 
-                status: 'converted',
-                currentStage: STAGES.CONVERTED,
-                googleEscalatedResolved: true,
-                resolvedBy: 'manager'
-              }
-            }
+            { $set: { patientName: messageText, currentStage: STAGES.AWAITING_TEST_TYPE } }
           );
-          await sendWatiTemplateMessage(senderNumber, TEXT_MESSAGE_TEMPLATE, 
-            [{ name: "1", value: "✅ Google Lead converted by manager!" }]);
+          console.log(`✅ Name saved: ${messageText}`);
         }
-        else if (text === 'WAITING') {
+        else if (patient.currentStage === STAGES.AWAITING_TEST_TYPE) {
           await patientsCollection.updateOne(
             { _id: patient._id },
-            { 
-              $set: { 
-                googleWaitingFollowupCount: 0,
-                googleEscalatedResolved: false
-              }
-            }
+            { $set: { testType: messageText, currentStage: STAGES.AWAITING_TEST_DETAILS } }
           );
-          await sendWatiTemplateMessage(senderNumber, TEXT_MESSAGE_TEMPLATE, 
-            [{ name: "1", value: "⏳ Google Lead marked as waiting." }]);
+          console.log(`✅ Test type saved: ${messageText}`);
         }
-        else if (text === 'CALL EXECUTIVE') {
-          const execNumber = patient.executiveNumber;
-          await sendWatiTemplateMessage(senderNumber, TEXT_MESSAGE_TEMPLATE, 
-            [{ name: "1", value: `📞 Call executive: ${execNumber}` }]);
-          await sendWatiTemplateMessage(execNumber, TEXT_MESSAGE_TEMPLATE, 
-            [{ name: "1", value: `🚨 Manager requested you to attend Google Lead: ${patient.patientName} (${patient.patientPhone})` }]);
-        }
-        else if (text === 'VIEW DETAILS') {
-          const detailsLink = `${SELF_URL}/executive-chat/${patient.chatSessionToken}`;
-          await sendWatiTemplateMessage(senderNumber, TEXT_MESSAGE_TEMPLATE, 
-            [{ name: "1", value: `🔗 Google Lead details: ${detailsLink}` }]);
+        else if (patient.currentStage === STAGES.AWAITING_TEST_DETAILS) {
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { testDetails: messageText, currentStage: STAGES.EXECUTIVE_NOTIFIED } }
+          );
+          console.log(`✅ Test details saved: ${messageText}`);
+          
+          // Send notification to executive
+          const executiveNumber = getExecutiveNumber(patient.branch);
+          const sessionToken = patient.chatSessionToken;
+          
+          await sendGoogleLeadNotification(
+            executiveNumber,
+            patient.patientName || 'Google Lead',
+            senderNumber,
+            patient.branch || 'Main Branch',
+            messageText,
+            patient.testType || 'Not specified',
+            sessionToken
+          );
+          
+          console.log(`✅ Executive notification sent for ${patient.patientName}`);
         }
       }
     }
@@ -851,10 +899,10 @@ app.post('/wati-webhook', async (req, res) => {
 });
 
 // ============================================
-// ✅ CRON JOBS FOR GOOGLE LEADS (WITH NIGHT MODE CHECK)
+// ✅ CRON JOBS FOR GOOGLE LEADS (WITH NIGHT MODE)
 // ============================================
 
-// Every 20 minutes - Google Lead no reply followup (only in day time)
+// Every 20 minutes - No reply followup
 cron.schedule('*/20 * * * *', async () => {
   if (isNightTime()) {
     console.log('🌙 Night time (8PM-8AM) - Skipping Google no-reply followup cron job');
@@ -886,7 +934,7 @@ cron.schedule('*/20 * * * *', async () => {
   }
 });
 
-// Every hour - Google Lead waiting followup (only in day time)
+// Every hour - Waiting followup
 cron.schedule('0 * * * *', async () => {
   if (isNightTime()) {
     console.log('🌙 Night time (8PM-8AM) - Skipping Google waiting followup cron job');
@@ -921,7 +969,7 @@ cron.schedule('0 9 * * 1', async () => {
 });
 
 // ============================================
-// ✅ GET BRANCH LINKS FOR GMB
+// ✅ GET BRANCH LINKS FOR GMB (HTML Page)
 // ============================================
 app.get('/gmb-links', async (req, res) => {
   try {
@@ -961,6 +1009,7 @@ app.get('/gmb-links', async (req, res) => {
         <h1>🏥 Google My Business - WhatsApp Links</h1>
         <div class="subtitle">Copy these links and add to your Google My Business profile for each branch</div>
         <div class="subtitle"><span class="night-mode">🌙 Night Mode Active: 8 PM to 8 AM (No reminders)</span></div>
+        <div class="subtitle">📞 WATI Number: ${WATI_NUMBER}</div>
         
         <div class="links-grid">
           ${Object.entries(BRANCHES_CONFIG).map(([key, config]) => `
@@ -978,7 +1027,7 @@ app.get('/gmb-links', async (req, res) => {
         
         <div class="footer">
           <strong>📌 How It Works:</strong><br>
-          Patient clicks link → WhatsApp opens → Welcome message → Executive gets notification<br>
+          Patient clicks link → WhatsApp opens with WATI number → Welcome template → Executive gets notification<br>
           <strong>🌙 Night Mode:</strong> Reminders are OFF between 8 PM and 8 AM
         </div>
       </div>
@@ -994,7 +1043,7 @@ app.get('/gmb-links', async (req, res) => {
 });
 
 // ============================================
-// ✅ GOOGLE LEAD STATS API
+// ✅ API ENDPOINTS
 // ============================================
 app.get('/api/google-lead-stats', async (req, res) => {
   try {
@@ -1027,6 +1076,7 @@ app.get('/health', async (req, res) => {
     uptime: process.uptime(),
     mongodb: 'connected',
     system: 'GMB WhatsApp System',
+    watiNumber: WATI_NUMBER,
     branches: Object.keys(BRANCHES_CONFIG).length,
     nightMode: isNightTime() ? 'Active (8PM-8AM)' : 'Inactive',
     time: getISTTime()
@@ -1040,6 +1090,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '🚀 GMB WhatsApp System - 15 Branches',
     version: '3.0.0',
+    watiNumber: WATI_NUMBER,
     nightMode: '8 PM to 8 AM - No reminders',
     branches: Object.keys(BRANCHES_CONFIG).map(k => BRANCHES_CONFIG[k].name),
     endpoints: {
@@ -1063,6 +1114,7 @@ async function startServer() {
     app.listen(PORT, HOST, () => {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ GMB SYSTEM RUNNING ON PORT ${PORT}`);
+      console.log(`📍 WATI Number: ${WATI_NUMBER}`);
       console.log(`📍 Total Branches: ${Object.keys(BRANCHES_CONFIG).length}`);
       console.log(`📍 Night Mode: 8 PM to 8 AM (Reminders OFF)`);
       console.log(`📍 Current Time: ${getISTTime()}`);
