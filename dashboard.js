@@ -1,6 +1,7 @@
-// dashboard.js - Complete Admin Dashboard with Separate Miss Call & GMB Tabs
+// dashboard.js - Complete Professional Dashboard with Miss Call & GMB System
 const express = require('express');
 const router = express.Router();
+const ExcelJS = require('exceljs');
 
 // Reset Database Endpoint
 router.post('/reset', async (req, res) => {
@@ -23,7 +24,7 @@ router.post('/reset', async (req, res) => {
       results.google_leads = await req.googleLeadsCollection.deleteMany({});
     }
     
-    res.json({ success: true, deleted: results });
+    res.json({ success: true, message: 'Database reset successful!', deleted: results });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -58,43 +59,46 @@ router.get('/', async (req, res) => {
       tab: req.query.tab || 'misscall'
     };
     
-    // Executive numbers mapping (15 branches)
+    // Executive numbers mapping (4 executives + manager)
     const EXECUTIVES = {
-      'Naroda': process.env.NARODA_EXECUTIVE || '919106959092',
-      'Usmanpura': process.env.USMANPURA_EXECUTIVE || '917490029085',
-      'Vadaj': process.env.VADAJ_EXECUTIVE || '918488931212',
-      'Satellite': process.env.SATELLITE_EXECUTIVE || '917490029085',
-      'Maninagar': process.env.MANINAGAR_EXECUTIVE || '918488931212',
-      'Bapunagar': process.env.BAPUNAGAR_EXECUTIVE || '919274682553',
-      'Juhapura': process.env.JUHAPURA_EXECUTIVE || '919274682553',
-      'Gandhinagar': process.env.GANDHINAGAR_EXECUTIVE || '919558591212',
-      'Rajkot': process.env.RAJKOT_EXECUTIVE || '917880261858',
-      'Sabarmati': process.env.SABARMATI_EXECUTIVE || '917880261858',
-      'Ahmedabad': process.env.AHMEDABAD_EXECUTIVE || '919106959092',
-      'Surat': process.env.SURAT_EXECUTIVE || '919274682553',
-      'Vadodara': process.env.VADODARA_EXECUTIVE || '918488931212',
-      'Bhavnagar': process.env.BHAVNAGAR_EXECUTIVE || '917880261858',
-      'Jamnagar': process.env.JAMNAGAR_EXECUTIVE || '917490029085',
-      'Manager': process.env.MANAGER_NUMBER || '917698011233'
+      'Aditi': '8488931212',
+      'Khyati': '7490029085',
+      'Jay': '9274682553',
+      'Mital': '9558591212',
+      'Manager': '7698011233'
     };
     
-    // 15 Branches Configuration
+    // Executive Names for display
+    const EXECUTIVE_NAMES = {
+      '8488931212': 'Aditi',
+      '7490029085': 'Khyati',
+      '9274682553': 'Jay',
+      '9558591212': 'Mital',
+      '7698011233': 'Manager'
+    };
+    
+    // 20 Branches Configuration
     const BRANCHES_CONFIG = {
-      'Naroda': { name: 'Naroda', watiNumber: '917969690935', executive: EXECUTIVES['Naroda'] },
-      'Usmanpura': { name: 'Usmanpura', watiNumber: '917969690901', executive: EXECUTIVES['Usmanpura'] },
-      'Vadaj': { name: 'Vadaj', watiNumber: '917969690903', executive: EXECUTIVES['Vadaj'] },
-      'Satellite': { name: 'Satellite', watiNumber: '917969690924', executive: EXECUTIVES['Satellite'] },
-      'Maninagar': { name: 'Maninagar', watiNumber: '917969690936', executive: EXECUTIVES['Maninagar'] },
-      'Bapunagar': { name: 'Bapunagar', watiNumber: '917969690923', executive: EXECUTIVES['Bapunagar'] },
-      'Juhapura': { name: 'Juhapura', watiNumber: '917969690918', executive: EXECUTIVES['Juhapura'] },
-      'Gandhinagar': { name: 'Gandhinagar', watiNumber: '917969690941', executive: EXECUTIVES['Gandhinagar'] },
-      'Rajkot': { name: 'Rajkot', watiNumber: '917969690913', executive: EXECUTIVES['Rajkot'] },
-      'Sabarmati': { name: 'Sabarmati', watiNumber: '917969690942', executive: EXECUTIVES['Sabarmati'] },
-      'Ahmedabad': { name: 'Ahmedabad', watiNumber: '917969690900', executive: EXECUTIVES['Ahmedabad'] },
-      'Surat': { name: 'Surat', watiNumber: '917969690911', executive: EXECUTIVES['Surat'] },
-      'Vadodara': { name: 'Vadodara', watiNumber: '917969690912', executive: EXECUTIVES['Vadodara'] },
-      'Bhavnagar': { name: 'Bhavnagar', watiNumber: '917969690914', executive: EXECUTIVES['Bhavnagar'] },
-      'Jamnagar': { name: 'Jamnagar', watiNumber: '917969690915', executive: EXECUTIVES['Jamnagar'] }
+      'Naroda': { executive: 'Aditi', number: '8488931212' },
+      'Ahmedabad': { executive: 'Aditi', number: '8488931212' },
+      'Gandhinagar': { executive: 'Aditi', number: '8488931212' },
+      'Sabarmati': { executive: 'Aditi', number: '8488931212' },
+      'Anand': { executive: 'Aditi', number: '8488931212' },
+      'Usmanpura': { executive: 'Khyati', number: '7490029085' },
+      'Satellite': { executive: 'Khyati', number: '7490029085' },
+      'Nadiad': { executive: 'Khyati', number: '7490029085' },
+      'Jamnagar': { executive: 'Khyati', number: '7490029085' },
+      'Bhavnagar': { executive: 'Khyati', number: '7490029085' },
+      'Bapunagar': { executive: 'Jay', number: '9274682553' },
+      'Juhapura': { executive: 'Jay', number: '9274682553' },
+      'Surat': { executive: 'Jay', number: '9274682553' },
+      'Changodar': { executive: 'Jay', number: '9274682553' },
+      'Bareja': { executive: 'Jay', number: '9274682553' },
+      'Vadaj': { executive: 'Mital', number: '9558591212' },
+      'Maninagar': { executive: 'Mital', number: '9558591212' },
+      'Rajkot': { executive: 'Mital', number: '9558591212' },
+      'Vadodara': { executive: 'Mital', number: '9558591212' },
+      'Morbi': { executive: 'Mital', number: '9558591212' }
     };
     
     // Get all data
@@ -112,7 +116,10 @@ router.get('/', async (req, res) => {
     let googleLeadStats = {
       totalClicks: 0,
       todayClicks: 0,
+      thisWeekClicks: 0,
+      thisMonthClicks: 0,
       byBranch: {},
+      byExecutive: {},
       byStatus: {
         clicked: 0,
         template_sent: 0,
@@ -121,20 +128,32 @@ router.get('/', async (req, res) => {
         converted: 0,
         not_converted: 0
       },
-      recentLeads: []
+      recentLeads: [],
+      conversionRate: 0
     };
     
     if (googleLeadsCollection) {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
+      const weekAgo = new Date(today);
+      weekAgo.setDate(weekAgo.getDate() - 7);
+      const monthAgo = new Date(today);
+      monthAgo.setDate(monthAgo.getDate() - 30);
       
       googleLeadStats.totalClicks = await googleLeadsCollection.countDocuments();
       googleLeadStats.todayClicks = await googleLeadsCollection.countDocuments({ clickedAt: { $gte: today } });
+      googleLeadStats.thisWeekClicks = await googleLeadsCollection.countDocuments({ clickedAt: { $gte: weekAgo } });
+      googleLeadStats.thisMonthClicks = await googleLeadsCollection.countDocuments({ clickedAt: { $gte: monthAgo } });
       
       const branchStats = await googleLeadsCollection.aggregate([
         { $group: { _id: '$branch', count: { $sum: 1 } } }
       ]).toArray();
       branchStats.forEach(b => { googleLeadStats.byBranch[b._id] = b.count; });
+      
+      const execStats = await googleLeadsCollection.aggregate([
+        { $group: { _id: '$executiveName', count: { $sum: 1 } } }
+      ]).toArray();
+      execStats.forEach(e => { googleLeadStats.byExecutive[e._id] = e.count; });
       
       const statusStats = await googleLeadsCollection.aggregate([
         { $group: { _id: '$status', count: { $sum: 1 } } }
@@ -144,6 +163,10 @@ router.get('/', async (req, res) => {
           googleLeadStats.byStatus[s._id] = s.count;
         }
       });
+      
+      const converted = googleLeadStats.byStatus.converted || 0;
+      const total = googleLeadStats.totalClicks;
+      googleLeadStats.conversionRate = total > 0 ? ((converted / total) * 100).toFixed(1) : 0;
       
       googleLeadStats.recentLeads = await googleLeadsCollection.find()
         .sort({ clickedAt: -1 })
@@ -296,44 +319,46 @@ router.get('/', async (req, res) => {
     // Executive stats for Miss Call
     const executiveStats = {};
     const executivePatients = {};
-    for (const [branch, execNumber] of Object.entries(EXECUTIVES)) {
-      if (branch === 'Manager') continue;
-      executiveStats[branch] = {
-        execNumber: execNumber, total: 0, pending: 0, converted: 0, waiting: 0, notConverted: 0,
+    for (const [execName, execNumber] of Object.entries(EXECUTIVES)) {
+      if (execName === 'Manager') continue;
+      executiveStats[execName] = {
+        execNumber: execNumber,
+        total: 0, pending: 0, converted: 0, waiting: 0, notConverted: 0,
         awaitingBranch: 0, branchSelected: 0, awaitingName: 0, awaitingTestType: 0, awaitingTestDetails: 0,
         executiveNotified: 0, connected: 0, noReply: 0, singleMissCall: 0, highMissCall: 0,
         templateSent: 0, escalated: 0, activeChat: 0
       };
-      executivePatients[branch] = [];
+      executivePatients[execName] = [];
     }
     
     for (const patient of patients) {
-      const branch = patient.branch;
-      if (branch && EXECUTIVES[branch] && branch !== 'Manager') {
-        executiveStats[branch].total++;
-        if (patient.status === 'pending') executiveStats[branch].pending++;
-        else if (patient.status === 'converted') executiveStats[branch].converted++;
-        else if (patient.status === 'waiting') executiveStats[branch].waiting++;
-        else if (patient.status === 'not_converted') executiveStats[branch].notConverted++;
+      const execNumber = patient.executiveNumber;
+      let execName = EXECUTIVE_NAMES[execNumber];
+      if (execName && execName !== 'Manager') {
+        executiveStats[execName].total++;
+        if (patient.status === 'pending') executiveStats[execName].pending++;
+        else if (patient.status === 'converted') executiveStats[execName].converted++;
+        else if (patient.status === 'waiting') executiveStats[execName].waiting++;
+        else if (patient.status === 'not_converted') executiveStats[execName].notConverted++;
         
-        if (patient.currentStage === 'awaiting_branch') executiveStats[branch].awaitingBranch++;
-        else if (patient.currentStage === 'branch_selected') executiveStats[branch].branchSelected++;
-        else if (patient.currentStage === 'awaiting_name') executiveStats[branch].awaitingName++;
-        else if (patient.currentStage === 'awaiting_test_type') executiveStats[branch].awaitingTestType++;
-        else if (patient.currentStage === 'awaiting_test_details') executiveStats[branch].awaitingTestDetails++;
-        else if (patient.currentStage === 'executive_notified') executiveStats[branch].executiveNotified++;
-        else if (patient.currentStage === 'connected') executiveStats[branch].connected++;
+        if (patient.currentStage === 'awaiting_branch') executiveStats[execName].awaitingBranch++;
+        else if (patient.currentStage === 'branch_selected') executiveStats[execName].branchSelected++;
+        else if (patient.currentStage === 'awaiting_name') executiveStats[execName].awaitingName++;
+        else if (patient.currentStage === 'awaiting_test_type') executiveStats[execName].awaitingTestType++;
+        else if (patient.currentStage === 'awaiting_test_details') executiveStats[execName].awaitingTestDetails++;
+        else if (patient.currentStage === 'executive_notified') executiveStats[execName].executiveNotified++;
+        else if (patient.currentStage === 'connected') executiveStats[execName].connected++;
         
         const hasActiveSession = allSessions.some(s => s.patientPhone === patient.patientPhone && s.status === 'active');
-        if (hasActiveSession && patient.currentStage === 'connected') executiveStats[branch].activeChat++;
+        if (hasActiveSession && patient.currentStage === 'connected') executiveStats[execName].activeChat++;
         
-        if (patient.executiveActionTaken === false) executiveStats[branch].noReply++;
-        if ((patient.missCallCount || 1) === 1) executiveStats[branch].singleMissCall++;
-        if ((patient.missCallCount || 1) >= 3) executiveStats[branch].highMissCall++;
-        if (patient.currentStage === 'executive_notified' || patient.currentStage === 'connected') executiveStats[branch].templateSent++;
-        if (patient.escalatedToManager === true) executiveStats[branch].escalated++;
+        if (patient.executiveActionTaken === false) executiveStats[execName].noReply++;
+        if ((patient.missCallCount || 1) === 1) executiveStats[execName].singleMissCall++;
+        if ((patient.missCallCount || 1) >= 3) executiveStats[execName].highMissCall++;
+        if (patient.currentStage === 'executive_notified' || patient.currentStage === 'connected') executiveStats[execName].templateSent++;
+        if (patient.escalatedToManager === true) executiveStats[execName].escalated++;
         
-        executivePatients[branch].push({
+        executivePatients[execName].push({
           patientName: patient.patientName || 'Unknown', patientPhone: patient.patientPhone,
           testDetails: patient.testDetails, testType: patient.testType,
           status: patient.status, currentStage: patient.currentStage,
@@ -386,7 +411,7 @@ router.get('/', async (req, res) => {
     }));
     
     res.send(getDashboardHTML({
-      filters, EXECUTIVES, BRANCHES_CONFIG, googleLeadStats,
+      filters, EXECUTIVES, EXECUTIVE_NAMES, BRANCHES_CONFIG, googleLeadStats,
       totalPatients, pendingCount, convertedCount, waitingCount, notConvertedCount,
       missCallTotal, missCallToday, missCallYesterday, missCallLast7Days,
       patientsWithoutReply, singleMissCallPatients, templateSentPatients,
@@ -406,7 +431,7 @@ router.get('/', async (req, res) => {
 
 function getDashboardHTML(data) {
   const {
-    filters, EXECUTIVES, BRANCHES_CONFIG, googleLeadStats,
+    filters, EXECUTIVES, EXECUTIVE_NAMES, BRANCHES_CONFIG, googleLeadStats,
     totalPatients, pendingCount, convertedCount, waitingCount, notConvertedCount,
     missCallTotal, missCallToday, missCallYesterday, missCallLast7Days,
     patientsWithoutReply, singleMissCallPatients, templateSentPatients,
@@ -415,7 +440,7 @@ function getDashboardHTML(data) {
     branchTests, overallTests, dailyMissCalls,
     recentPatients, recentMissCalls, topMissCallPatients,
     recentFollowups, executiveStats, executivePatients,
-    branches, executivesList, exportData, gmbPatients
+    branches, executivesList, exportData
   } = data;
   
   const dailyMissCallLabels = dailyMissCalls.map(d => d.date);
@@ -430,105 +455,151 @@ function getDashboardHTML(data) {
   
   return `
   <!DOCTYPE html>
-  <html>
+  <html lang="en">
   <head>
-    <title>UIC Support Dashboard</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UIC Support Dashboard | Executive Management System</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { font-family: 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+      body { 
+        font-family: 'Inter', sans-serif; 
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); 
+        min-height: 100vh; 
+        padding: 20px;
+      }
       .container { max-width: 1600px; margin: 0 auto; }
-      h1 { color: white; margin-bottom: 20px; font-size: 2em; }
       
-      /* Tab Styles */
-      .tabs { display: flex; gap: 10px; margin-bottom: 25px; background: rgba(255,255,255,0.1); padding: 10px; border-radius: 12px; }
-      .tab-btn { padding: 12px 30px; border: none; border-radius: 10px; font-size: 1em; font-weight: bold; cursor: pointer; transition: all 0.3s; }
-      .tab-btn.misscall { background: #075e54; color: white; }
-      .tab-btn.misscall.active { background: #128C7E; box-shadow: 0 0 15px rgba(18,140,126,0.5); }
-      .tab-btn.gmb { background: #4285f4; color: white; }
-      .tab-btn.gmb.active { background: #34a853; box-shadow: 0 0 15px rgba(52,168,83,0.5); }
+      /* Header */
+      .dashboard-header { margin-bottom: 30px; }
+      .dashboard-header h1 { 
+        font-size: 2rem; 
+        font-weight: 700; 
+        background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 8px;
+      }
+      .dashboard-header p { color: #64748b; font-size: 0.9rem; }
+      
+      /* Tabs */
+      .tabs { display: flex; gap: 12px; margin-bottom: 25px; background: rgba(255,255,255,0.05); padding: 8px; border-radius: 16px; backdrop-filter: blur(10px); }
+      .tab-btn { 
+        padding: 12px 28px; 
+        border: none; 
+        border-radius: 12px; 
+        font-size: 0.95rem; 
+        font-weight: 600; 
+        cursor: pointer; 
+        transition: all 0.3s ease;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .tab-btn.misscall { background: transparent; color: #94a3b8; }
+      .tab-btn.misscall.active { background: linear-gradient(135deg, #075e54, #128C7E); color: white; box-shadow: 0 4px 15px rgba(18,140,126,0.3); }
+      .tab-btn.gmb { background: transparent; color: #94a3b8; }
+      .tab-btn.gmb.active { background: linear-gradient(135deg, #1e40af, #3b82f6); color: white; box-shadow: 0 4px 15px rgba(59,130,246,0.3); }
       .tab-content { display: none; }
-      .tab-content.active { display: block; }
+      .tab-content.active { display: block; animation: fadeIn 0.4s ease; }
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
       
-      .filter-bar { background: white; border-radius: 12px; padding: 20px; margin-bottom: 25px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
+      /* Filter Bar */
+      .filter-bar { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 20px; padding: 20px; margin-bottom: 25px; border: 1px solid rgba(255,255,255,0.1); }
       .filter-row { display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 15px; align-items: flex-end; }
-      .filter-group { flex: 1; min-width: 150px; }
-      .filter-group label { display: block; font-size: 0.7em; color: #666; margin-bottom: 5px; text-transform: uppercase; font-weight: bold; }
-      .filter-group select, .filter-group input { width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.9em; }
-      .filter-actions { display: flex; gap: 10px; align-items: center; }
-      .btn-filter { background: #075e54; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
-      .btn-reset-filter { background: #6c757d; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-block; text-align: center; }
-      .btn-export { background: #10b981; color: white; border: none; padding: 8px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
-      .btn-reset-db { background: #dc2626; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-left: 10px; }
-      .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px; }
-      .stat-card { background: white; border-radius: 12px; padding: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); text-align: center; }
-      .stat-title { font-size: 0.7em; color: #666; text-transform: uppercase; }
-      .stat-value { font-size: 1.5em; font-weight: bold; color: #333; margin-top: 5px; }
-      .alert-card { background: linear-gradient(135deg, #f59e0b, #ef4444); }
-      .alert-card .stat-title, .alert-card .stat-value { color: white; }
-      .misscall-card { background: linear-gradient(135deg, #ff6b6b, #ff8e8e); }
-      .misscall-card .stat-title, .misscall-card .stat-value { color: white; }
-      .connected-card { background: linear-gradient(135deg, #10b981, #059669); }
-      .connected-card .stat-title, .connected-card .stat-value { color: white; }
-      .google-lead-card { background: linear-gradient(135deg, #4285f4, #34a853); color: white; }
-      .blink-red { animation: blink 1s infinite; background-color: #ff6b6b !important; color: white !important; padding: 2px 6px; border-radius: 8px; display: inline-block; }
-      @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+      .filter-group { flex: 1; min-width: 140px; }
+      .filter-group label { display: block; font-size: 0.7rem; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
+      .filter-group select, .filter-group input { width: 100%; padding: 10px 14px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; color: white; font-size: 0.85rem; transition: all 0.2s; }
+      .filter-group select:focus, .filter-group input:focus { outline: none; border-color: #10b981; }
+      .filter-actions { display: flex; gap: 12px; align-items: center; }
+      .btn-filter { background: linear-gradient(135deg, #10b981, #059669); color: white; border: none; padding: 10px 24px; border-radius: 12px; cursor: pointer; font-weight: 600; transition: all 0.2s; }
+      .btn-filter:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(16,185,129,0.3); }
+      .btn-reset-filter { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); padding: 10px 24px; border-radius: 12px; cursor: pointer; font-weight: 600; text-decoration: none; display: inline-block; text-align: center; }
+      .btn-reset-filter:hover { background: rgba(255,255,255,0.2); }
+      .btn-export { background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; border: none; padding: 10px 24px; border-radius: 12px; cursor: pointer; font-weight: 600; }
+      .btn-reset-db { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; border: none; padding: 10px 20px; border-radius: 12px; cursor: pointer; font-weight: 600; margin-left: 10px; }
       
+      /* Stats Grid */
+      .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; margin-bottom: 30px; }
+      .stat-card { background: rgba(255,255,255,0.08); backdrop-filter: blur(10px); border-radius: 20px; padding: 20px 16px; border: 1px solid rgba(255,255,255,0.05); transition: all 0.3s ease; }
+      .stat-card:hover { transform: translateY(-3px); background: rgba(255,255,255,0.12); }
+      .stat-title { font-size: 0.7rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+      .stat-value { font-size: 2rem; font-weight: 700; color: white; margin-bottom: 4px; }
+      .stat-change { font-size: 0.7rem; color: #10b981; }
+      .stat-card.alert { background: linear-gradient(135deg, rgba(239,68,68,0.2), rgba(220,38,38,0.1)); border-color: rgba(239,68,68,0.3); }
+      .stat-card.success { background: linear-gradient(135deg, rgba(16,185,129,0.2), rgba(5,150,105,0.1)); border-color: rgba(16,185,129,0.3); }
+      .stat-card.info { background: linear-gradient(135deg, rgba(59,130,246,0.2), rgba(37,99,235,0.1)); border-color: rgba(59,130,246,0.3); }
+      .stat-card.warning { background: linear-gradient(135deg, rgba(245,158,11,0.2), rgba(217,119,6,0.1)); border-color: rgba(245,158,11,0.3); }
+      
+      /* Cards */
+      .card { background: rgba(255,255,255,0.08); backdrop-filter: blur(10px); border-radius: 20px; padding: 20px; margin-bottom: 25px; border: 1px solid rgba(255,255,255,0.05); }
+      .card-title { font-size: 1.1rem; font-weight: 600; color: white; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; border-left: 3px solid #10b981; padding-left: 12px; }
+      
+      /* Executive Grid */
+      .executive-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; margin-bottom: 30px; }
+      .executive-card { background: rgba(255,255,255,0.08); backdrop-filter: blur(10px); border-radius: 20px; overflow: hidden; border: 1px solid rgba(255,255,255,0.05); transition: all 0.3s; }
+      .executive-card:hover { transform: translateY(-3px); background: rgba(255,255,255,0.12); }
+      .executive-header { background: linear-gradient(135deg, rgba(7,94,84,0.3), rgba(18,140,126,0.2)); padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
+      .executive-name { font-weight: 700; font-size: 1.1rem; color: white; }
+      .executive-phone { font-size: 0.7rem; color: #94a3b8; margin-top: 4px; }
+      .executive-stats { padding: 16px 20px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; background: rgba(0,0,0,0.2); text-align: center; }
+      .executive-stat-number { font-size: 1.3rem; font-weight: 700; color: white; }
+      .executive-stat-label { font-size: 0.65rem; color: #94a3b8; margin-top: 4px; }
+      .stage-row { padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 8px; background: rgba(0,0,0,0.15); font-size: 0.7rem; }
+      .stage-badge { padding: 4px 10px; border-radius: 20px; font-size: 0.7rem; background: rgba(255,255,255,0.1); color: #94a3b8; }
+      .alert-row-exec { padding: 12px 20px; display: flex; flex-wrap: wrap; justify-content: space-between; background: rgba(239,68,68,0.1); font-size: 0.7rem; }
+      .executive-detail-btn { background: linear-gradient(135deg, #10b981, #059669); color: white; border: none; padding: 8px 16px; border-radius: 12px; cursor: pointer; font-weight: 600; margin: 16px 20px; width: calc(100% - 40px); transition: all 0.2s; }
+      .executive-detail-btn:hover { transform: translateY(-2px); }
+      .patient-list { display: none; margin: 0 20px 20px; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px; max-height: 300px; overflow-y: auto; }
+      .patient-list.show { display: block; }
+      .patient-item { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 0.75rem; }
+      .connected-badge { background: #10b981; color: white; padding: 2px 8px; border-radius: 20px; font-size: 0.65rem; margin-left: 8px; }
+      .no-reply { color: #f97316; font-weight: 600; }
+      .blink-red { animation: blink 1s infinite; background: #ef4444; color: white; padding: 2px 6px; border-radius: 8px; display: inline-block; font-size: 0.7rem; }
+      @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+      
+      /* Charts */
+      .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; margin-bottom: 30px; }
+      .chart-card { background: rgba(255,255,255,0.08); backdrop-filter: blur(10px); border-radius: 20px; padding: 20px; border: 1px solid rgba(255,255,255,0.05); }
+      canvas { max-height: 300px; width: 100%; }
+      
+      /* Tables */
+      .recent-section { background: rgba(255,255,255,0.08); backdrop-filter: blur(10px); border-radius: 20px; padding: 20px; margin-bottom: 25px; overflow-x: auto; border: 1px solid rgba(255,255,255,0.05); }
+      table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+      th { text-align: left; padding: 12px 8px; color: #94a3b8; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.1); }
+      td { padding: 10px 8px; color: #e2e8f0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+      .badge { padding: 4px 8px; border-radius: 20px; font-size: 0.7rem; font-weight: 600; background: rgba(255,255,255,0.1); }
+      
+      /* Google Branch Grid */
       .google-branch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px; }
-      .google-branch-card { background: white; border-radius: 12px; padding: 15px; text-align: center; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-      .google-branch-name { font-size: 1.1em; font-weight: bold; color: #4285f4; }
-      .google-branch-count { font-size: 2em; font-weight: bold; margin: 10px 0; }
-      .google-status-badge { display: inline-block; padding: 3px 8px; border-radius: 20px; font-size: 0.7em; font-weight: bold; }
+      .google-branch-card { background: rgba(255,255,255,0.08); backdrop-filter: blur(10px); border-radius: 16px; padding: 16px; text-align: center; border: 1px solid rgba(255,255,255,0.05); }
+      .google-branch-name { font-weight: 600; color: white; margin-bottom: 8px; }
+      .google-branch-count { font-size: 2rem; font-weight: 700; color: #3b82f6; margin: 8px 0; }
+      .google-status-badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 0.7rem; font-weight: 600; }
       .status-clicked { background: #fef3c7; color: #92400e; }
       .status-template_sent { background: #dbeafe; color: #1e40af; }
       .status-patient_replied { background: #d1fae5; color: #065f46; }
       .status-executive_connected { background: #c8e6e9; color: #00695c; }
       .status-converted { background: #10b981; color: white; }
       
-      .executive-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; margin-bottom: 30px; }
-      .executive-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-      .executive-header { background: linear-gradient(135deg, #075e54, #128C7E); color: white; padding: 12px 15px; display: flex; justify-content: space-between; }
-      .executive-name { font-weight: bold; }
-      .executive-phone { font-size: 0.7em; opacity: 0.8; }
-      .executive-stats { padding: 12px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; background: #f8f9fa; text-align: center; }
-      .executive-stat-number { font-size: 1.1em; font-weight: bold; }
-      .executive-stat-label { font-size: 0.6em; color: #666; }
-      .stage-row { padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px; background: #fefce8; font-size: 0.7em; }
-      .stage-badge { padding: 3px 8px; border-radius: 15px; font-size: 0.65em; }
-      .alert-row-exec { padding: 8px 12px; display: flex; flex-wrap: wrap; justify-content: space-between; background: #fef2f2; font-size: 0.7em; }
-      .executive-detail-btn { background: #128C7E; color: white; border: none; padding: 6px 12px; border-radius: 5px; cursor: pointer; margin: 10px 15px; width: calc(100% - 30px); }
-      .patient-list { display: none; margin: 0 15px 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; max-height: 250px; overflow-y: auto; font-size: 0.7em; }
-      .patient-list.show { display: block; }
-      .patient-item { padding: 6px; border-bottom: 1px solid #eee; }
-      .connected-badge { background: #10b981; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.65em; display: inline-block; margin-left: 5px; }
-      .no-reply { color: #ef4444; font-weight: bold; }
-      .high-miss-call { border-left: 3px solid #ff6b6b; background: #fff5f5; padding-left: 8px; }
-      
-      .stage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; margin-bottom: 20px; }
-      .stage-card { background: white; border-radius: 8px; padding: 8px; text-align: center; }
-      .stage-name { font-size: 0.6em; color: #666; }
-      .stage-value { font-size: 1.1em; font-weight: bold; }
-      .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-bottom: 30px; }
-      .chart-card { background: white; border-radius: 12px; padding: 15px; }
-      .recent-section { background: white; border-radius: 12px; padding: 15px; margin-bottom: 20px; overflow-x: auto; }
-      table { width: 100%; border-collapse: collapse; font-size: 0.7em; }
-      th, td { padding: 8px; text-align: left; border-bottom: 1px solid #e2e8f0; }
-      th { background: #f8f9fa; }
-      .badge { padding: 2px 6px; border-radius: 10px; font-size: 0.65em; }
-      .top-patients-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
-      .top-patient-card { background: #f8f9fa; border-radius: 8px; padding: 8px; border-left: 3px solid #ff6b6b; }
-      .refresh-btn { background: #667eea; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-bottom: 15px; }
-      .last-updated { color: white; margin-bottom: 15px; font-size: 0.8em; }
+      /* Top Patients */
+      .top-patients-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 25px; }
+      .top-patient-card { background: rgba(255,255,255,0.08); backdrop-filter: blur(10px); border-radius: 16px; padding: 15px; border-left: 3px solid #f97316; }
+      .refresh-btn { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); padding: 10px 20px; border-radius: 12px; cursor: pointer; margin-bottom: 20px; font-weight: 600; }
+      .refresh-btn:hover { background: rgba(255,255,255,0.2); }
+      .last-updated { color: #64748b; margin-bottom: 20px; font-size: 0.75rem; }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script>
       function toggleCustomDate() {
         const dateRange = document.querySelector('select[name="dateRange"]').value;
         const customDiv = document.getElementById('customDateRange');
         customDiv.style.display = dateRange === 'custom' ? 'flex' : 'none';
       }
-      function togglePatientList(branch) { document.getElementById('patient-list-' + branch).classList.toggle('show'); }
+      function togglePatientList(exec) { document.getElementById('patient-list-' + exec).classList.toggle('show'); }
       function exportToExcel() { const ws = XLSX.utils.json_to_sheet(${exportDataJson}); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Patients'); XLSX.writeFile(wb, 'patients_export.xlsx'); }
       function resetDatabase() { const pwd = prompt('Enter reset password:'); if(pwd) fetch('/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})}).then(r=>r.json()).then(d=>{if(d.success){alert('Reset successful!');location.reload();}else alert('Error: '+d.error);}); }
       function switchTab(tab) {
@@ -544,12 +615,16 @@ function getDashboardHTML(data) {
         const urlParams = new URLSearchParams(window.location.search);
         const activeTab = urlParams.get('tab') || 'misscall';
         switchTab(activeTab);
+        toggleCustomDate();
       });
     </script>
   </head>
   <body>
     <div class="container">
-      <h1>🏥 UIC Support Executive Dashboard</h1>
+      <div class="dashboard-header">
+        <h1>🏥 Executive Dashboard</h1>
+        <p>Real-time analytics & performance tracking for UIC Support System</p>
+      </div>
       
       <!-- Tabs -->
       <div class="tabs">
@@ -579,196 +654,277 @@ function getDashboardHTML(data) {
       
       <!-- ==================== MISS CALL TAB ==================== -->
       <div id="tab-misscall" class="tab-content active">
-        <button class="refresh-btn" onclick="location.reload()">🔄 Refresh</button>
-        <div class="last-updated">Updated: ${new Date().toLocaleString()}</div>
-        
-        <div class="stats-grid">
-          <div class="stat-card alert-card"><div class="stat-title">⚠️ No Reply</div><div class="stat-value">${patientsWithoutReply.length}</div></div>
-          <div class="stat-card alert-card"><div class="stat-title">📞 Single Call</div><div class="stat-value">${singleMissCallPatients.length}</div></div>
-          <div class="stat-card alert-card"><div class="stat-title">🔴 High Call (3+)</div><div class="stat-value">${highMissCallPatients.length}</div></div>
-          <div class="stat-card alert-card"><div class="stat-title">⏳ Waiting >2hr</div><div class="stat-value">${waitingPatients.length}</div></div>
-          <div class="stat-card alert-card"><div class="stat-title">🚨 Escalated</div><div class="stat-value">${escalatedPatients.length}</div></div>
-          <div class="stat-card connected-card"><div class="stat-title">💬 Active Chats</div><div class="stat-value">${activeConversations.length}</div></div>
-          <div class="stat-card connected-card"><div class="stat-title">✅ Connected</div><div class="stat-value">${connectedPatients.length}</div></div>
-          <div class="stat-card"><div class="stat-title">📨 Template Sent</div><div class="stat-value">${templateSentPatients.length}</div></div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+          <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
+          <div class="last-updated">Last updated: ${new Date().toLocaleString()}</div>
         </div>
         
+        <!-- Alert Cards -->
         <div class="stats-grid">
-          <div class="stat-card"><div class="stat-title">📢 Total Follow-ups</div><div class="stat-value">${followupStats.total}</div></div>
+          <div class="stat-card alert"><div class="stat-title">⚠️ No Reply</div><div class="stat-value">${patientsWithoutReply.length}</div></div>
+          <div class="stat-card warning"><div class="stat-title">📞 Single Miss Call</div><div class="stat-value">${singleMissCallPatients.length}</div></div>
+          <div class="stat-card alert"><div class="stat-title">🔴 High Miss Call (3+)</div><div class="stat-value">${highMissCallPatients.length}</div></div>
+          <div class="stat-card warning"><div class="stat-title">⏳ Waiting >2hrs</div><div class="stat-value">${waitingPatients.length}</div></div>
+          <div class="stat-card alert"><div class="stat-title">🚨 Escalated</div><div class="stat-value">${escalatedPatients.length}</div></div>
+          <div class="stat-card success"><div class="stat-title">💬 Active Chats</div><div class="stat-value">${activeConversations.length}</div></div>
+          <div class="stat-card success"><div class="stat-title">✅ Connected</div><div class="stat-value">${connectedPatients.length}</div></div>
+          <div class="stat-card info"><div class="stat-title">📨 Template Sent</div><div class="stat-value">${templateSentPatients.length}</div></div>
+        </div>
+        
+        <!-- Follow-up Stats -->
+        <div class="stats-grid">
+          <div class="stat-card info"><div class="stat-title">📢 Total Follow-ups</div><div class="stat-value">${followupStats.total}</div></div>
           <div class="stat-card"><div class="stat-title">⏰ No Reply</div><div class="stat-value">${followupStats.noReply}</div></div>
           <div class="stat-card"><div class="stat-title">⏳ Waiting</div><div class="stat-value">${followupStats.waiting}</div></div>
-          <div class="stat-card"><div class="stat-title">🚨 Escalations</div><div class="stat-value">${followupStats.escalation}</div></div>
+          <div class="stat-card alert"><div class="stat-title">🚨 Escalations</div><div class="stat-value">${followupStats.escalation}</div></div>
           <div class="stat-card"><div class="stat-title">📅 Today</div><div class="stat-value">${followupStats.today}</div></div>
         </div>
         
+        <!-- Overall Stats -->
         <div class="stats-grid">
           <div class="stat-card"><div class="stat-title">Total Patients</div><div class="stat-value">${totalPatients}</div></div>
-          <div class="stat-card"><div class="stat-title">Pending</div><div class="stat-value">${pendingCount}</div></div>
-          <div class="stat-card"><div class="stat-title">Converted</div><div class="stat-value">${convertedCount}</div></div>
-          <div class="stat-card"><div class="stat-title">Waiting</div><div class="stat-value">${waitingCount}</div></div>
+          <div class="stat-card warning"><div class="stat-title">Pending</div><div class="stat-value">${pendingCount}</div></div>
+          <div class="stat-card success"><div class="stat-title">Converted</div><div class="stat-value">${convertedCount}</div></div>
+          <div class="stat-card info"><div class="stat-title">Waiting</div><div class="stat-value">${waitingCount}</div></div>
           <div class="stat-card"><div class="stat-title">Not Converted</div><div class="stat-value">${notConvertedCount}</div></div>
           <div class="stat-card misscall-card"><div class="stat-title">Total Miss Calls</div><div class="stat-value">${missCallTotal}</div></div>
-          <div class="stat-card"><div class="stat-title">Today</div><div class="stat-value">${missCallToday}</div></div>
-          <div class="stat-card"><div class="stat-title">Yesterday</div><div class="stat-value">${missCallYesterday}</div></div>
+          <div class="stat-card"><div class="stat-title">Today</div><div class="stat-value">${missCallToday}</div><div class="stat-change">${missCallToday > missCallYesterday ? '↑' : '↓'} ${Math.abs(missCallToday - missCallYesterday)}</div></div>
           <div class="stat-card"><div class="stat-title">Last 7 Days</div><div class="stat-value">${missCallLast7Days}</div></div>
         </div>
         
-        <h2>📊 Test Distribution</h2>
-        <div class="stats-grid">
-          <div class="stat-card"><div class="stat-title">MRI</div><div class="stat-value">${overallTests.MRI}</div></div>
-          <div class="stat-card"><div class="stat-title">CT</div><div class="stat-value">${overallTests.CT}</div></div>
-          <div class="stat-card"><div class="stat-title">X-RAY</div><div class="stat-value">${overallTests['X-RAY']}</div></div>
-          <div class="stat-card"><div class="stat-title">USG</div><div class="stat-value">${overallTests.USG}</div></div>
-          <div class="stat-card"><div class="stat-title">Others</div><div class="stat-value">${overallTests.OTHER}</div></div>
+        <!-- Test Distribution -->
+        <div class="card">
+          <div class="card-title">📊 Test Distribution</div>
+          <div class="stats-grid" style="margin-bottom: 0;">
+            <div class="stat-card"><div class="stat-title">MRI</div><div class="stat-value">${overallTests.MRI}</div></div>
+            <div class="stat-card"><div class="stat-title">CT</div><div class="stat-value">${overallTests.CT}</div></div>
+            <div class="stat-card"><div class="stat-title">X-RAY</div><div class="stat-value">${overallTests['X-RAY']}</div></div>
+            <div class="stat-card"><div class="stat-title">USG</div><div class="stat-value">${overallTests.USG}</div></div>
+            <div class="stat-card"><div class="stat-title">Others</div><div class="stat-value">${overallTests.OTHER}</div></div>
+          </div>
         </div>
         
-        <h2>👥 Executive Performance</h2>
-        <div class="executive-grid">
-          ${Object.entries(executiveStats).map(([branch, stats]) => `
-            <div class="executive-card">
-              <div class="executive-header"><div><div class="executive-name">${branch}</div><div class="executive-phone">${stats.execNumber}</div></div><div>${stats.total} patients</div></div>
-              <div class="executive-stats"><div><div class="executive-stat-number" style="color:#f59e0b;">${stats.pending}</div><div class="executive-stat-label">Pending</div></div><div><div class="executive-stat-number" style="color:#10b981;">${stats.converted}</div><div class="executive-stat-label">Converted</div></div><div><div class="executive-stat-number" style="color:#3b82f6;">${stats.waiting}</div><div class="executive-stat-label">Waiting</div></div><div><div class="executive-stat-number" style="color:#ef4444;">${stats.notConverted}</div><div class="executive-stat-label">Not Conv</div></div><div><div class="executive-stat-number" style="color:#10b981;">${stats.activeChat}</div><div class="executive-stat-label">Active</div></div></div>
-              <div class="stage-row"><span class="stage-badge">📌 Await: ${stats.awaitingBranch}</span><span class="stage-badge">✅ Selected: ${stats.branchSelected}</span><span class="stage-badge">📝 Name: ${stats.awaitingName}</span><span class="stage-badge">🔬 Test: ${stats.awaitingTestType+stats.awaitingTestDetails}</span><span class="stage-badge">📢 Notified: ${stats.executiveNotified}</span><span class="stage-badge">💬 Connected: ${stats.connected}</span></div>
-              <div class="alert-row-exec"><span>⚠️ No Reply: <strong>${stats.noReply}</strong></span><span>📞 Single: ${stats.singleMissCall}</span><span>🔴 High: <span class="${stats.highMissCall > 0 ? 'blink-red' : ''}">${stats.highMissCall}</span></span><span>🚨 Escalated: ${stats.escalated}</span></div>
-              <button class="executive-detail-btn" onclick="togglePatientList('${branch}')">📋 View ${stats.total} Patients</button>
-              <div id="patient-list-${branch}" class="patient-list">${executivePatients[branch] && executivePatients[branch].length > 0 ? executivePatients[branch].slice(0, 30).map(p => `<div class="patient-item ${p.missCallCount >= 3 ? 'high-miss-call' : ''}"><strong>${p.patientName}</strong> (${p.patientPhone})${p.hasActiveSession ? '<span class="connected-badge">💬 Active</span>' : ''}<br><small>Test: ${p.testDetails || p.testType || 'N/A'} | ${p.missCallCount} calls</small><br><small>Stage: ${p.currentStage || 'N/A'}</small>${!p.executiveActionTaken ? '<span class="no-reply"> ⚠️ No reply</span>' : ''}</div>`).join('') : '<div>No patients</div>'}</div>
-            </div>
-          `).join('')}
+        <!-- Executive Performance -->
+        <div class="card">
+          <div class="card-title">👥 Executive Performance</div>
+          <div class="executive-grid">
+            ${Object.entries(executiveStats).map(([execName, stats]) => `
+              <div class="executive-card">
+                <div class="executive-header">
+                  <div><div class="executive-name">${execName}</div><div class="executive-phone">${stats.execNumber}</div></div>
+                  <div style="font-weight: 700; font-size: 1.2rem;">${stats.total}</div>
+                </div>
+                <div class="executive-stats">
+                  <div><div class="executive-stat-number" style="color:#f59e0b;">${stats.pending}</div><div class="executive-stat-label">Pending</div></div>
+                  <div><div class="executive-stat-number" style="color:#10b981;">${stats.converted}</div><div class="executive-stat-label">Converted</div></div>
+                  <div><div class="executive-stat-number" style="color:#3b82f6;">${stats.waiting}</div><div class="executive-stat-label">Waiting</div></div>
+                  <div><div class="executive-stat-number" style="color:#ef4444;">${stats.notConverted}</div><div class="executive-stat-label">Not Conv</div></div>
+                  <div><div class="executive-stat-number" style="color:#10b981;">${stats.activeChat}</div><div class="executive-stat-label">Active</div></div>
+                </div>
+                <div class="stage-row">
+                  <span class="stage-badge">📌 Await: ${stats.awaitingBranch}</span>
+                  <span class="stage-badge">✅ Selected: ${stats.branchSelected}</span>
+                  <span class="stage-badge">📝 Name: ${stats.awaitingName}</span>
+                  <span class="stage-badge">🔬 Test: ${stats.awaitingTestType+stats.awaitingTestDetails}</span>
+                  <span class="stage-badge">📢 Notified: ${stats.executiveNotified}</span>
+                  <span class="stage-badge">💬 Connected: ${stats.connected}</span>
+                </div>
+                <div class="alert-row-exec">
+                  <span>⚠️ No Reply: <strong style="color:#f97316;">${stats.noReply}</strong></span>
+                  <span>📞 Single: ${stats.singleMissCall}</span>
+                  <span>🔴 High: <span class="${stats.highMissCall > 0 ? 'blink-red' : ''}">${stats.highMissCall}</span></span>
+                  <span>🚨 Escalated: ${stats.escalated}</span>
+                </div>
+                <button class="executive-detail-btn" onclick="togglePatientList('${execName}')">📋 View ${stats.total} Patients</button>
+                <div id="patient-list-${execName}" class="patient-list">
+                  ${executivePatients[execName] && executivePatients[execName].length > 0 ? executivePatients[execName].slice(0, 30).map(p => `
+                    <div class="patient-item ${p.missCallCount >= 3 ? 'high-miss-call' : ''}">
+                      <strong>${p.patientName || 'Unknown'}</strong> (${p.patientPhone})${p.hasActiveSession ? '<span class="connected-badge">💬 Active</span>' : ''}<br>
+                      <small>Test: ${p.testDetails || p.testType || 'N/A'} | ${p.missCallCount} calls</small><br>
+                      <small>Stage: ${p.currentStage || 'N/A'} | Status: ${p.status || 'N/A'}</small>
+                      ${!p.executiveActionTaken ? '<span class="no-reply"> ⚠️ No reply</span>' : ''}
+                    </div>
+                  `).join('') : '<div style="padding: 10px; text-align: center;">No patients</div>'}
+                </div>
+              </div>
+            `).join('')}
+          </div>
         </div>
         
-        <h2>📈 Stage Tracking</h2>
-        <div class="stage-grid"><div class="stage-card"><div class="stage-name">Awaiting Branch</div><div class="stage-value">0</div></div><div class="stage-card"><div class="stage-name">Notified</div><div class="stage-value">0</div></div><div class="stage-card"><div class="stage-name">Connected</div><div class="stage-value">0</div></div><div class="stage-card"><div class="stage-name">Converted</div><div class="stage-value">${convertedCount}</div></div><div class="stage-card"><div class="stage-name">Waiting</div><div class="stage-value">${waitingCount}</div></div><div class="stage-card"><div class="stage-name">Escalated</div><div class="stage-value">${escalatedPatients.length}</div></div></div>
+        <!-- Charts -->
+        <div class="charts-grid">
+          <div class="chart-card"><canvas id="dailyChart"></canvas></div>
+          <div class="chart-card"><canvas id="branchChart"></canvas></div>
+        </div>
         
-        <div class="charts-grid"><div class="chart-card"><canvas id="dailyChart"></canvas></div><div class="chart-card"><canvas id="branchChart"></canvas></div></div>
+        <!-- Top Miss Call Patients -->
+        <div class="card">
+          <div class="card-title">📞 Top Miss Call Patients</div>
+          <div class="top-patients-grid">
+            ${topMissCallPatients.map(p => `
+              <div class="top-patient-card ${p.missCallCount >= 3 ? 'high-miss-call' : ''}">
+                <strong>${p.patientName || 'Unknown'}</strong><br>
+                <small>${p.patientPhone}</small><br>
+                <span style="color:#f97316; font-weight:700;">${p.missCallCount || 1} calls</span><br>
+                <small>${p.branch || 'N/A'} | ${p.status || 'pending'}</small>
+              </div>
+            `).join('')}
+          </div>
+        </div>
         
-        <h2>📞 Top Miss Call Patients</h2>
-        <div class="top-patients-grid">${topMissCallPatients.map(p => `<div class="top-patient-card ${p.missCallCount >= 3 ? 'high-miss-call' : ''}"><strong>${p.patientName || 'Unknown'}</strong><br><small>${p.patientPhone}</small><br><span style="color:#ff6b6b;">${p.missCallCount || 1} calls</span><br><small>${p.branch || 'N/A'}</small></div>`).join('')}</div>
+        <!-- Recent Patients -->
+        <div class="card">
+          <div class="card-title">🕒 Recent Patients</div>
+          <div class="recent-section">
+            <table>
+              <thead><tr><th>Patient</th><th>Phone</th><th>Branch</th><th>Test</th><th>Stage</th><th>Status</th><th>Calls</th><th>Active</th><th>Time</th></tr></thead>
+              <tbody>${recentPatients.slice(0, 50).map(p => `<tr><td><strong>${p.patientName || 'N/A'}</strong>${p.escalatedToManager ? ' 🚨' : ''}</td><td>${p.patientPhone || 'N/A'}</td><td>${p.branch || 'N/A'}</td><td>${p.testDetails || p.testType || 'N/A'}</td><td><span class="badge">${(p.currentStage || 'pending').replace(/_/g, ' ')}</span></td><td><span class="badge">${p.status || 'pending'}</span></td><td>${p.missCallCount || 1}</td><td>${p.hasActiveSession ? '✅' : '❌'}</td><td>${new Date(p.createdAt).toLocaleString()}</td></tr>`).join('')}</tbody>
+            </table>
+          </div>
+        </div>
         
-        <h2>🕒 Recent Patients</h2>
-        <div class="recent-section"><table><thead><tr><th>Patient</th><th>Phone</th><th>Branch</th><th>Test</th><th>Stage</th><th>Status</th><th>Calls</th><th>Active</th><th>Time</th></tr></thead><tbody>${recentPatients.slice(0, 50).map(p => `<tr><td>${p.patientName || 'N/A'}</td><td>${p.patientPhone || 'N/A'}</td><td>${p.branch || 'N/A'}</td><td>${p.testDetails || p.testType || 'N/A'}</td><td>${(p.currentStage || 'pending').replace(/_/g, ' ')}</td><td>${p.status || 'pending'}</td><td>${p.missCallCount || 1}</td><td>${p.hasActiveSession ? '✅' : '❌'}</td><td>${new Date(p.createdAt).toLocaleString()}</td></tr>`).join('')}</tbody></table></div>
+        <!-- Recent Miss Calls -->
+        <div class="card">
+          <div class="card-title">📞 Recent Miss Calls</div>
+          <div class="recent-section">
+            <table>
+              <thead><tr><th>Phone</th><th>Branch</th><th>Time</th></tr></thead>
+              <tbody>${recentMissCalls.slice(0, 30).map(m => `<tr><td>${m.phoneNumber || 'N/A'}</td><td>${m.branch || 'N/A'}</td><td>${new Date(m.createdAt).toLocaleString()}</td></tr>`).join('')}</tbody>
+            </table>
+          </div>
+        </div>
         
-        <h2>📞 Recent Miss Calls</h2>
-        <div class="recent-section"><table><thead><tr><th>Phone</th><th>Branch</th><th>Time</th></tr></thead><tbody>${recentMissCalls.slice(0, 30).map(m => `<tr><td>${m.phoneNumber || 'N/A'}</td><td>${m.branch || 'N/A'}</td><td>${new Date(m.createdAt).toLocaleString()}</td></tr>`).join('')}</tbody></table></div>
+        <!-- Recent Follow-ups -->
+        <div class="card">
+          <div class="card-title">📢 Recent Follow-ups</div>
+          <div class="recent-section">
+            <table>
+              <thead><tr><th>Type</th><th>Patient Phone</th><th>Executive</th><th>Time</th></tr></thead>
+              <tbody>${recentFollowups.slice(0, 30).map(f => `<tr><td><span class="badge">${f.type}</span></td><td>${f.patientPhone || 'N/A'}</td><td>${f.executiveNumber || 'N/A'}</td><td>${new Date(f.sentAt).toLocaleString()}</td></tr>`).join('')}</tbody>
+            </table>
+          </div>
+        </div>
       </div>
       
       <!-- ==================== GOOGLE MY BUSINESS TAB ==================== -->
       <div id="tab-gmb" class="tab-content">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+          <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
+          <div class="last-updated">Last updated: ${new Date().toLocaleString()}</div>
+        </div>
+        
+        <!-- Google Lead Stats -->
         <div class="stats-grid">
-          <div class="stat-card google-lead-card"><div class="stat-title">Total Clicks</div><div class="stat-value">${googleLeadStats.totalClicks}</div></div>
-          <div class="stat-card google-lead-card"><div class="stat-title">Today's Clicks</div><div class="stat-value">${googleLeadStats.todayClicks}</div></div>
+          <div class="stat-card success"><div class="stat-title">Total Clicks</div><div class="stat-value">${googleLeadStats.totalClicks}</div></div>
+          <div class="stat-card success"><div class="stat-title">Today's Clicks</div><div class="stat-value">${googleLeadStats.todayClicks}</div></div>
+          <div class="stat-card info"><div class="stat-title">This Week</div><div class="stat-value">${googleLeadStats.thisWeekClicks}</div></div>
+          <div class="stat-card info"><div class="stat-title">This Month</div><div class="stat-value">${googleLeadStats.thisMonthClicks}</div></div>
           <div class="stat-card"><div class="stat-title">📨 Template Sent</div><div class="stat-value">${googleLeadStats.byStatus.template_sent || 0}</div></div>
           <div class="stat-card"><div class="stat-title">💬 Patient Replied</div><div class="stat-value">${googleLeadStats.byStatus.patient_replied || 0}</div></div>
-          <div class="stat-card connected-card"><div class="stat-title">🤝 Executive Connected</div><div class="stat-value">${googleLeadStats.byStatus.executive_connected || 0}</div></div>
+          <div class="stat-card success"><div class="stat-title">🤝 Executive Connected</div><div class="stat-value">${googleLeadStats.byStatus.executive_connected || 0}</div></div>
           <div class="stat-card"><div class="stat-title">✅ Converted</div><div class="stat-value">${googleLeadStats.byStatus.converted || 0}</div></div>
           <div class="stat-card"><div class="stat-title">❌ Not Converted</div><div class="stat-value">${googleLeadStats.byStatus.not_converted || 0}</div></div>
+          <div class="stat-card success"><div class="stat-title">📊 Conversion Rate</div><div class="stat-value">${googleLeadStats.conversionRate}%</div></div>
         </div>
         
-        <h2>📍 Branch-wise Clicks</h2>
-        <div class="google-branch-grid">
-          ${Object.entries(BRANCHES_CONFIG).map(([branch, config]) => `
-            <div class="google-branch-card"><div class="google-branch-name">${branch}</div><div class="google-branch-count">${googleLeadStats.byBranch[branch] || 0}</div><div class="wa-number">📞 ${config.watiNumber}</div></div>
-          `).join('')}
+        <!-- Executive-wise Performance -->
+        <div class="card">
+          <div class="card-title">👥 Executive Performance (GMB)</div>
+          <div class="executive-grid">
+            ${Object.entries(googleLeadStats.byExecutive).map(([exec, count]) => `
+              <div class="executive-card">
+                <div class="executive-header">
+                  <div><div class="executive-name">${exec}</div><div class="executive-phone">${EXECUTIVES[exec] || 'N/A'}</div></div>
+                  <div style="font-size: 1.5rem; font-weight: 700;">${count}</div>
+                </div>
+                <div style="padding: 16px; text-align: center;">
+                  <div class="executive-stat-number" style="color:#10b981;">${((count / googleLeadStats.totalClicks) * 100).toFixed(1)}%</div>
+                  <div class="executive-stat-label">of total leads</div>
+                </div>
+              </div>
+            `).join('')}
+            ${Object.keys(googleLeadStats.byExecutive).length === 0 ? '<div style="padding: 40px; text-align: center; color: #64748b;">No GMB leads yet</div>' : ''}
+          </div>
         </div>
         
-        <h2>🕒 Recent Google Leads</h2>
-        <div class="recent-section"><table><thead><tr><th>Time</th><th>Branch</th><th>Phone</th><th>Status</th></tr></thead><tbody>${googleLeadStats.recentLeads.slice(0, 50).map(lead => `<tr><td>${new Date(lead.clickedAt).toLocaleString()}</td><td><strong>${lead.branch}</strong></td><td>${lead.phoneNumber}</td><td><span class="google-status-badge status-${lead.status}">${lead.status.replace(/_/g, ' ')}</span></td></tr>`).join('')}</tbody></table></div>
+        <!-- Branch-wise Clicks -->
+        <div class="card">
+          <div class="card-title">📍 Branch-wise Clicks</div>
+          <div class="google-branch-grid">
+            ${Object.entries(BRANCHES_CONFIG).map(([branch, config]) => `
+              <div class="google-branch-card">
+                <div class="google-branch-name">${branch}</div>
+                <div class="google-branch-count">${googleLeadStats.byBranch[branch] || 0}</div>
+                <div class="executive-phone">👤 ${config.executive}</div>
+                <div class="executive-phone">📞 ${config.number}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
         
-        <h2>📊 Google Lead Templates</h2>
-        <div class="recent-section">
-          <h3>Template 1: google_lead_notification_v1</h3>
-          <pre style="background:#f0f2f5;padding:10px;border-radius:8px;font-size:0.7em;">
-🌟 Google My Business Lead Alert 🌟
-
-Patient: {{1}}
-Phone: {{2}}
-Branch: {{3}}
-Type: {{4}}
-Tests: {{5}}
-Time: {{6}}
-Source: Google My Business 🏢
-
-👇 Click to chat with patient:
-{{7}}
-
-Buttons: ✅ Convert Done | ⏰ Waiting</pre>
-          
-          <h3>Template 2: google_followup_no_reply</h3>
-          <pre style="background:#f0f2f5;padding:10px;border-radius:8px;font-size:0.7em;">
-🔔 Google Lead Reminder: Patient waiting for response
-
-Source: Google My Business 🏢
-Patient: {{1}}
-Phone: {{2}}
-Branch: {{3}}
-Test: {{4}} - {{5}}
-Time: {{6}}
-
-👇 Click to reply:
-{{7}}
-
-DO NOT IGNORE - Google Lead
-
-Buttons: ✅ Convert Done | ⏰ Waiting</pre>
-          
-          <h3>Template 3: google_followup_waiting</h3>
-          <pre style="background:#f0f2f5;padding:10px;border-radius:8px;font-size:0.7em;">
-⏳ Google Lead - Status Update Required
-
-Source: Google My Business 🏢
-Patient: {{1}}
-Phone: {{2}}
-Branch: {{3}}
-Test: {{4}} - {{5}}
-Waiting since: {{6}}
-
-Please update status:
-
-Buttons: ✅ Convert Done | ⏰ Waiting | ❌ Not Convert</pre>
-          
-          <h3>Template 4: google_executive_report</h3>
-          <pre style="background:#f0f2f5;padding:10px;border-radius:8px;font-size:0.7em;">
-📊 Google Lead - Your Performance Report
-
-Period: {{1}} to {{2}}
-Your Stats:
-Total Leads: {{3}}
-Connected: {{4}}
-Converted: {{5}}
-Conversion Rate: {{6}}%
-Avg Response Time: {{7}} min
-
-Branch-wise:
-{{8}}
-
-Keep up the good work! 🎉
-
-Button: ✅ Read Done</pre>
-          
-          <h3>Template 5: google_escalation_manager</h3>
-          <pre style="background:#f0f2f5;padding:10px;border-radius:8px;font-size:0.7em;">
-🚨 GOOGLE LEAD ESCALATION ALERT
-
-Source: Google My Business 🏢
-Patient has been waiting for {{7}} hours.
-
-Patient: {{1}}
-Phone: {{2}}
-Branch: {{3}}
-Test: {{4}} - {{5}}
-Waiting Count: {{6}}
-Assigned Executive: {{8}}
-Executive Phone: {{9}}
-
-Please take action immediately.
-
-Buttons: ✅ Convert Done | ⏰ Waiting | 📞 Call Executive | 👁️ View Details</pre>
+        <!-- Recent Google Leads -->
+        <div class="card">
+          <div class="card-title">🕒 Recent Google Leads</div>
+          <div class="recent-section">
+            <table>
+              <thead><tr><th>Time</th><th>Branch</th><th>Phone</th><th>Executive</th><th>Status</th></tr></thead>
+              <tbody>${googleLeadStats.recentLeads.slice(0, 50).map(lead => `
+                <tr>
+                  <td>${new Date(lead.clickedAt).toLocaleString()}</td>
+                  <td><strong>${lead.branch}</strong></td>
+                  <td>${lead.phoneNumber}</td>
+                  <td>${lead.executiveName || 'N/A'}</td>
+                  <td><span class="google-status-badge status-${lead.status}">${lead.status.replace(/_/g, ' ')}</span></td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+        
+        <!-- Google Templates Info -->
+        <div class="card">
+          <div class="card-title">📋 Google Lead Templates</div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px;">
+            <div style="background: rgba(0,0,0,0.2); border-radius: 12px; padding: 15px;">
+              <div style="font-weight: 600; color: #10b981; margin-bottom: 8px;">google_lead_notification_v1</div>
+              <div style="font-size: 0.7rem; color: #94a3b8;">New lead alert to executive with buttons</div>
+            </div>
+            <div style="background: rgba(0,0,0,0.2); border-radius: 12px; padding: 15px;">
+              <div style="font-weight: 600; color: #3b82f6; margin-bottom: 8px;">google_followup_no_reply</div>
+              <div style="font-size: 0.7rem; color: #94a3b8;">Reminder when executive doesn't reply</div>
+            </div>
+            <div style="background: rgba(0,0,0,0.2); border-radius: 12px; padding: 15px;">
+              <div style="font-weight: 600; color: #f59e0b; margin-bottom: 8px;">google_followup_waiting</div>
+              <div style="font-size: 0.7rem; color: #94a3b8;">Status update reminder after waiting</div>
+            </div>
+            <div style="background: rgba(0,0,0,0.2); border-radius: 12px; padding: 15px;">
+              <div style="font-weight: 600; color: #8b5cf6; margin-bottom: 8px;">google_executive_report</div>
+              <div style="font-size: 0.7rem; color: #94a3b8;">Weekly performance report for executives</div>
+            </div>
+            <div style="background: rgba(0,0,0,0.2); border-radius: 12px; padding: 15px;">
+              <div style="font-weight: 600; color: #ef4444; margin-bottom: 8px;">google_escalation_manager</div>
+              <div style="font-size: 0.7rem; color: #94a3b8;">Escalation alert to manager</div>
+            </div>
+            <div style="background: rgba(0,0,0,0.2); border-radius: 12px; padding: 15px;">
+              <div style="font-weight: 600; color: #14b8a6; margin-bottom: 8px;">gmb_customer_welcome</div>
+              <div style="font-size: 0.7rem; color: #94a3b8;">Customer welcome template with services</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
     
     <script>
-      new Chart(document.getElementById('dailyChart'), { type: 'line', data: { labels: ${JSON.stringify(dailyMissCallLabels)}, datasets: [{ label: 'Miss Calls', data: ${JSON.stringify(dailyMissCallValues)}, borderColor: '#f97316', fill: true }] }, options: { responsive: true } });
-      new Chart(document.getElementById('branchChart'), { type: 'bar', data: { labels: ${JSON.stringify(branchNames)}, datasets: [{ label: 'Total', data: ${JSON.stringify(branchTotalData)}, backgroundColor: '#075e54' }, { label: 'Converted', data: ${JSON.stringify(branchConvertedData)}, backgroundColor: '#10b981' }, { label: 'Connected', data: ${JSON.stringify(branchConnectedData)}, backgroundColor: '#3b82f6' }] }, options: { responsive: true, scales: { y: { beginAtZero: true } } } });
+      new Chart(document.getElementById('dailyChart'), {
+        type: 'line',
+        data: { labels: ${JSON.stringify(dailyMissCallLabels)}, datasets: [{ label: 'Miss Calls', data: ${JSON.stringify(dailyMissCallValues)}, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3 }] },
+        options: { responsive: true, maintainAspectRatio: true, plugins: { legend: { labels: { color: '#94a3b8' } } } }
+      });
+      new Chart(document.getElementById('branchChart'), {
+        type: 'bar',
+        data: { labels: ${JSON.stringify(branchNames)}, datasets: [{ label: 'Total', data: ${JSON.stringify(branchTotalData)}, backgroundColor: '#3b82f6' }, { label: 'Converted', data: ${JSON.stringify(branchConvertedData)}, backgroundColor: '#10b981' }, { label: 'Connected', data: ${JSON.stringify(branchConnectedData)}, backgroundColor: '#8b5cf6' }] },
+        options: { responsive: true, maintainAspectRatio: true, scales: { y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.1)' } }, x: { ticks: { color: '#94a3b8' } } }, plugins: { legend: { labels: { color: '#94a3b8' } } } }
+      });
       setTimeout(() => location.reload(), 60000);
     </script>
   </body>
