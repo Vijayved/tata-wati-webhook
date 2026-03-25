@@ -232,11 +232,14 @@ function isLikelyGMBMessage(message) {
 }
 
 function getGMBExecutiveByBranch(branchName) {
+  if (!branchName || branchName === 'Unknown') {
+    return { executiveNumber: GMB_EXECUTIVES.Manager, executiveName: 'Manager' };
+  }
   const branch = GMB_BRANCHES[branchName?.toLowerCase()];
   if (branch) {
     return { executiveNumber: branch.executiveNumber, executiveName: branch.executiveName };
   }
-  return { executiveNumber: GMB_EXECUTIVES.Aditi, executiveName: 'Aditi' };
+  return { executiveNumber: GMB_EXECUTIVES.Manager, executiveName: 'Manager' };
 }
 
 // OpenAI
@@ -286,10 +289,10 @@ async function connectDB() {
     followupCollection = db.collection('followups');
     googleLeadsCollection = db.collection('google_leads');
     
-    // Indexes
+    // Indexes with UNIQUE constraints for race condition prevention
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
     await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
-    await patientsCollection.createIndex({ patientPhone: 1, source: 1 });
+    await patientsCollection.createIndex({ patientPhone: 1, source: 1 }, { unique: true }); // ✅ PREVENTS DUPLICATE PATIENTS
     await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
     await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
     await patientsCollection.createIndex({ missCallCount: -1 });
@@ -299,9 +302,9 @@ async function connectDB() {
     await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
     await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
     await followupCollection.createIndex({ patientId: 1, type: 1, createdAt: -1 });
+    await googleLeadsCollection.createIndex({ phoneNumber: 1 }, { unique: true }); // ✅ PREVENTS DUPLICATE GMB LEADS
     await googleLeadsCollection.createIndex({ clickedAt: -1 });
     await googleLeadsCollection.createIndex({ branch: 1 });
-    await googleLeadsCollection.createIndex({ phoneNumber: 1 });
     
     console.log('✅ Indexes created');
     return true;
@@ -330,6 +333,37 @@ const STAGES = {
   NOT_CONVERTED: 'not_converted',
   ESCALATED: 'escalated'
 };
+
+// ============================================
+// ✅ SECURITY MIDDLEWARE - HMAC VERIFICATION
+// ============================================
+function verifyWatiSignature(req, res, next) {
+  // Skip in development or if no signature header
+  if (!process.env.WATI_SIGNATURE_SECRET) {
+    return next();
+  }
+  
+  const signature = req.headers['x-wati-signature'];
+  if (!signature) {
+    return res.status(401).json({ error: 'Missing signature' });
+  }
+  
+  const expected = crypto
+    .createHmac('sha256', process.env.WATI_SIGNATURE_SECRET)
+    .update(JSON.stringify(req.body))
+    .digest('hex');
+  
+  if (signature !== expected) {
+    console.error('❌ Invalid WATI signature');
+    return res.status(403).json({ error: 'Invalid signature' });
+  }
+  
+  next();
+}
+
+// Apply security middleware to webhook endpoints
+app.use('/wati-webhook', verifyWatiSignature);
+app.use('/gmb-webhook', verifyWatiSignature);
 
 // ============================================
 // ✅ DATABASE FUNCTIONS
@@ -584,40 +618,48 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       istTime: getISTTime()
     });
     
-    const existingPatient = await patientsCollection.findOne({ 
-      patientPhone: whatsappNumber,
-      source: 'misscall'
-    });
-    
-    if (existingPatient) {
-      await patientsCollection.updateOne(
-        { _id: existingPatient._id },
-        { 
-          $set: { missCallTime: new Date(), missCallTimeIST: getISTTime(), updatedAt: new Date(), branch: branch.name, status: 'awaiting_branch', currentStage: STAGES.AWAITING_BRANCH },
-          $inc: { missCallCount: 1 }
-        }
-      );
-    } else {
-      await patientsCollection.insertOne({
-        chatId: `${whatsappNumber}_${branch.name}`,
-        patientName: 'Miss Call Patient',
+    try {
+      const existingPatient = await patientsCollection.findOne({ 
         patientPhone: whatsappNumber,
-        branch: branch.name,
-        testType: null,
-        testDetails: null,
-        patientMessages: [],
-        sourceType: 'Miss Call',
-        executiveNumber: branch.executive,
-        status: 'awaiting_branch',
-        missCallCount: 1,
-        missCallTime: new Date(),
-        missCallTimeIST: getISTTime(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        currentStage: STAGES.AWAITING_BRANCH,
-        stageHistory: [{ stage: STAGES.AWAITING_BRANCH, timestamp: new Date() }],
         source: 'misscall'
       });
+      
+      if (existingPatient) {
+        await patientsCollection.updateOne(
+          { _id: existingPatient._id },
+          { 
+            $set: { missCallTime: new Date(), missCallTimeIST: getISTTime(), updatedAt: new Date(), branch: branch.name, status: 'awaiting_branch', currentStage: STAGES.AWAITING_BRANCH },
+            $inc: { missCallCount: 1 }
+          }
+        );
+      } else {
+        await patientsCollection.insertOne({
+          chatId: `${whatsappNumber}_${branch.name}`,
+          patientName: 'Miss Call Patient',
+          patientPhone: whatsappNumber,
+          branch: branch.name,
+          testType: null,
+          testDetails: null,
+          patientMessages: [],
+          sourceType: 'Miss Call',
+          executiveNumber: branch.executive,
+          status: 'awaiting_branch',
+          missCallCount: 1,
+          missCallTime: new Date(),
+          missCallTimeIST: getISTTime(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          currentStage: STAGES.AWAITING_BRANCH,
+          stageHistory: [{ stage: STAGES.AWAITING_BRANCH, timestamp: new Date() }],
+          source: 'misscall'
+        });
+      }
+    } catch (error) {
+      if (error.code === 11000) {
+        console.log('⚠️ Duplicate patient, skipping insert');
+      } else {
+        throw error;
+      }
     }
     
     try {
@@ -633,7 +675,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ UNIFIED WATI WEBHOOK - Smart Source Detection (FIXED)
+// ✅ UNIFIED WATI WEBHOOK - Smart Source Detection (FINAL)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -678,44 +720,62 @@ app.post('/wati-webhook', async (req, res) => {
     // GMB Initial Message Flow
     if ((isGMBInitial && !existingMissCallPatient) || (existingGMBPatient && !existingMissCallPatient)) {
       console.log(`🌟 GMB FLOW DETECTED - Branch: ${detectedBranch || 'Unknown'}`);
-      const branchName = detectedBranch || 'Naroda';
+      const branchName = detectedBranch || 'Unknown';
       const branchInfo = getGMBExecutiveByBranch(branchName);
       
-      // Track lead in google_leads collection
-      await googleLeadsCollection.insertOne({
-        phoneNumber: senderNumber,
-        branch: branchName,
-        executiveNumber: branchInfo.executiveNumber,
-        executiveName: branchInfo.executiveName,
-        status: 'clicked',
-        clickedAt: new Date(),
-        clickedAtIST: getISTTime(),
-        message: messageText.substring(0, 200),
-        source: 'google_my_business'
-      });
+      // ✅ Track lead with UPSERT to prevent duplicates
+      await googleLeadsCollection.updateOne(
+        { phoneNumber: senderNumber },
+        {
+          $set: {
+            branch: branchName,
+            executiveNumber: branchInfo.executiveNumber,
+            executiveName: branchInfo.executiveName,
+            status: 'clicked',
+            updatedAt: new Date(),
+            message: messageText.substring(0, 200)
+          },
+          $setOnInsert: {
+            clickedAt: new Date(),
+            clickedAtIST: getISTTime(),
+            source: 'google_my_business'
+          }
+        },
+        { upsert: true }
+      );
+      console.log(`✅ GMB Lead tracked for ${branchName}`);
       
       // Create or update patient with source='gmb'
       let patient = existingGMBPatient;
       if (!patient) {
-        const result = await patientsCollection.insertOne({
-          patientName: 'Google Lead',
-          patientPhone: senderNumber,
-          branch: branchName,
-          testType: null,
-          testDetails: null,
-          patientMessages: [{ text: messageText, timestamp: new Date() }],
-          sourceType: 'Google My Business',
-          executiveNumber: branchInfo.executiveNumber,
-          executiveName: branchInfo.executiveName,
-          status: 'pending',
-          currentStage: STAGES.AWAITING_NAME,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          source: 'gmb',
-          gmbBranch: branchName
-        });
-        patient = { _id: result.insertedId };
-        console.log(`✅ New GMB patient created for ${branchName}`);
+        try {
+          const result = await patientsCollection.insertOne({
+            patientName: 'Google Lead',
+            patientPhone: senderNumber,
+            branch: branchName,
+            testType: null,
+            testDetails: null,
+            patientMessages: [{ text: messageText, timestamp: new Date() }],
+            sourceType: 'Google My Business',
+            executiveNumber: branchInfo.executiveNumber,
+            executiveName: branchInfo.executiveName,
+            status: 'pending',
+            currentStage: STAGES.AWAITING_NAME,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            source: 'gmb',
+            gmbBranch: branchName
+          });
+          patient = { _id: result.insertedId };
+          console.log(`✅ New GMB patient created for ${branchName}`);
+        } catch (error) {
+          if (error.code === 11000) {
+            patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'gmb' });
+            console.log(`⚠️ Duplicate GMB patient, using existing`);
+          } else {
+            throw error;
+          }
+        }
       } else {
         await patientsCollection.updateOne(
           { _id: patient._id },
@@ -724,7 +784,6 @@ app.post('/wati-webhook', async (req, res) => {
             $push: { patientMessages: { text: messageText, timestamp: new Date() } }
           }
         );
-        // Re-fetch updated patient
         patient = await patientsCollection.findOne({ _id: patient._id });
       }
       
@@ -754,11 +813,15 @@ app.post('/wati-webhook', async (req, res) => {
         // This is a GMB reply - handle accordingly
         console.log(`💬 GMB REPLY from ${senderNumber}`);
         
-        // Update patient messages
-        await patientsCollection.updateOne(
-          { _id: patient._id },
-          { $push: { patientMessages: { text: messageText, timestamp: new Date() } }, $set: { lastMessageAt: new Date() } }
-        );
+        // ✅ Update with dedupe - avoid duplicate messages
+        const lastMsg = patient.patientMessages?.slice(-1)[0]?.text;
+        
+        if (lastMsg !== messageText) {
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $push: { patientMessages: { text: messageText, timestamp: new Date() } }, $set: { lastMessageAt: new Date() } }
+          );
+        }
         
         // Update Google Lead status
         await googleLeadsCollection.updateOne(
@@ -766,6 +829,9 @@ app.post('/wati-webhook', async (req, res) => {
           { $set: { status: 'patient_replied', patientRepliedAt: new Date(), patientReply: messageText } },
           { upsert: true }
         );
+        
+        // Re-fetch patient
+        patient = await patientsCollection.findOne({ _id: patient._id });
         
         // Process classification for GMB
         const context = { currentStage: patient.currentStage };
@@ -824,29 +890,41 @@ app.post('/wati-webhook', async (req, res) => {
       
       // No patient found - create as misscall
       if (!patient) {
-        const result = await patientsCollection.insertOne({
-          patientPhone: senderNumber,
-          patientName: 'Miss Call Patient',
-          patientMessages: [{ text: messageText, timestamp: new Date() }],
-          testType: null,
-          testDetails: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          currentStage: STAGES.AWAITING_BRANCH,
-          source: 'misscall'
-        });
-        patient = { _id: result.insertedId };
-        console.log(`✅ New misscall patient created for ${senderNumber}`);
+        try {
+          const result = await patientsCollection.insertOne({
+            patientPhone: senderNumber,
+            patientName: 'Miss Call Patient',
+            patientMessages: [{ text: messageText, timestamp: new Date() }],
+            testType: null,
+            testDetails: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            currentStage: STAGES.AWAITING_BRANCH,
+            source: 'misscall'
+          });
+          patient = { _id: result.insertedId };
+          console.log(`✅ New misscall patient created for ${senderNumber}`);
+        } catch (error) {
+          if (error.code === 11000) {
+            patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'misscall' });
+          } else {
+            throw error;
+          }
+        }
       }
     }
     
     // ============================================
-    // ✅ STEP 3: UPDATE PATIENT MESSAGES
+    // ✅ STEP 3: UPDATE PATIENT MESSAGES (WITH DEDUPE)
     // ============================================
-    await patientsCollection.updateOne(
-      { _id: patient._id },
-      { $push: { patientMessages: { text: messageText, timestamp: new Date() } }, $set: { lastMessageAt: new Date() } }
-    );
+    const lastMsg = patient.patientMessages?.slice(-1)[0]?.text;
+    
+    if (lastMsg !== messageText) {
+      await patientsCollection.updateOne(
+        { _id: patient._id },
+        { $push: { patientMessages: { text: messageText, timestamp: new Date() } }, $set: { lastMessageAt: new Date() } }
+      );
+    }
     
     // Re-fetch updated patient
     patient = await patientsCollection.findOne({ _id: patient._id });
@@ -943,26 +1021,63 @@ app.post('/gmb-webhook', async (req, res) => {
     if (!patientPhone) return res.status(400).json({ error: 'No phone number' });
     
     const message = text || body || '';
-    const branchName = detectGMBBranch(message) || 'Naroda';
+    const branchName = detectGMBBranch(message) || 'Unknown';
     const branchInfo = getGMBExecutiveByBranch(branchName);
     
     console.log(`📍 Patient: ${patientPhone}, Branch: ${branchName}, Executive: ${branchInfo.executiveName}`);
     
-    await googleLeadsCollection.insertOne({
-      phoneNumber: patientPhone, branch: branchName, executiveNumber: branchInfo.executiveNumber,
-      executiveName: branchInfo.executiveName, status: 'clicked', clickedAt: new Date(),
-      clickedAtIST: getISTTime(), message: message.substring(0, 200), source: 'google_my_business'
-    });
+    await googleLeadsCollection.updateOne(
+      { phoneNumber: patientPhone },
+      {
+        $set: {
+          branch: branchName,
+          executiveNumber: branchInfo.executiveNumber,
+          executiveName: branchInfo.executiveName,
+          status: 'clicked',
+          updatedAt: new Date(),
+          message: message.substring(0, 200)
+        },
+        $setOnInsert: {
+          clickedAt: new Date(),
+          clickedAtIST: getISTTime(),
+          source: 'google_my_business'
+        }
+      },
+      { upsert: true }
+    );
     
-    let patient = await patientsCollection.findOne({ patientPhone, source: 'gmb' });
-    if (!patient) {
-      await patientsCollection.insertOne({
-        patientName: 'Google Lead', patientPhone, branch: branchName,
-        testType: null, testDetails: null, patientMessages: [{ text: message, timestamp: new Date() }],
-        sourceType: 'Google My Business', executiveNumber: branchInfo.executiveNumber,
-        executiveName: branchInfo.executiveName, status: 'pending', currentStage: STAGES.AWAITING_NAME,
-        createdAt: new Date(), updatedAt: new Date(), source: 'gmb', gmbBranch: branchName
-      });
+    try {
+      let patient = await patientsCollection.findOne({ patientPhone, source: 'gmb' });
+      if (!patient) {
+        const result = await patientsCollection.insertOne({
+          patientName: 'Google Lead',
+          patientPhone,
+          branch: branchName,
+          testType: null,
+          testDetails: null,
+          patientMessages: [{ text: message, timestamp: new Date() }],
+          sourceType: 'Google My Business',
+          executiveNumber: branchInfo.executiveNumber,
+          executiveName: branchInfo.executiveName,
+          status: 'pending',
+          currentStage: STAGES.AWAITING_NAME,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          source: 'gmb',
+          gmbBranch: branchName
+        });
+        patient = { _id: result.insertedId };
+      } else {
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          {
+            $set: { branch: branchName, executiveNumber: branchInfo.executiveNumber, executiveName: branchInfo.executiveName, updatedAt: new Date() },
+            $push: { patientMessages: { text: message, timestamp: new Date() } }
+          }
+        );
+      }
+    } catch (error) {
+      if (error.code !== 11000) throw error;
     }
     
     await sendCustomerWelcome(patientPhone, branchName);
@@ -1022,7 +1137,7 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 Unified UIC Support System (Miss Call + GMB)',
-    version: '14.0.0',
+    version: '15.0.0',
     endpoints: {
       tata_misscall: '/tata-misscall-whatsapp',
       wati_webhook: '/wati-webhook',
