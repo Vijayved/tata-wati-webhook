@@ -296,20 +296,56 @@ async function connectDB() {
     followupCollection = db.collection('followups');
     googleLeadsCollection = db.collection('google_leads');
     
-    // Indexes with UNIQUE constraints for race condition prevention
+    // ============================================
+    // ✅ SAFE INDEX CREATION - Handle existing indexes
+    // ============================================
+    
+    // Drop problematic index if it exists (non-unique version)
+    try {
+      const existingIndexes = await patientsCollection.indexes();
+      const problematicIndex = existingIndexes.find(idx => idx.name === 'patientPhone_1_source_1');
+      if (problematicIndex && !problematicIndex.unique) {
+        console.log('⚠️ Dropping existing non-unique index...');
+        await patientsCollection.dropIndex('patientPhone_1_source_1');
+        console.log('✅ Dropped existing index');
+      }
+    } catch (err) {
+      console.log('⚠️ Index drop error (may not exist):', err.message);
+    }
+    
+    // Now create indexes safely
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
-    await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
-    await patientsCollection.createIndex({ patientPhone: 1, source: 1 }, { unique: true });
+    
+    // Create unique index with error handling
+    try {
+      await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
+    } catch (err) {
+      if (err.code !== 11000) console.error('Index error:', err.message);
+    }
+    
+    try {
+      await patientsCollection.createIndex({ patientPhone: 1, source: 1 }, { unique: true });
+    } catch (err) {
+      if (err.code !== 11000) console.error('Index error:', err.message);
+    }
+    
     await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
     await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
     await patientsCollection.createIndex({ missCallCount: -1 });
     await patientsCollection.createIndex({ executiveActionTaken: 1 });
     await patientsCollection.createIndex({ currentStage: 1 });
+    
     await chatSessionsCollection.createIndex({ sessionToken: 1 }, { unique: true });
     await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
     await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
     await followupCollection.createIndex({ patientId: 1, type: 1, createdAt: -1 });
-    await googleLeadsCollection.createIndex({ phoneNumber: 1 }, { unique: true });
+    
+    // Google leads index with unique constraint
+    try {
+      await googleLeadsCollection.createIndex({ phoneNumber: 1 }, { unique: true });
+    } catch (err) {
+      if (err.code !== 11000) console.error('Index error:', err.message);
+    }
     await googleLeadsCollection.createIndex({ clickedAt: -1 });
     await googleLeadsCollection.createIndex({ branch: 1 });
     
