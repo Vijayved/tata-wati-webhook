@@ -81,7 +81,11 @@ const EXECUTIVE_REPORT_TEMPLATE = 'executive_report';
 // WATI Number
 const WATI_NUMBER = '919725504245';
 
-// Executive Numbers (GMB)
+// ============================================
+// ✅ EXECUTIVE NUMBERS - CORRECT MAPPING
+// ============================================
+
+// GMB Executive Numbers (4 executives)
 const GMB_EXECUTIVES = {
   'Aditi': '8488931212',
   'Khyati': '7490029085',
@@ -90,7 +94,24 @@ const GMB_EXECUTIVES = {
   'Manager': '7698011233'
 };
 
-// GMB Branch Configuration
+// Miss Call Executive Numbers (Original Tata Tele numbers)
+const MISS_CALL_EXECUTIVES = {
+  'Naroda Team': (process.env.NARODA_EXECUTIVE || '919106959092').toString().trim(),
+  'Usmanpura Team': (process.env.USMANPURA_EXECUTIVE || '917490029085').toString().trim(),
+  'Vadaj Team': (process.env.VADAJ_EXECUTIVE || '918488931212').toString().trim(),
+  'Satellite Team': (process.env.SATELLITE_EXECUTIVE || '917490029085').toString().trim(),
+  'Maninagar Team': (process.env.MANINAGAR_EXECUTIVE || '918488931212').toString().trim(),
+  'Bapunagar Team': (process.env.BAPUNAGAR_EXECUTIVE || '919274682553').toString().trim(),
+  'Juhapura Team': (process.env.JUHAPURA_EXECUTIVE || '919274682553').toString().trim(),
+  'Gandhinagar Team': (process.env.GANDHINAGAR_EXECUTIVE || '919558591212').toString().trim(),
+  'Rajkot Team': (process.env.RAJKOT_EXECUTIVE || '917880261858').toString().trim(),
+  'Sabarmati Team': (process.env.SABARMATI_EXECUTIVE || '917880261858').toString().trim(),
+  'Manager': (process.env.MANAGER_NUMBER || '917698011233').toString().trim()
+};
+
+// ============================================
+// ✅ GMB BRANCH TO EXECUTIVE MAPPING
+// ============================================
 const GMB_BRANCHES = {
   'naroda': { name: 'Naroda', executiveNumber: GMB_EXECUTIVES.Aditi, executiveName: 'Aditi' },
   'ahmedabad': { name: 'Ahmedabad', executiveNumber: GMB_EXECUTIVES.Aditi, executiveName: 'Aditi' },
@@ -114,25 +135,108 @@ const GMB_BRANCHES = {
   'morbi': { name: 'Morbi', executiveNumber: GMB_EXECUTIVES.Mital, executiveName: 'Mital' }
 };
 
-// Miss Call Executive Mapping
-const MISS_CALL_EXECUTIVES = {
-  'Naroda Team': (process.env.NARODA_EXECUTIVE || '919106959092').toString().trim(),
-  'Usmanpura Team': (process.env.USMANPURA_EXECUTIVE || '917490029085').toString().trim(),
-  'Vadaj Team': (process.env.VADAJ_EXECUTIVE || '918488931212').toString().trim(),
-  'Satellite Team': (process.env.SATELLITE_EXECUTIVE || '917490029085').toString().trim(),
-  'Maninagar Team': (process.env.MANINAGAR_EXECUTIVE || '918488931212').toString().trim(),
-  'Bapunagar Team': (process.env.BAPUNAGAR_EXECUTIVE || '919274682553').toString().trim(),
-  'Juhapura Team': (process.env.JUHAPURA_EXECUTIVE || '919274682553').toString().trim(),
-  'Gandhinagar Team': (process.env.GANDHINAGAR_EXECUTIVE || '919558591212').toString().trim(),
-  'Rajkot Team': (process.env.RAJKOT_EXECUTIVE || '917880261858').toString().trim(),
-  'Sabarmati Team': (process.env.SABARMATI_EXECUTIVE || '917880261858').toString().trim(),
-  'Manager': (process.env.MANAGER_NUMBER || '917698011233').toString().trim()
+// ============================================
+// ✅ MISS CALL BRANCH CONFIGURATION
+// ============================================
+function normalizeIndianNumber(number) {
+  if (!number) return '';
+  let digits = String(number).replace(/\D/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.length === 10) return '91' + digits;
+  if (digits.length === 11 && digits.startsWith('0')) return '91' + digits.slice(1);
+  if (digits.length === 12) {
+    if (digits.startsWith('91')) return digits;
+    return '91' + digits.slice(-10);
+  }
+  if (digits.length > 12) return digits.slice(-12);
+  return '';
+}
+
+function normalizeWhatsAppNumber(number) {
+  const normalized = normalizeIndianNumber(number);
+  return normalized || '';
+}
+
+function getCallerNumberFromPayload(body) {
+  return body.caller_id_number || 
+         body["customer_no_with_prefix "] || 
+         body.customer_number_with_prefix ||
+         body.cli || 
+         body.msisdn || 
+         body.mobile || 
+         body.caller_number || 
+         body.from || 
+         body.customer_number ||
+         '';
+}
+
+const MISS_CALL_BRANCHES = {
+  [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: { name: 'Naroda', executive: MISS_CALL_EXECUTIVES['Naroda Team'] },
+  [normalizeIndianNumber('917969690922')]: { name: 'Naroda', executive: MISS_CALL_EXECUTIVES['Naroda Team'] },
+  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: { name: 'Usmanpura', executive: MISS_CALL_EXECUTIVES['Usmanpura Team'] },
+  [normalizeIndianNumber('917969690952')]: { name: 'Usmanpura', executive: MISS_CALL_EXECUTIVES['Usmanpura Team'] },
+  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: { name: 'Vadaj', executive: MISS_CALL_EXECUTIVES['Vadaj Team'] },
+  [normalizeIndianNumber('917969690917')]: { name: 'Vadaj', executive: MISS_CALL_EXECUTIVES['Vadaj Team'] },
+  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: { name: 'Satellite', executive: MISS_CALL_EXECUTIVES['Satellite Team'] },
+  [normalizeIndianNumber('917969690902')]: { name: 'Satellite', executive: MISS_CALL_EXECUTIVES['Satellite Team'] },
+  [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: { name: 'Maninagar', executive: MISS_CALL_EXECUTIVES['Maninagar Team'] },
+  [normalizeIndianNumber('917969690904')]: { name: 'Maninagar', executive: MISS_CALL_EXECUTIVES['Maninagar Team'] },
+  [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: { name: 'Bapunagar', executive: MISS_CALL_EXECUTIVES['Bapunagar Team'] },
+  [normalizeIndianNumber('917969690906')]: { name: 'Bapunagar', executive: MISS_CALL_EXECUTIVES['Bapunagar Team'] },
+  [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: { name: 'Juhapura', executive: MISS_CALL_EXECUTIVES['Juhapura Team'] },
+  [normalizeIndianNumber('917969690909')]: { name: 'Juhapura', executive: MISS_CALL_EXECUTIVES['Juhapura Team'] },
+  [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: { name: 'Gandhinagar', executive: MISS_CALL_EXECUTIVES['Gandhinagar Team'] },
+  [normalizeIndianNumber('917969690910')]: { name: 'Gandhinagar', executive: MISS_CALL_EXECUTIVES['Gandhinagar Team'] },
+  [normalizeIndianNumber('917969690913')]: { name: 'Rajkot', executive: MISS_CALL_EXECUTIVES['Rajkot Team'] },
+  [normalizeIndianNumber('917969690919')]: { name: 'Rajkot', executive: MISS_CALL_EXECUTIVES['Rajkot Team'] },
+  [normalizeIndianNumber('917969690942')]: { name: 'Sabarmati', executive: MISS_CALL_EXECUTIVES['Sabarmati Team'] },
+  [normalizeIndianNumber('917969690905')]: { name: 'Sabarmati', executive: MISS_CALL_EXECUTIVES['Sabarmati Team'] }
 };
 
+function getMissCallBranchByCalledNumber(calledNumber) {
+  const normalized = normalizeIndianNumber(calledNumber);
+  return MISS_CALL_BRANCHES[normalized] || { name: 'Main Branch', executive: process.env.DEFAULT_EXECUTIVE || '917880261858' };
+}
+
 function getMissCallExecutiveNumber(branchName) {
+  if (!branchName || branchName === 'Main Branch') {
+    return process.env.DEFAULT_EXECUTIVE || '917880261858';
+  }
   const formattedBranch = branchName.charAt(0).toUpperCase() + branchName.slice(1).toLowerCase();
   const teamName = `${formattedBranch} Team`;
   return MISS_CALL_EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
+}
+
+// ============================================
+// ✅ GMB BRANCH DETECTION (STRONG)
+// ============================================
+function detectGMBBranch(message) {
+  const msgLower = (message || '').toLowerCase();
+  const branches = ['naroda', 'ahmedabad', 'gandhinagar', 'sabarmati', 'anand', 'usmanpura', 'satellite', 'nadiad', 'jamnagar', 'bhavnagar', 'bapunagar', 'juhapura', 'surat', 'changodar', 'bareja', 'vadaj', 'maninagar', 'rajkot', 'vadodara', 'morbi'];
+  
+  for (const branch of branches) {
+    if (msgLower.includes(branch)) {
+      return branch.charAt(0).toUpperCase() + branch.slice(1);
+    }
+  }
+  return null;
+}
+
+function isLikelyGMBMessage(message) {
+  const msgLower = (message || '').toLowerCase();
+  return detectGMBBranch(message) !== null ||
+         msgLower.includes('appointment') ||
+         msgLower.includes('book') ||
+         msgLower.includes('want to book') ||
+         msgLower.includes('booking');
+}
+
+function getGMBExecutiveByBranch(branchName) {
+  const branch = GMB_BRANCHES[branchName?.toLowerCase()];
+  if (branch) {
+    return { executiveNumber: branch.executiveNumber, executiveName: branch.executiveName };
+  }
+  return { executiveNumber: GMB_EXECUTIVES.Aditi, executiveName: 'Aditi' };
 }
 
 // OpenAI
@@ -167,9 +271,7 @@ let googleLeadsCollection;
 async function connectDB() {
   try {
     console.log('🔄 Connecting to MongoDB...');
-    
     if (!MONGODB_URI) throw new Error('MONGODB_URI is not defined');
-    
     const client = new MongoClient(MONGODB_URI);
     await client.connect();
     console.log('✅ MongoDB connected successfully');
@@ -187,6 +289,7 @@ async function connectDB() {
     // Indexes
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
     await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
+    await patientsCollection.createIndex({ patientPhone: 1, source: 1 });
     await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
     await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
     await patientsCollection.createIndex({ missCallCount: -1 });
@@ -198,6 +301,7 @@ async function connectDB() {
     await followupCollection.createIndex({ patientId: 1, type: 1, createdAt: -1 });
     await googleLeadsCollection.createIndex({ clickedAt: -1 });
     await googleLeadsCollection.createIndex({ branch: 1 });
+    await googleLeadsCollection.createIndex({ phoneNumber: 1 });
     
     console.log('✅ Indexes created');
     return true;
@@ -205,85 +309,6 @@ async function connectDB() {
     console.error('❌ MongoDB connection error:', error.message);
     throw error;
   }
-}
-
-// ============================================
-// ✅ HELPER FUNCTIONS
-// ============================================
-function normalizeIndianNumber(number) {
-  if (!number) return '';
-  let digits = String(number).replace(/\D/g, '');
-  if (digits.startsWith('00')) digits = digits.slice(2);
-  if (digits.length === 10) return '91' + digits;
-  if (digits.length === 11 && digits.startsWith('0')) return '91' + digits.slice(1);
-  if (digits.length === 12) {
-    if (digits.startsWith('91')) return digits;
-    return '91' + digits.slice(-10);
-  }
-  if (digits.length > 12) return digits.slice(-12);
-  return '';
-}
-
-function normalizeWhatsAppNumber(number) {
-  const normalized = normalizeIndianNumber(number);
-  return normalized || '';
-}
-
-function getCallerNumberFromPayload(body) {
-  return body.caller_id_number || 
-         body["customer_no_with_prefix "] || 
-         body.customer_number_with_prefix ||
-         body.cli || 
-         body.msisdn || 
-         body.mobile || 
-         body.caller_number || 
-         body.from || 
-         body.customer_number ||
-         '';
-}
-
-// Miss Call Branch Configuration
-const MISS_CALL_BRANCHES = {
-  [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: { name: 'Naroda', executive: MISS_CALL_EXECUTIVES['Naroda Team'] },
-  [normalizeIndianNumber('917969690922')]: { name: 'Naroda', executive: MISS_CALL_EXECUTIVES['Naroda Team'] },
-  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: { name: 'Usmanpura', executive: MISS_CALL_EXECUTIVES['Usmanpura Team'] },
-  [normalizeIndianNumber('917969690952')]: { name: 'Usmanpura', executive: MISS_CALL_EXECUTIVES['Usmanpura Team'] },
-  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: { name: 'Vadaj', executive: MISS_CALL_EXECUTIVES['Vadaj Team'] },
-  [normalizeIndianNumber('917969690917')]: { name: 'Vadaj', executive: MISS_CALL_EXECUTIVES['Vadaj Team'] },
-  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: { name: 'Satellite', executive: MISS_CALL_EXECUTIVES['Satellite Team'] },
-  [normalizeIndianNumber('917969690902')]: { name: 'Satellite', executive: MISS_CALL_EXECUTIVES['Satellite Team'] },
-  [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: { name: 'Maninagar', executive: MISS_CALL_EXECUTIVES['Maninagar Team'] },
-  [normalizeIndianNumber('917969690904')]: { name: 'Maninagar', executive: MISS_CALL_EXECUTIVES['Maninagar Team'] },
-  [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: { name: 'Bapunagar', executive: MISS_CALL_EXECUTIVES['Bapunagar Team'] },
-  [normalizeIndianNumber('917969690906')]: { name: 'Bapunagar', executive: MISS_CALL_EXECUTIVES['Bapunagar Team'] },
-  [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: { name: 'Juhapura', executive: MISS_CALL_EXECUTIVES['Juhapura Team'] },
-  [normalizeIndianNumber('917969690909')]: { name: 'Juhapura', executive: MISS_CALL_EXECUTIVES['Juhapura Team'] },
-  [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: { name: 'Gandhinagar', executive: MISS_CALL_EXECUTIVES['Gandhinagar Team'] },
-  [normalizeIndianNumber('917969690910')]: { name: 'Gandhinagar', executive: MISS_CALL_EXECUTIVES['Gandhinagar Team'] },
-  [normalizeIndianNumber('917969690913')]: { name: 'Rajkot', executive: MISS_CALL_EXECUTIVES['Rajkot Team'] },
-  [normalizeIndianNumber('917969690919')]: { name: 'Rajkot', executive: MISS_CALL_EXECUTIVES['Rajkot Team'] },
-  [normalizeIndianNumber('917969690942')]: { name: 'Sabarmati', executive: MISS_CALL_EXECUTIVES['Sabarmati Team'] },
-  [normalizeIndianNumber('917969690905')]: { name: 'Sabarmati', executive: MISS_CALL_EXECUTIVES['Sabarmati Team'] }
-};
-
-function getBranchByCalledNumber(calledNumber) {
-  const normalized = normalizeIndianNumber(calledNumber);
-  return MISS_CALL_BRANCHES[normalized] || { name: 'Main Branch', executive: process.env.DEFAULT_EXECUTIVE || '917880261858' };
-}
-
-// GMB Branch Detection
-function detectGMBBranch(message) {
-  const msgLower = (message || '').toLowerCase();
-  const branches = ['naroda', 'ahmedabad', 'gandhinagar', 'sabarmati', 'anand', 'usmanpura', 'satellite', 'nadiad', 'jamnagar', 'bhavnagar', 'bapunagar', 'juhapura', 'surat', 'changodar', 'bareja', 'vadaj', 'maninagar', 'rajkot', 'vadodara', 'morbi'];
-  for (const branch of branches) {
-    if (msgLower.includes(branch)) return branch.charAt(0).toUpperCase() + branch.slice(1);
-  }
-  return null;
-}
-
-function getGMBExecutive(branchName) {
-  const branch = GMB_BRANCHES[branchName?.toLowerCase()];
-  return branch || GMB_BRANCHES['naroda'];
 }
 
 // ============================================
@@ -368,7 +393,9 @@ async function getOrCreateChatSession(patient) {
     status: 'active'
   });
   if (!session) {
-    const executiveNumber = patient.source === 'gmb' ? getGMBExecutive(patient.branch).executiveNumber : getMissCallExecutiveNumber(patient.branch);
+    const executiveNumber = patient.source === 'gmb' 
+      ? getGMBExecutiveByBranch(patient.branch).executiveNumber 
+      : getMissCallExecutiveNumber(patient.branch);
     const sessionToken = await createChatSession(executiveNumber, patient.patientPhone, patient.patientName);
     await patientsCollection.updateOne({ _id: patient._id }, { $set: { chatSessionToken: sessionToken } });
     session = await chatSessionsCollection.findOne({ sessionToken });
@@ -479,11 +506,12 @@ How can I help you?`;
 }
 
 // ============================================
-// ✅ BOT CLASSIFICATION
+// ✅ BOT CLASSIFICATION (IMPROVED)
 // ============================================
 async function classifyMessage(messageText, patientContext = {}) {
   const upperMsg = messageText.toUpperCase();
   const wordCount = messageText.split(' ').length;
+  const lowerMsg = messageText.toLowerCase();
   
   const commands = ['UPLOAD PRESCRIPTION', 'MANUAL ENTRY', 'CHANGE BRANCH', 'CONNECT TO PATIENT', 'CONVERT DONE', 'WAITING', 'NOT CONVERT'];
   for (const cmd of commands) {
@@ -509,10 +537,14 @@ async function classifyMessage(messageText, patientContext = {}) {
   for (const kw of testKeywords) if (upperMsg.includes(kw)) { hasTestKeyword = true; break; }
   for (const bp of bodyParts) if (upperMsg.includes(bp)) { hasBodyPart = true; break; }
   
+  // Improved name detection - avoid medical terms
   const nameRegex = /^[A-Za-z\s]{2,30}$/;
-  if (nameRegex.test(messageText) && !hasTestKeyword && wordCount <= 3) {
+  const isMedicalTerm = lowerMsg.includes('scan') || lowerMsg.includes('test') || lowerMsg.includes('report');
+  
+  if (nameRegex.test(messageText) && !hasTestKeyword && wordCount <= 3 && !isMedicalTerm) {
     return { category: 'PATIENT_NAME', value: messageText, confidence: 0.9, reason: 'Name pattern match' };
   }
+  
   if (hasTestKeyword && hasBodyPart) {
     return { category: 'TEST_DETAILS', value: messageText, confidence: 0.98, reason: 'Test + body part' };
   }
@@ -527,7 +559,7 @@ async function classifyMessage(messageText, patientContext = {}) {
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK
+// ✅ TATA TELE WEBHOOK (Miss Call Only)
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -540,7 +572,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
     const calledNumber = req.body.call_to_number || '';
-    const branch = getBranchByCalledNumber(calledNumber);
+    const branch = getMissCallBranchByCalledNumber(calledNumber);
     
     console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
     
@@ -552,7 +584,10 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       istTime: getISTTime()
     });
     
-    const existingPatient = await patientsCollection.findOne({ patientPhone: whatsappNumber });
+    const existingPatient = await patientsCollection.findOne({ 
+      patientPhone: whatsappNumber,
+      source: 'misscall'
+    });
     
     if (existingPatient) {
       await patientsCollection.updateOne(
@@ -598,69 +633,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ GMB WEBHOOK - FOR GOOGLE MY BUSINESS
-// ============================================
-app.post('/gmb-webhook', async (req, res) => {
-  try {
-    console.log('\n📍 GMB WEBHOOK RECEIVED');
-    console.log('📝 Body:', JSON.stringify(req.body, null, 2));
-    
-    const { from, waId, whatsappNumber, text, body } = req.body;
-    const patientPhone = normalizeWhatsAppNumber(from || waId || whatsappNumber);
-    
-    if (!patientPhone) return res.status(400).json({ error: 'No phone number' });
-    
-    const message = text || body || '';
-    const branchName = detectGMBBranch(message) || 'Naroda';
-    const branchInfo = getGMBExecutive(branchName);
-    
-    console.log(`📍 Patient: ${patientPhone}, Branch: ${branchName}, Executive: ${branchInfo.executiveName}`);
-    
-    // Track lead
-    await googleLeadsCollection.insertOne({
-      phoneNumber: patientPhone, branch: branchName, executiveNumber: branchInfo.executiveNumber,
-      executiveName: branchInfo.executiveName, status: 'clicked', clickedAt: new Date(),
-      clickedAtIST: getISTTime(), message: message.substring(0, 200), source: 'google_my_business'
-    });
-    
-    // Create/update patient
-    let patient = await patientsCollection.findOne({ patientPhone, source: 'gmb' });
-    if (!patient) {
-      const result = await patientsCollection.insertOne({
-        patientName: 'Google Lead', patientPhone, branch: branchName, testType: null, testDetails: null,
-        patientMessages: [{ text: message, timestamp: new Date() }], sourceType: 'Google My Business',
-        executiveNumber: branchInfo.executiveNumber, executiveName: branchInfo.executiveName,
-        status: 'pending', currentStage: STAGES.AWAITING_NAME, createdAt: new Date(), updatedAt: new Date(),
-        source: 'gmb', gmbBranch: branchName
-      });
-      patient = { _id: result.insertedId };
-    } else {
-      await patientsCollection.updateOne({ _id: patient._id }, {
-        $set: { branch: branchName, executiveNumber: branchInfo.executiveNumber, executiveName: branchInfo.executiveName, updatedAt: new Date() },
-        $push: { patientMessages: { text: message, timestamp: new Date() } }
-      });
-    }
-    
-    // Create session token
-    let sessionToken = patient.chatSessionToken;
-    if (!sessionToken) {
-      sessionToken = crypto.randomBytes(16).toString('hex');
-      await patientsCollection.updateOne({ _id: patient._id }, { $set: { chatSessionToken: sessionToken } });
-    }
-    
-    // Send welcome template
-    await sendCustomerWelcome(patientPhone, branchName);
-    console.log(`✅ Welcome template sent`);
-    
-    res.json({ success: true, branch: branchName, executive: branchInfo.executiveName });
-  } catch (error) {
-    console.error('❌ GMB webhook error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
-// ✅ UNIFIED WATI WEBHOOK - Handles both Miss Call & GMB replies
+// ✅ UNIFIED WATI WEBHOOK - Smart Source Detection (FIXED)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -686,61 +659,201 @@ app.post('/wati-webhook', async (req, res) => {
     const text = (messageText || '').toUpperCase().trim();
     console.log(`📝 Message: "${text}" from ${senderNumber}`);
     
-    // Check if this is a GMB initial message (contains branch name)
+    // ============================================
+    // ✅ STEP 1: SMART SOURCE DETECTION
+    // ============================================
     const detectedBranch = detectGMBBranch(messageText);
-    const isGMBInitial = detectedBranch !== null && messageText.toLowerCase().includes('book an appointment');
+    const isGMBInitial = isLikelyGMBMessage(messageText);
+    
+    // Check if patient already exists with source
+    let existingGMBPatient = await patientsCollection.findOne({ 
+      patientPhone: senderNumber, 
+      source: 'gmb' 
+    });
+    let existingMissCallPatient = await patientsCollection.findOne({ 
+      patientPhone: senderNumber, 
+      source: 'misscall' 
+    });
     
     // GMB Initial Message Flow
-    if (isGMBInitial) {
-      console.log(`🌟 GMB INITIAL MESSAGE DETECTED`);
-      const branchInfo = getGMBExecutive(detectedBranch);
+    if ((isGMBInitial && !existingMissCallPatient) || (existingGMBPatient && !existingMissCallPatient)) {
+      console.log(`🌟 GMB FLOW DETECTED - Branch: ${detectedBranch || 'Unknown'}`);
+      const branchName = detectedBranch || 'Naroda';
+      const branchInfo = getGMBExecutiveByBranch(branchName);
       
-      // Track lead
+      // Track lead in google_leads collection
       await googleLeadsCollection.insertOne({
-        phoneNumber: senderNumber, branch: detectedBranch, executiveNumber: branchInfo.executiveNumber,
-        executiveName: branchInfo.executiveName, status: 'clicked', clickedAt: new Date(),
-        clickedAtIST: getISTTime(), message: messageText.substring(0, 200), source: 'google_my_business'
+        phoneNumber: senderNumber,
+        branch: branchName,
+        executiveNumber: branchInfo.executiveNumber,
+        executiveName: branchInfo.executiveName,
+        status: 'clicked',
+        clickedAt: new Date(),
+        clickedAtIST: getISTTime(),
+        message: messageText.substring(0, 200),
+        source: 'google_my_business'
       });
       
-      // Create patient
-      let patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'gmb' });
+      // Create or update patient with source='gmb'
+      let patient = existingGMBPatient;
       if (!patient) {
-        await patientsCollection.insertOne({
-          patientName: 'Google Lead', patientPhone: senderNumber, branch: detectedBranch,
-          testType: null, testDetails: null, patientMessages: [{ text: messageText, timestamp: new Date() }],
-          sourceType: 'Google My Business', executiveNumber: branchInfo.executiveNumber,
-          executiveName: branchInfo.executiveName, status: 'pending', currentStage: STAGES.AWAITING_NAME,
-          createdAt: new Date(), updatedAt: new Date(), source: 'gmb', gmbBranch: detectedBranch
+        const result = await patientsCollection.insertOne({
+          patientName: 'Google Lead',
+          patientPhone: senderNumber,
+          branch: branchName,
+          testType: null,
+          testDetails: null,
+          patientMessages: [{ text: messageText, timestamp: new Date() }],
+          sourceType: 'Google My Business',
+          executiveNumber: branchInfo.executiveNumber,
+          executiveName: branchInfo.executiveName,
+          status: 'pending',
+          currentStage: STAGES.AWAITING_NAME,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          source: 'gmb',
+          gmbBranch: branchName
         });
+        patient = { _id: result.insertedId };
+        console.log(`✅ New GMB patient created for ${branchName}`);
+      } else {
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { 
+            $set: { branch: branchName, executiveNumber: branchInfo.executiveNumber, executiveName: branchInfo.executiveName, updatedAt: new Date() },
+            $push: { patientMessages: { text: messageText, timestamp: new Date() } }
+          }
+        );
+        // Re-fetch updated patient
+        patient = await patientsCollection.findOne({ _id: patient._id });
       }
       
       // Send welcome template
-      await sendCustomerWelcome(senderNumber, detectedBranch);
-      console.log(`✅ Welcome template sent to ${senderNumber}`);
+      await sendCustomerWelcome(senderNumber, branchName);
+      console.log(`✅ Welcome template sent to ${senderNumber} for ${branchName}`);
+      
       await markMessageProcessed(msgId);
       return res.sendStatus(200);
     }
     
     // ============================================
-    // MISS CALL FLOW - Patient replies (name, test type, test details)
+    // ✅ STEP 2: GET PATIENT WITH CORRECT SOURCE
     // ============================================
-    let patient = await patientsCollection.findOne({ patientPhone: senderNumber });
+    let patient = await patientsCollection.findOne({ 
+      patientPhone: senderNumber,
+      $or: [
+        { source: 'misscall' },
+        { source: { $exists: false } }
+      ]
+    });
     
+    // If still no patient, check if this is a reply to GMB
     if (!patient) {
-      patient = await patientsCollection.findOne({ patientPhone: senderNumber });
-      if (!patient) {
+      patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'gmb' });
+      if (patient) {
+        // This is a GMB reply - handle accordingly
+        console.log(`💬 GMB REPLY from ${senderNumber}`);
+        
+        // Update patient messages
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { $push: { patientMessages: { text: messageText, timestamp: new Date() } }, $set: { lastMessageAt: new Date() } }
+        );
+        
+        // Update Google Lead status
+        await googleLeadsCollection.updateOne(
+          { phoneNumber: senderNumber },
+          { $set: { status: 'patient_replied', patientRepliedAt: new Date(), patientReply: messageText } },
+          { upsert: true }
+        );
+        
+        // Process classification for GMB
+        const context = { currentStage: patient.currentStage };
+        const result = await classifyMessage(messageText, context);
+        
+        if (result.confidence >= 0.8) {
+          if (result.category === 'PATIENT_NAME') {
+            await patientsCollection.updateOne(
+              { _id: patient._id },
+              { $set: { patientName: result.value, currentStage: STAGES.AWAITING_TEST_TYPE } }
+            );
+            patient = await patientsCollection.findOne({ _id: patient._id });
+            console.log(`✅ GMB Name saved: ${result.value}`);
+          }
+          else if (result.category === 'TEST_TYPE') {
+            await patientsCollection.updateOne(
+              { _id: patient._id },
+              { $set: { testType: result.value, currentStage: STAGES.AWAITING_TEST_DETAILS } }
+            );
+            patient = await patientsCollection.findOne({ _id: patient._id });
+            console.log(`✅ GMB Test type saved: ${result.value}`);
+          }
+          else if (result.category === 'TEST_DETAILS') {
+            await patientsCollection.updateOne(
+              { _id: patient._id },
+              { $set: { testDetails: result.value, currentStage: STAGES.EXECUTIVE_NOTIFIED } }
+            );
+            patient = await patientsCollection.findOne({ _id: patient._id });
+            console.log(`✅ GMB Test details saved: ${result.value}`);
+            
+            // Get or create session
+            const session = await getOrCreateChatSession(patient);
+            const branchInfo = getGMBExecutiveByBranch(patient.branch);
+            
+            try {
+              await sendGMBLeadNotification(
+                branchInfo.executiveNumber,
+                branchInfo.executiveName,
+                patient.patientName || 'Google Lead',
+                senderNumber,
+                patient.branch || 'Main Branch',
+                result.value,
+                patient.testType || 'Not specified',
+                session.sessionToken
+              );
+              console.log(`✅ GMB Executive notification sent to ${branchInfo.executiveName}`);
+            } catch (notifError) {
+              console.error('❌ GMB Notification failed:', notifError.message);
+            }
+          }
+        }
+        
         await markMessageProcessed(msgId);
         return res.sendStatus(200);
       }
+      
+      // No patient found - create as misscall
+      if (!patient) {
+        const result = await patientsCollection.insertOne({
+          patientPhone: senderNumber,
+          patientName: 'Miss Call Patient',
+          patientMessages: [{ text: messageText, timestamp: new Date() }],
+          testType: null,
+          testDetails: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          currentStage: STAGES.AWAITING_BRANCH,
+          source: 'misscall'
+        });
+        patient = { _id: result.insertedId };
+        console.log(`✅ New misscall patient created for ${senderNumber}`);
+      }
     }
     
-    // Update patient messages
+    // ============================================
+    // ✅ STEP 3: UPDATE PATIENT MESSAGES
+    // ============================================
     await patientsCollection.updateOne(
       { _id: patient._id },
       { $push: { patientMessages: { text: messageText, timestamp: new Date() } }, $set: { lastMessageAt: new Date() } }
     );
     
-    // Classification
+    // Re-fetch updated patient
+    patient = await patientsCollection.findOne({ _id: patient._id });
+    
+    // ============================================
+    // ✅ STEP 4: CLASSIFICATION & EXECUTIVE NOTIFICATION
+    // ============================================
     const context = { currentStage: patient.currentStage };
     const result = await classifyMessage(messageText, context);
     
@@ -750,6 +863,7 @@ app.post('/wati-webhook', async (req, res) => {
           { _id: patient._id },
           { $set: { patientName: result.value, currentStage: STAGES.AWAITING_TEST_TYPE } }
         );
+        patient = await patientsCollection.findOne({ _id: patient._id });
         console.log(`✅ Name saved: ${result.value}`);
       }
       else if (result.category === 'TEST_TYPE') {
@@ -757,6 +871,7 @@ app.post('/wati-webhook', async (req, res) => {
           { _id: patient._id },
           { $set: { testType: result.value, currentStage: STAGES.AWAITING_TEST_DETAILS } }
         );
+        patient = await patientsCollection.findOne({ _id: patient._id });
         console.log(`✅ Test type saved: ${result.value}`);
       }
       else if (result.category === 'TEST_DETAILS') {
@@ -764,39 +879,47 @@ app.post('/wati-webhook', async (req, res) => {
           { _id: patient._id },
           { $set: { testDetails: result.value, currentStage: STAGES.EXECUTIVE_NOTIFIED } }
         );
+        patient = await patientsCollection.findOne({ _id: patient._id });
         console.log(`✅ Test details saved: ${result.value}`);
         
-        // Send notification to executive
-        const executiveNumber = patient.source === 'gmb' ? getGMBExecutive(patient.branch).executiveNumber : getMissCallExecutiveNumber(patient.branch);
-        const sessionToken = patient.chatSessionToken || crypto.randomBytes(16).toString('hex');
+        // Get or create session
+        const session = await getOrCreateChatSession(patient);
         
-        if (!patient.chatSessionToken) {
-          await patientsCollection.updateOne({ _id: patient._id }, { $set: { chatSessionToken: sessionToken } });
-        }
-        
+        // Send notification based on source
         if (patient.source === 'gmb') {
-          await sendGMBLeadNotification(
-            executiveNumber,
-            getGMBExecutive(patient.branch).executiveName,
-            patient.patientName || 'Google Lead',
-            senderNumber,
-            patient.branch || 'Main Branch',
-            result.value,
-            patient.testType || 'Not specified',
-            sessionToken
-          );
+          const branchInfo = getGMBExecutiveByBranch(patient.branch);
+          try {
+            await sendGMBLeadNotification(
+              branchInfo.executiveNumber,
+              branchInfo.executiveName,
+              patient.patientName || 'Google Lead',
+              senderNumber,
+              patient.branch || 'Main Branch',
+              result.value,
+              patient.testType || 'Not specified',
+              session.sessionToken
+            );
+            console.log(`✅ GMB Executive notification sent to ${branchInfo.executiveName}`);
+          } catch (notifError) {
+            console.error('❌ GMB Notification failed:', notifError.message);
+          }
         } else {
-          await sendLeadNotification(
-            executiveNumber,
-            patient.patientName || 'Patient',
-            senderNumber,
-            patient.branch || 'Main Branch',
-            result.value,
-            patient.testType || 'Not specified',
-            sessionToken
-          );
+          const executiveNumber = getMissCallExecutiveNumber(patient.branch);
+          try {
+            await sendLeadNotification(
+              executiveNumber,
+              patient.patientName || 'Patient',
+              senderNumber,
+              patient.branch || 'Main Branch',
+              result.value,
+              patient.testType || 'Not specified',
+              session.sessionToken
+            );
+            console.log(`✅ Miss Call Executive notification sent to ${executiveNumber}`);
+          } catch (notifError) {
+            console.error('❌ Miss Call Notification failed:', notifError.message);
+          }
         }
-        console.log(`✅ Executive notification sent`);
       }
     }
     
@@ -806,6 +929,47 @@ app.post('/wati-webhook', async (req, res) => {
   } catch (error) {
     console.error('❌ Webhook error:', error);
     res.sendStatus(200);
+  }
+});
+
+// ============================================
+// ✅ GMB WEBHOOK - Alternative endpoint
+// ============================================
+app.post('/gmb-webhook', async (req, res) => {
+  try {
+    console.log('\n📍 GMB WEBHOOK RECEIVED');
+    const { from, waId, whatsappNumber, text, body } = req.body;
+    const patientPhone = normalizeWhatsAppNumber(from || waId || whatsappNumber);
+    if (!patientPhone) return res.status(400).json({ error: 'No phone number' });
+    
+    const message = text || body || '';
+    const branchName = detectGMBBranch(message) || 'Naroda';
+    const branchInfo = getGMBExecutiveByBranch(branchName);
+    
+    console.log(`📍 Patient: ${patientPhone}, Branch: ${branchName}, Executive: ${branchInfo.executiveName}`);
+    
+    await googleLeadsCollection.insertOne({
+      phoneNumber: patientPhone, branch: branchName, executiveNumber: branchInfo.executiveNumber,
+      executiveName: branchInfo.executiveName, status: 'clicked', clickedAt: new Date(),
+      clickedAtIST: getISTTime(), message: message.substring(0, 200), source: 'google_my_business'
+    });
+    
+    let patient = await patientsCollection.findOne({ patientPhone, source: 'gmb' });
+    if (!patient) {
+      await patientsCollection.insertOne({
+        patientName: 'Google Lead', patientPhone, branch: branchName,
+        testType: null, testDetails: null, patientMessages: [{ text: message, timestamp: new Date() }],
+        sourceType: 'Google My Business', executiveNumber: branchInfo.executiveNumber,
+        executiveName: branchInfo.executiveName, status: 'pending', currentStage: STAGES.AWAITING_NAME,
+        createdAt: new Date(), updatedAt: new Date(), source: 'gmb', gmbBranch: branchName
+      });
+    }
+    
+    await sendCustomerWelcome(patientPhone, branchName);
+    res.json({ success: true, branch: branchName, executive: branchInfo.executiveName });
+  } catch (error) {
+    console.error('❌ GMB webhook error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -858,7 +1022,7 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 Unified UIC Support System (Miss Call + GMB)',
-    version: '12.0.0',
+    version: '14.0.0',
     endpoints: {
       tata_misscall: '/tata-misscall-whatsapp',
       wati_webhook: '/wati-webhook',
