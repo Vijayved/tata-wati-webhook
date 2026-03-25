@@ -8,7 +8,7 @@ const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
 
 // ============================================
-// ✅ FORCE PORT BINDING - MUST BE FIRST
+// ✅ FORCE PORT BINDING
 // ============================================
 const PORT = parseInt(process.env.PORT) || 10000;
 process.env.PORT = PORT;
@@ -16,13 +16,43 @@ process.env.PORT = PORT;
 console.log(`🚀 Starting server with PORT=${PORT}`);
 
 // ============================================
-// ✅ TIMEZONE SETUP - IST (Indian Standard Time)
+// ✅ TIMEZONE SETUP - IST
 // ============================================
 process.env.TZ = 'Asia/Kolkata';
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// ============================================
+// ✅ SECURITY - HMAC SECRET VALIDATION
+// ============================================
+const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
+
+// HMAC verification middleware
+function verifyHmacSignature(req, res, next) {
+  const signature = req.headers['x-signature'] || req.headers['x-wati-signature'];
+  if (!signature) {
+    console.warn('⚠️ No signature header present');
+    return next();
+  }
+  
+  const expected = crypto
+    .createHmac('sha256', HMAC_SECRET)
+    .update(JSON.stringify(req.body))
+    .digest('hex');
+  
+  if (signature !== expected) {
+    console.error('❌ Invalid HMAC signature');
+    return res.status(403).json({ error: 'Invalid signature' });
+  }
+  
+  next();
+}
+
+// Apply HMAC verification to webhook endpoints
+app.use('/wati-webhook', verifyHmacSignature);
+app.use('/gmb-webhook', verifyHmacSignature);
 
 // ============================================
 // ✅ IST TIME HELPER FUNCTIONS
@@ -64,7 +94,6 @@ const WATI_BASE_URL = process.env.WATI_BASE_URL;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
-const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
 const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
 const DEDUPE_WINDOW_MS = 5000;
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
@@ -92,7 +121,6 @@ const WATI_NUMBER = '919725504245';
 // ✅ EXECUTIVE NUMBERS - CORRECT MAPPING
 // ============================================
 
-// GMB Executive Numbers (4 executives)
 const GMB_EXECUTIVES = {
   'Aditi': '8488931212',
   'Khyati': '7490029085',
@@ -101,7 +129,6 @@ const GMB_EXECUTIVES = {
   'Manager': '7698011233'
 };
 
-// Miss Call Executive Numbers (Original Tata Tele numbers)
 const MISS_CALL_EXECUTIVES = {
   'Naroda Team': (process.env.NARODA_EXECUTIVE || '919106959092').toString().trim(),
   'Usmanpura Team': (process.env.USMANPURA_EXECUTIVE || '917490029085').toString().trim(),
@@ -143,7 +170,7 @@ const GMB_BRANCHES = {
 };
 
 // ============================================
-// ✅ MISS CALL BRANCH CONFIGURATION
+// ✅ HELPER FUNCTIONS
 // ============================================
 function normalizeIndianNumber(number) {
   if (!number) return '';
@@ -152,10 +179,13 @@ function normalizeIndianNumber(number) {
   if (digits.length === 10) return '91' + digits;
   if (digits.length === 11 && digits.startsWith('0')) return '91' + digits.slice(1);
   if (digits.length === 12) {
-    if (digits.startsWith('91')) return digits;
+    if (digits.startsWith('91')) return digits.slice(0, 12);
     return '91' + digits.slice(-10);
   }
-  if (digits.length > 12) return digits.slice(-12);
+  if (digits.length > 12) {
+    if (digits.startsWith('91')) return digits.slice(0, 12);
+    return digits.slice(-12);
+  }
   return '';
 }
 
@@ -177,6 +207,7 @@ function getCallerNumberFromPayload(body) {
          '';
 }
 
+// Miss Call Branch Configuration
 const MISS_CALL_BRANCHES = {
   [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: { name: 'Naroda', executive: MISS_CALL_EXECUTIVES['Naroda Team'] },
   [normalizeIndianNumber('917969690922')]: { name: 'Naroda', executive: MISS_CALL_EXECUTIVES['Naroda Team'] },
@@ -214,9 +245,7 @@ function getMissCallExecutiveNumber(branchName) {
   return MISS_CALL_EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
 }
 
-// ============================================
-// ✅ GMB BRANCH DETECTION (STRONG)
-// ============================================
+// GMB Functions
 function detectGMBBranch(message) {
   const msgLower = (message || '').toLowerCase();
   const branches = ['naroda', 'ahmedabad', 'gandhinagar', 'sabarmati', 'anand', 'usmanpura', 'satellite', 'nadiad', 'jamnagar', 'bhavnagar', 'bapunagar', 'juhapura', 'surat', 'changodar', 'bareja', 'vadaj', 'maninagar', 'rajkot', 'vadodara', 'morbi'];
@@ -229,15 +258,6 @@ function detectGMBBranch(message) {
   return null;
 }
 
-function isLikelyGMBMessage(message) {
-  const msgLower = (message || '').toLowerCase();
-  return detectGMBBranch(message) !== null ||
-         msgLower.includes('appointment') ||
-         msgLower.includes('book') ||
-         msgLower.includes('want to book') ||
-         msgLower.includes('booking');
-}
-
 function getGMBExecutiveByBranch(branchName) {
   if (!branchName || branchName === 'Unknown') {
     return { executiveNumber: GMB_EXECUTIVES.Manager, executiveName: 'Manager' };
@@ -247,6 +267,22 @@ function getGMBExecutiveByBranch(branchName) {
     return { executiveNumber: branch.executiveNumber, executiveName: branch.executiveName };
   }
   return { executiveNumber: GMB_EXECUTIVES.Manager, executiveName: 'Manager' };
+}
+
+// ============================================
+// ✅ RETRY LOGIC FOR WATI API
+// ============================================
+async function sendWithRetry(fn, retries = 2, delay = 1000) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (retries > 0) {
+      console.log(`⚠️ Retry attempt left: ${retries}, error: ${error.message}`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return sendWithRetry(fn, retries - 1, delay);
+    }
+    throw error;
+  }
 }
 
 // OpenAI
@@ -296,56 +332,26 @@ async function connectDB() {
     followupCollection = db.collection('followups');
     googleLeadsCollection = db.collection('google_leads');
     
-    // ============================================
-    // ✅ SAFE INDEX CREATION - Handle existing indexes
-    // ============================================
-    
-    // Drop problematic index if it exists (non-unique version)
-    try {
-      const existingIndexes = await patientsCollection.indexes();
-      const problematicIndex = existingIndexes.find(idx => idx.name === 'patientPhone_1_source_1');
-      if (problematicIndex && !problematicIndex.unique) {
-        console.log('⚠️ Dropping existing non-unique index...');
-        await patientsCollection.dropIndex('patientPhone_1_source_1');
-        console.log('✅ Dropped existing index');
-      }
-    } catch (err) {
-      console.log('⚠️ Index drop error (may not exist):', err.message);
-    }
-    
-    // Now create indexes safely
+    // Indexes
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
-    
-    // Create unique index with error handling
-    try {
-      await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
-    } catch (err) {
-      if (err.code !== 11000) console.error('Index error:', err.message);
-    }
-    
-    try {
-      await patientsCollection.createIndex({ patientPhone: 1, source: 1 }, { unique: true });
-    } catch (err) {
-      if (err.code !== 11000) console.error('Index error:', err.message);
-    }
-    
+    await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
+    await patientsCollection.createIndex({ patientPhone: 1, source: 1 }, { unique: true });
     await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
     await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
     await patientsCollection.createIndex({ missCallCount: -1 });
     await patientsCollection.createIndex({ executiveActionTaken: 1 });
     await patientsCollection.createIndex({ currentStage: 1 });
     
+    // ✅ Session unique index to prevent duplicate active sessions
     await chatSessionsCollection.createIndex({ sessionToken: 1 }, { unique: true });
-    await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
+    await chatSessionsCollection.createIndex(
+      { patientPhone: 1, status: 1 },
+      { unique: true, partialFilterExpression: { status: 'active' } }
+    );
+    
     await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
     await followupCollection.createIndex({ patientId: 1, type: 1, createdAt: -1 });
-    
-    // Google leads index with unique constraint
-    try {
-      await googleLeadsCollection.createIndex({ phoneNumber: 1 }, { unique: true });
-    } catch (err) {
-      if (err.code !== 11000) console.error('Index error:', err.message);
-    }
+    await googleLeadsCollection.createIndex({ phoneNumber: 1 }, { unique: true });
     await googleLeadsCollection.createIndex({ clickedAt: -1 });
     await googleLeadsCollection.createIndex({ branch: 1 });
     
@@ -380,8 +386,6 @@ const STAGES = {
 // ============================================
 // ✅ DATABASE FUNCTIONS
 // ============================================
-const recentMissCalls = new Map();
-
 async function isMessageProcessed(messageId) {
   if (!processedCollection) return false;
   return !!(await processedCollection.findOne({ messageId }));
@@ -434,59 +438,60 @@ async function createChatSession(executiveNumber, patientPhone, patientName) {
 }
 
 async function getOrCreateChatSession(patient) {
-  let session = await chatSessionsCollection.findOne({ 
-    patientPhone: patient.patientPhone,
-    status: 'active'
-  });
-  if (!session) {
-    const executiveNumber = patient.source === 'gmb' 
-      ? getGMBExecutiveByBranch(patient.branch).executiveNumber 
-      : getMissCallExecutiveNumber(patient.branch);
-    const sessionToken = await createChatSession(executiveNumber, patient.patientPhone, patient.patientName);
-    await patientsCollection.updateOne({ _id: patient._id }, { $set: { chatSessionToken: sessionToken } });
-    session = await chatSessionsCollection.findOne({ sessionToken });
+  try {
+    let session = await chatSessionsCollection.findOne({ 
+      patientPhone: patient.patientPhone,
+      status: 'active'
+    });
+    if (!session) {
+      const executiveNumber = patient.source === 'gmb' 
+        ? getGMBExecutiveByBranch(patient.branch).executiveNumber 
+        : getMissCallExecutiveNumber(patient.branch);
+      const sessionToken = await createChatSession(executiveNumber, patient.patientPhone, patient.patientName);
+      await patientsCollection.updateOne({ _id: patient._id }, { $set: { chatSessionToken: sessionToken } });
+      session = await chatSessionsCollection.findOne({ sessionToken });
+    }
+    return session;
+  } catch (error) {
+    console.error('Session creation error:', error.message);
+    return { sessionToken: crypto.randomBytes(16).toString('hex') };
   }
-  return session;
 }
 
 // ============================================
-// ✅ WATI TEMPLATE SENDER
+// ✅ WATI TEMPLATE SENDER (WITH RETRY)
 // ============================================
 async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
   console.log(`📤 Sending template ${templateName} to ${whatsappNumber}`);
   const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
   const payload = { template_name: templateName, broadcast_name: `msg_${Date.now()}`, parameters: parameters || [] };
-  try {
+  
+  return await sendWithRetry(async () => {
     const response = await axios.post(url, payload, {
       headers: { Authorization: `${WATI_TOKEN}`, 'Content-Type': 'application/json' },
       timeout: 15000
     });
     console.log(`✅ Template ${templateName} sent successfully`);
     return response.data;
-  } catch (error) {
-    console.error(`❌ Template ${templateName} send FAILED:`, error.message);
-    throw error;
-  }
+  });
 }
 
 // ============================================
-// ✅ SEND SESSION MESSAGE
+// ✅ SEND SESSION MESSAGE (WITH RETRY)
 // ============================================
 async function sendWhatsAppMessageToPatient(executiveNumber, patientPhone, message) {
   console.log(`📤 Sending message from executive to patient ${patientPhone}`);
   const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${patientPhone}`;
   const payload = { messageText: message };
-  try {
+  
+  return await sendWithRetry(async () => {
     const response = await axios.post(url, payload, {
       headers: { 'Authorization': WATI_TOKEN, 'Content-Type': 'application/json' },
       timeout: 15000
     });
     console.log(`✅ Message sent successfully`);
     return response.data;
-  } catch (error) {
-    console.error(`❌ Failed to send message:`, error.message);
-    throw error;
-  }
+  });
 }
 
 // ============================================
@@ -552,7 +557,7 @@ How can I help you?`;
 }
 
 // ============================================
-// ✅ BOT CLASSIFICATION (IMPROVED)
+// ✅ BOT CLASSIFICATION (WITH TEST TYPE EXTRACTION)
 // ============================================
 async function classifyMessage(messageText, patientContext = {}) {
   const upperMsg = messageText.toUpperCase();
@@ -580,10 +585,18 @@ async function classifyMessage(messageText, patientContext = {}) {
   const bodyParts = ['KNEE', 'SPINE', 'ABDOMEN', 'CHEST', 'BRAIN', 'HEAD', 'NECK', 'PELVIS', 'HIP', 'SHOULDER', 'WRIST', 'ANKLE'];
   
   let hasTestKeyword = false, hasBodyPart = false;
-  for (const kw of testKeywords) if (upperMsg.includes(kw)) { hasTestKeyword = true; break; }
+  let detectedTestType = null;
+  
+  for (const kw of testKeywords) {
+    if (upperMsg.includes(kw)) {
+      hasTestKeyword = true;
+      detectedTestType = kw;
+      break;
+    }
+  }
   for (const bp of bodyParts) if (upperMsg.includes(bp)) { hasBodyPart = true; break; }
   
-  // Improved name detection - avoid medical terms
+  // Improved name detection
   const nameRegex = /^[A-Za-z\s]{2,30}$/;
   const isMedicalTerm = lowerMsg.includes('scan') || lowerMsg.includes('test') || lowerMsg.includes('report');
   
@@ -592,48 +605,35 @@ async function classifyMessage(messageText, patientContext = {}) {
   }
   
   if (hasTestKeyword && hasBodyPart) {
-    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.98, reason: 'Test + body part' };
+    return { 
+      category: 'TEST_DETAILS', 
+      value: messageText, 
+      extractedType: detectedTestType,
+      confidence: 0.98, 
+      reason: 'Test + body part' 
+    };
   }
   if (hasTestKeyword && wordCount > 1) {
-    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.85, reason: 'Test keyword with details' };
+    return { 
+      category: 'TEST_DETAILS', 
+      value: messageText, 
+      extractedType: detectedTestType,
+      confidence: 0.85, 
+      reason: 'Test keyword with details' 
+    };
   }
   if (hasTestKeyword && wordCount === 1) {
-    return { category: 'TEST_TYPE', value: messageText, confidence: 0.99, reason: 'Single word test type' };
+    return { 
+      category: 'TEST_TYPE', 
+      value: messageText, 
+      extractedType: detectedTestType,
+      confidence: 0.99, 
+      reason: 'Single word test type' 
+    };
   }
   
   return { category: 'IGNORE', value: messageText, confidence: 0.5, reason: 'Default ignore' };
 }
-
-// ============================================
-// ✅ SECURITY MIDDLEWARE - HMAC VERIFICATION (Optional)
-// ============================================
-function verifyWatiSignature(req, res, next) {
-  // Skip if no secret configured
-  if (!process.env.WATI_SIGNATURE_SECRET) {
-    return next();
-  }
-  
-  const signature = req.headers['x-wati-signature'];
-  if (!signature) {
-    return res.status(401).json({ error: 'Missing signature' });
-  }
-  
-  const expected = crypto
-    .createHmac('sha256', process.env.WATI_SIGNATURE_SECRET)
-    .update(JSON.stringify(req.body))
-    .digest('hex');
-  
-  if (signature !== expected) {
-    console.error('❌ Invalid WATI signature');
-    return res.status(403).json({ error: 'Invalid signature' });
-  }
-  
-  next();
-}
-
-// Apply security middleware (optional - uncomment to enable)
-// app.use('/wati-webhook', verifyWatiSignature);
-// app.use('/gmb-webhook', verifyWatiSignature);
 
 // ============================================
 // ✅ TATA TELE WEBHOOK (Miss Call Only)
@@ -694,7 +694,8 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
           updatedAt: new Date(),
           currentStage: STAGES.AWAITING_BRANCH,
           stageHistory: [{ stage: STAGES.AWAITING_BRANCH, timestamp: new Date() }],
-          source: 'misscall'
+          source: 'misscall',
+          welcomeSent: false
         });
       }
     } catch (error) {
@@ -718,7 +719,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ UNIFIED WATI WEBHOOK - Smart Source Detection
+// ✅ UNIFIED WATI WEBHOOK - COMPLETE WITH ALL FIXES
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -745,279 +746,212 @@ app.post('/wati-webhook', async (req, res) => {
     console.log(`📝 Message: "${text}" from ${senderNumber}`);
     
     // ============================================
-    // ✅ STEP 1: SMART SOURCE DETECTION
+    // ✅ ATOMIC PATIENT CREATION WITH welcomeSent FLAG
     // ============================================
     const detectedBranch = detectGMBBranch(messageText);
-    const isGMBInitial = isLikelyGMBMessage(messageText);
+    const gmbIntent = /book|appointment|scan|test|mri|ct|xray/i.test(messageText);
+    const isGMBInitial = gmbIntent && (detectedBranch !== null || messageText.toLowerCase().includes('hi i want to book'));
     
-    // Check if patient already exists with source
-    let existingGMBPatient = await patientsCollection.findOne({ 
-      patientPhone: senderNumber, 
-      source: 'gmb' 
-    });
-    let existingMissCallPatient = await patientsCollection.findOne({ 
-      patientPhone: senderNumber, 
-      source: 'misscall' 
-    });
+    let patient = await patientsCollection.findOne({ patientPhone: senderNumber });
     
-    // GMB Initial Message Flow
-    if ((isGMBInitial && !existingMissCallPatient) || (existingGMBPatient && !existingMissCallPatient)) {
-      console.log(`🌟 GMB FLOW DETECTED - Branch: ${detectedBranch || 'Unknown'}`);
+    if (!patient && isGMBInitial) {
       const branchName = detectedBranch || 'Unknown';
       const branchInfo = getGMBExecutiveByBranch(branchName);
       
-      // Track lead with UPSERT to prevent duplicates
-      await googleLeadsCollection.updateOne(
-        { phoneNumber: senderNumber },
-        {
-          $set: {
-            branch: branchName,
-            executiveNumber: branchInfo.executiveNumber,
-            executiveName: branchInfo.executiveName,
-            status: 'clicked',
-            updatedAt: new Date(),
-            message: messageText.substring(0, 200)
+      try {
+        const result = await patientsCollection.findOneAndUpdate(
+          { patientPhone: senderNumber },
+          {
+            $setOnInsert: {
+              patientName: 'Google Lead',
+              patientPhone: senderNumber,
+              branch: branchName,
+              testType: null,
+              testDetails: null,
+              patientMessages: [{ text: messageText, timestamp: new Date() }],
+              sourceType: 'Google My Business',
+              executiveNumber: branchInfo.executiveNumber,
+              executiveName: branchInfo.executiveName,
+              status: 'pending',
+              currentStage: STAGES.AWAITING_NAME,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              source: 'gmb',
+              gmbBranch: branchName,
+              welcomeSent: false
+            }
           },
-          $setOnInsert: {
-            clickedAt: new Date(),
-            clickedAtIST: getISTTime(),
-            source: 'google_my_business'
-          }
-        },
-        { upsert: true }
-      );
-      console.log(`✅ GMB Lead tracked for ${branchName}`);
-      
-      // Create or update patient with source='gmb'
-      let patient = existingGMBPatient;
-      if (!patient) {
-        try {
-          const result = await patientsCollection.insertOne({
-            patientName: 'Google Lead',
-            patientPhone: senderNumber,
-            branch: branchName,
-            testType: null,
-            testDetails: null,
-            patientMessages: [{ text: messageText, timestamp: new Date() }],
-            sourceType: 'Google My Business',
-            executiveNumber: branchInfo.executiveNumber,
-            executiveName: branchInfo.executiveName,
-            status: 'pending',
-            currentStage: STAGES.AWAITING_NAME,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            source: 'gmb',
-            gmbBranch: branchName
-          });
-          patient = { _id: result.insertedId };
-          console.log(`✅ New GMB patient created for ${branchName}`);
-        } catch (error) {
-          if (error.code === 11000) {
-            patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'gmb' });
-            console.log(`⚠️ Duplicate GMB patient, using existing`);
-          } else {
-            throw error;
-          }
-        }
-      } else {
-        await patientsCollection.updateOne(
-          { _id: patient._id },
-          { 
-            $set: { branch: branchName, executiveNumber: branchInfo.executiveNumber, executiveName: branchInfo.executiveName, updatedAt: new Date() },
-            $push: { patientMessages: { text: messageText, timestamp: new Date() } }
-          }
+          { upsert: true, returnDocument: 'after' }
         );
-        patient = await patientsCollection.findOne({ _id: patient._id });
-      }
-      
-      // Send welcome template
-      await sendCustomerWelcome(senderNumber, branchName);
-      console.log(`✅ Welcome template sent to ${senderNumber} for ${branchName}`);
-      
-      await markMessageProcessed(msgId);
-      return res.sendStatus(200);
-    }
-    
-    // ============================================
-    // ✅ STEP 2: GET PATIENT WITH CORRECT SOURCE
-    // ============================================
-    let patient = await patientsCollection.findOne({ 
-      patientPhone: senderNumber,
-      $or: [
-        { source: 'misscall' },
-        { source: { $exists: false } }
-      ]
-    });
-    
-    // If still no patient, check if this is a reply to GMB
-    if (!patient) {
-      patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'gmb' });
-      if (patient) {
-        // This is a GMB reply - handle accordingly
-        console.log(`💬 GMB REPLY from ${senderNumber}`);
         
-        // Update with dedupe - avoid duplicate messages
-        const lastMsg = patient.patientMessages?.slice(-1)[0]?.text;
+        patient = result.value;
         
-        if (lastMsg !== messageText) {
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            { $push: { patientMessages: { text: messageText, timestamp: new Date() } }, $set: { lastMessageAt: new Date() } }
-          );
-        }
-        
-        // Update Google Lead status
+        // Track lead
         await googleLeadsCollection.updateOne(
           { phoneNumber: senderNumber },
-          { $set: { status: 'patient_replied', patientRepliedAt: new Date(), patientReply: messageText } },
+          {
+            $set: {
+              branch: branchName,
+              executiveNumber: branchInfo.executiveNumber,
+              executiveName: branchInfo.executiveName,
+              status: 'clicked',
+              updatedAt: new Date(),
+              message: messageText.substring(0, 200)
+            },
+            $setOnInsert: {
+              clickedAt: new Date(),
+              clickedAtIST: getISTTime(),
+              source: 'google_my_business'
+            }
+          },
           { upsert: true }
         );
         
-        // Re-fetch patient
-        patient = await patientsCollection.findOne({ _id: patient._id });
+        console.log(`✅ New GMB patient created for ${branchName}`);
         
-        // Process classification for GMB
-        const context = { currentStage: patient.currentStage };
-        const result = await classifyMessage(messageText, context);
-        
-        if (result.confidence >= 0.8) {
-          if (result.category === 'PATIENT_NAME') {
-            await patientsCollection.updateOne(
-              { _id: patient._id },
-              { $set: { patientName: result.value, currentStage: STAGES.AWAITING_TEST_TYPE } }
-            );
-            patient = await patientsCollection.findOne({ _id: patient._id });
-            console.log(`✅ GMB Name saved: ${result.value}`);
-          }
-          else if (result.category === 'TEST_TYPE') {
-            await patientsCollection.updateOne(
-              { _id: patient._id },
-              { $set: { testType: result.value, currentStage: STAGES.AWAITING_TEST_DETAILS } }
-            );
-            patient = await patientsCollection.findOne({ _id: patient._id });
-            console.log(`✅ GMB Test type saved: ${result.value}`);
-          }
-          else if (result.category === 'TEST_DETAILS') {
-            await patientsCollection.updateOne(
-              { _id: patient._id },
-              { $set: { testDetails: result.value, currentStage: STAGES.EXECUTIVE_NOTIFIED } }
-            );
-            patient = await patientsCollection.findOne({ _id: patient._id });
-            console.log(`✅ GMB Test details saved: ${result.value}`);
-            
-            // Get or create session
-            const session = await getOrCreateChatSession(patient);
-            const branchInfo = getGMBExecutiveByBranch(patient.branch);
-            
-            try {
-              await sendGMBLeadNotification(
-                branchInfo.executiveNumber,
-                branchInfo.executiveName,
-                patient.patientName || 'Google Lead',
-                senderNumber,
-                patient.branch || 'Main Branch',
-                result.value,
-                patient.testType || 'Not specified',
-                session.sessionToken
-              );
-              console.log(`✅ GMB Executive notification sent to ${branchInfo.executiveName}`);
-            } catch (notifError) {
-              console.error('❌ GMB Notification failed:', notifError.message);
-            }
-          }
+        // ✅ Send welcome template ONLY if not already sent
+        if (!patient.welcomeSent) {
+          await sendCustomerWelcome(senderNumber, branchName);
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            { $set: { welcomeSent: true } }
+          );
+          console.log(`✅ Welcome template sent to ${senderNumber}`);
         }
         
         await markMessageProcessed(msgId);
         return res.sendStatus(200);
+      } catch (error) {
+        if (error.code === 11000) {
+          patient = await patientsCollection.findOne({ patientPhone: senderNumber });
+          console.log(`⚠️ Race condition - patient already exists`);
+        } else {
+          throw error;
+        }
       }
-      
-      // No patient found - create as misscall
-      if (!patient) {
-        try {
-          const result = await patientsCollection.insertOne({
-            patientPhone: senderNumber,
-            patientName: 'Miss Call Patient',
-            patientMessages: [{ text: messageText, timestamp: new Date() }],
-            testType: null,
-            testDetails: null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            currentStage: STAGES.AWAITING_BRANCH,
-            source: 'misscall'
-          });
-          patient = { _id: result.insertedId };
-          console.log(`✅ New misscall patient created for ${senderNumber}`);
-        } catch (error) {
-          if (error.code === 11000) {
-            patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'misscall' });
-          } else {
-            throw error;
-          }
+    }
+    
+    // If still no patient, create as misscall
+    if (!patient) {
+      try {
+        const result = await patientsCollection.findOneAndUpdate(
+          { patientPhone: senderNumber },
+          {
+            $setOnInsert: {
+              patientPhone: senderNumber,
+              patientName: 'Miss Call Patient',
+              patientMessages: [{ text: messageText, timestamp: new Date() }],
+              testType: null,
+              testDetails: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              currentStage: STAGES.AWAITING_BRANCH,
+              source: 'misscall',
+              welcomeSent: false
+            }
+          },
+          { upsert: true, returnDocument: 'after' }
+        );
+        patient = result.value;
+        console.log(`✅ New misscall patient created for ${senderNumber}`);
+      } catch (error) {
+        if (error.code === 11000) {
+          patient = await patientsCollection.findOne({ patientPhone: senderNumber });
+        } else {
+          throw error;
         }
       }
     }
     
     // ============================================
-    // ✅ STEP 3: UPDATE PATIENT MESSAGES (WITH DEDUPE)
+    // ✅ BETTER DEDUPLICATION WITH TIME WINDOW
     // ============================================
-    const lastMsg = patient.patientMessages?.slice(-1)[0]?.text;
+    const lastMsg = patient.patientMessages?.slice(-1)[0]?.text || '';
+    const normalizedCurrentMsg = messageText.trim().toLowerCase();
+    const normalizedLastMsg = lastMsg.trim().toLowerCase();
+    const lastMessageTime = patient.lastMessageAt ? new Date(patient.lastMessageAt).getTime() : 0;
+    const now = Date.now();
+    const timeDiff = now - lastMessageTime;
     
-    if (lastMsg !== messageText) {
+    if (normalizedCurrentMsg !== normalizedLastMsg || timeDiff > 10000) {
       await patientsCollection.updateOne(
         { _id: patient._id },
-        { $push: { patientMessages: { text: messageText, timestamp: new Date() } }, $set: { lastMessageAt: new Date() } }
+        { 
+          $push: { 
+            patientMessages: {
+              $each: [{ text: messageText, timestamp: new Date() }],
+              $slice: -50  // ✅ Keep only last 50 messages
+            }
+          }, 
+          $set: { lastMessageAt: new Date() } 
+        }
       );
     }
     
-    // Re-fetch updated patient
-    patient = await patientsCollection.findOne({ _id: patient._id });
-    
     // ============================================
-    // ✅ STEP 4: CLASSIFICATION & EXECUTIVE NOTIFICATION
+    // ✅ CLASSIFICATION WITH TEST TYPE EXTRACTION
     // ============================================
     const context = { currentStage: patient.currentStage };
     const result = await classifyMessage(messageText, context);
     
     if (result.confidence >= 0.8) {
+      const updateFields = {};
+      
       if (result.category === 'PATIENT_NAME') {
-        await patientsCollection.updateOne(
-          { _id: patient._id },
-          { $set: { patientName: result.value, currentStage: STAGES.AWAITING_TEST_TYPE } }
-        );
-        patient = await patientsCollection.findOne({ _id: patient._id });
+        updateFields.patientName = result.value;
+        updateFields.currentStage = STAGES.AWAITING_TEST_TYPE;
         console.log(`✅ Name saved: ${result.value}`);
       }
       else if (result.category === 'TEST_TYPE') {
-        await patientsCollection.updateOne(
-          { _id: patient._id },
-          { $set: { testType: result.value, currentStage: STAGES.AWAITING_TEST_DETAILS } }
-        );
-        patient = await patientsCollection.findOne({ _id: patient._id });
+        updateFields.testType = result.value;
+        updateFields.currentStage = STAGES.AWAITING_TEST_DETAILS;
         console.log(`✅ Test type saved: ${result.value}`);
       }
       else if (result.category === 'TEST_DETAILS') {
-        await patientsCollection.updateOne(
-          { _id: patient._id },
-          { $set: { testDetails: result.value, currentStage: STAGES.EXECUTIVE_NOTIFIED } }
-        );
-        patient = await patientsCollection.findOne({ _id: patient._id });
+        updateFields.testDetails = result.value;
+        updateFields.currentStage = STAGES.EXECUTIVE_NOTIFIED;
         console.log(`✅ Test details saved: ${result.value}`);
         
-        // Get or create session
-        const session = await getOrCreateChatSession(patient);
+        // ✅ Auto-fill testType if missing
+        if (!patient.testType && result.extractedType) {
+          updateFields.testType = result.extractedType;
+          console.log(`✅ Auto-filled test type: ${result.extractedType}`);
+        }
+      }
+      
+      if (Object.keys(updateFields).length > 0) {
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          { $set: updateFields }
+        );
+      }
+      
+      // Send executive notification if stage changed to EXECUTIVE_NOTIFIED
+      if (result.category === 'TEST_DETAILS' || (patient.currentStage === STAGES.AWAITING_TEST_DETAILS && result.category === 'TEST_DETAILS')) {
+        // Re-fetch patient to get updated data
+        const updatedPatient = await patientsCollection.findOne({ _id: patient._id });
+        
+        // Get session with error handling
+        let session;
+        try {
+          session = await getOrCreateChatSession(updatedPatient);
+        } catch (e) {
+          console.error('Session error, using fallback token:', e.message);
+          session = { sessionToken: crypto.randomBytes(16).toString('hex') };
+        }
         
         // Send notification based on source
-        if (patient.source === 'gmb') {
-          const branchInfo = getGMBExecutiveByBranch(patient.branch);
+        if (updatedPatient.source === 'gmb') {
+          const branchInfo = getGMBExecutiveByBranch(updatedPatient.branch);
           try {
             await sendGMBLeadNotification(
               branchInfo.executiveNumber,
               branchInfo.executiveName,
-              patient.patientName || 'Google Lead',
+              updatedPatient.patientName || 'Google Lead',
               senderNumber,
-              patient.branch || 'Main Branch',
-              result.value,
-              patient.testType || 'Not specified',
+              updatedPatient.branch || 'Main Branch',
+              updatedPatient.testDetails || 'Not specified',
+              updatedPatient.testType || 'Not specified',
               session.sessionToken
             );
             console.log(`✅ GMB Executive notification sent to ${branchInfo.executiveName}`);
@@ -1025,15 +959,15 @@ app.post('/wati-webhook', async (req, res) => {
             console.error('❌ GMB Notification failed:', notifError.message);
           }
         } else {
-          const executiveNumber = getMissCallExecutiveNumber(patient.branch);
+          const executiveNumber = getMissCallExecutiveNumber(updatedPatient.branch);
           try {
             await sendLeadNotification(
               executiveNumber,
-              patient.patientName || 'Patient',
+              updatedPatient.patientName || 'Patient',
               senderNumber,
-              patient.branch || 'Main Branch',
-              result.value,
-              patient.testType || 'Not specified',
+              updatedPatient.branch || 'Main Branch',
+              updatedPatient.testDetails || 'Not specified',
+              updatedPatient.testType || 'Not specified',
               session.sessionToken
             );
             console.log(`✅ Miss Call Executive notification sent to ${executiveNumber}`);
@@ -1090,35 +1024,30 @@ app.post('/gmb-webhook', async (req, res) => {
     );
     
     try {
-      let patient = await patientsCollection.findOne({ patientPhone, source: 'gmb' });
-      if (!patient) {
-        const result = await patientsCollection.insertOne({
-          patientName: 'Google Lead',
-          patientPhone,
-          branch: branchName,
-          testType: null,
-          testDetails: null,
-          patientMessages: [{ text: message, timestamp: new Date() }],
-          sourceType: 'Google My Business',
-          executiveNumber: branchInfo.executiveNumber,
-          executiveName: branchInfo.executiveName,
-          status: 'pending',
-          currentStage: STAGES.AWAITING_NAME,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          source: 'gmb',
-          gmbBranch: branchName
-        });
-        patient = { _id: result.insertedId };
-      } else {
-        await patientsCollection.updateOne(
-          { _id: patient._id },
-          {
-            $set: { branch: branchName, executiveNumber: branchInfo.executiveNumber, executiveName: branchInfo.executiveName, updatedAt: new Date() },
-            $push: { patientMessages: { text: message, timestamp: new Date() } }
+      const result = await patientsCollection.findOneAndUpdate(
+        { patientPhone, source: 'gmb' },
+        {
+          $setOnInsert: {
+            patientName: 'Google Lead',
+            patientPhone,
+            branch: branchName,
+            testType: null,
+            testDetails: null,
+            patientMessages: [{ text: message, timestamp: new Date() }],
+            sourceType: 'Google My Business',
+            executiveNumber: branchInfo.executiveNumber,
+            executiveName: branchInfo.executiveName,
+            status: 'pending',
+            currentStage: STAGES.AWAITING_NAME,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            source: 'gmb',
+            gmbBranch: branchName,
+            welcomeSent: false
           }
-        );
-      }
+        },
+        { upsert: true, returnDocument: 'after' }
+      );
     } catch (error) {
       if (error.code !== 11000) throw error;
     }
@@ -1162,7 +1091,7 @@ app.get('/gmb-links', async (req, res) => {
 });
 
 // ============================================
-// ✅ DEBUG ENDPOINT - CHECK SERVER STATUS
+// ✅ DEBUG ENDPOINT
 // ============================================
 app.get('/debug', (req, res) => {
   res.json({
@@ -1195,7 +1124,7 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 Unified UIC Support System (Miss Call + GMB)',
-    version: '15.0.0',
+    version: '18.0.0',
     port: PORT,
     endpoints: {
       tata_misscall: '/tata-misscall-whatsapp',
@@ -1236,7 +1165,7 @@ function escapeHtml(text) {
 }
 
 // ============================================
-// ✅ START SERVER - ROBUST PORT BINDING
+// ✅ START SERVER
 // ============================================
 async function startServer() {
   console.log('🔄 Initializing server...');
@@ -1265,39 +1194,24 @@ async function startServer() {
       console.log('='.repeat(60) + '\n');
     });
     
-    // Handle server errors
     server.on('error', (err) => {
       console.error('❌ Server error:', err);
       if (err.code === 'EADDRINUSE') {
         console.error(`❌ Port ${PORT} is already in use!`);
-        console.error('💡 Try changing PORT in environment variables');
       }
       process.exit(1);
     });
     
-    // Handle uncaught exceptions
     process.on('uncaughtException', (err) => {
       console.error('❌ Uncaught Exception:', err);
-      console.error(err.stack);
-      // Don't exit, keep server running
     });
     
-    // Handle unhandled rejections
-    process.on('unhandledRejection', (reason, promise) => {
+    process.on('unhandledRejection', (reason) => {
       console.error('❌ Unhandled Rejection:', reason);
     });
     
-    // Graceful shutdown
     process.on('SIGTERM', () => {
-      console.log('🛑 SIGTERM received, closing gracefully...');
-      server.close(() => {
-        console.log('✅ Server closed');
-        process.exit(0);
-      });
-    });
-    
-    process.on('SIGINT', () => {
-      console.log('🛑 SIGINT received, closing gracefully...');
+      console.log('🛑 SIGTERM received, closing...');
       server.close(() => {
         console.log('✅ Server closed');
         process.exit(0);
@@ -1306,10 +1220,8 @@ async function startServer() {
     
   } catch (error) {
     console.error('❌ Startup failed:', error.message);
-    console.error(error.stack);
     process.exit(1);
   }
 }
 
-// Start the server
 startServer();
