@@ -8,6 +8,14 @@ const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
 
 // ============================================
+// ✅ FORCE PORT BINDING - MUST BE FIRST
+// ============================================
+const PORT = parseInt(process.env.PORT) || 10000;
+process.env.PORT = PORT;
+
+console.log(`🚀 Starting server with PORT=${PORT}`);
+
+// ============================================
 // ✅ TIMEZONE SETUP - IST (Indian Standard Time)
 // ============================================
 process.env.TZ = 'Asia/Kolkata';
@@ -51,7 +59,6 @@ function isNightTime() {
 // ============================================
 // CONFIGURATION
 // ============================================
-const PORT = process.env.PORT || 10000;
 const WATI_TOKEN = process.env.WATI_TOKEN;
 const WATI_BASE_URL = process.env.WATI_BASE_URL;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -292,7 +299,7 @@ async function connectDB() {
     // Indexes with UNIQUE constraints for race condition prevention
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
     await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
-    await patientsCollection.createIndex({ patientPhone: 1, source: 1 }, { unique: true }); // ✅ PREVENTS DUPLICATE PATIENTS
+    await patientsCollection.createIndex({ patientPhone: 1, source: 1 }, { unique: true });
     await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
     await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
     await patientsCollection.createIndex({ missCallCount: -1 });
@@ -302,7 +309,7 @@ async function connectDB() {
     await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
     await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
     await followupCollection.createIndex({ patientId: 1, type: 1, createdAt: -1 });
-    await googleLeadsCollection.createIndex({ phoneNumber: 1 }, { unique: true }); // ✅ PREVENTS DUPLICATE GMB LEADS
+    await googleLeadsCollection.createIndex({ phoneNumber: 1 }, { unique: true });
     await googleLeadsCollection.createIndex({ clickedAt: -1 });
     await googleLeadsCollection.createIndex({ branch: 1 });
     
@@ -333,37 +340,6 @@ const STAGES = {
   NOT_CONVERTED: 'not_converted',
   ESCALATED: 'escalated'
 };
-
-// ============================================
-// ✅ SECURITY MIDDLEWARE - HMAC VERIFICATION
-// ============================================
-function verifyWatiSignature(req, res, next) {
-  // Skip in development or if no signature header
-  if (!process.env.WATI_SIGNATURE_SECRET) {
-    return next();
-  }
-  
-  const signature = req.headers['x-wati-signature'];
-  if (!signature) {
-    return res.status(401).json({ error: 'Missing signature' });
-  }
-  
-  const expected = crypto
-    .createHmac('sha256', process.env.WATI_SIGNATURE_SECRET)
-    .update(JSON.stringify(req.body))
-    .digest('hex');
-  
-  if (signature !== expected) {
-    console.error('❌ Invalid WATI signature');
-    return res.status(403).json({ error: 'Invalid signature' });
-  }
-  
-  next();
-}
-
-// Apply security middleware to webhook endpoints
-app.use('/wati-webhook', verifyWatiSignature);
-app.use('/gmb-webhook', verifyWatiSignature);
 
 // ============================================
 // ✅ DATABASE FUNCTIONS
@@ -593,6 +569,37 @@ async function classifyMessage(messageText, patientContext = {}) {
 }
 
 // ============================================
+// ✅ SECURITY MIDDLEWARE - HMAC VERIFICATION (Optional)
+// ============================================
+function verifyWatiSignature(req, res, next) {
+  // Skip if no secret configured
+  if (!process.env.WATI_SIGNATURE_SECRET) {
+    return next();
+  }
+  
+  const signature = req.headers['x-wati-signature'];
+  if (!signature) {
+    return res.status(401).json({ error: 'Missing signature' });
+  }
+  
+  const expected = crypto
+    .createHmac('sha256', process.env.WATI_SIGNATURE_SECRET)
+    .update(JSON.stringify(req.body))
+    .digest('hex');
+  
+  if (signature !== expected) {
+    console.error('❌ Invalid WATI signature');
+    return res.status(403).json({ error: 'Invalid signature' });
+  }
+  
+  next();
+}
+
+// Apply security middleware (optional - uncomment to enable)
+// app.use('/wati-webhook', verifyWatiSignature);
+// app.use('/gmb-webhook', verifyWatiSignature);
+
+// ============================================
 // ✅ TATA TELE WEBHOOK (Miss Call Only)
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
@@ -675,7 +682,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ UNIFIED WATI WEBHOOK - Smart Source Detection (FINAL)
+// ✅ UNIFIED WATI WEBHOOK - Smart Source Detection
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -723,7 +730,7 @@ app.post('/wati-webhook', async (req, res) => {
       const branchName = detectedBranch || 'Unknown';
       const branchInfo = getGMBExecutiveByBranch(branchName);
       
-      // ✅ Track lead with UPSERT to prevent duplicates
+      // Track lead with UPSERT to prevent duplicates
       await googleLeadsCollection.updateOne(
         { phoneNumber: senderNumber },
         {
@@ -813,7 +820,7 @@ app.post('/wati-webhook', async (req, res) => {
         // This is a GMB reply - handle accordingly
         console.log(`💬 GMB REPLY from ${senderNumber}`);
         
-        // ✅ Update with dedupe - avoid duplicate messages
+        // Update with dedupe - avoid duplicate messages
         const lastMsg = patient.patientMessages?.slice(-1)[0]?.text;
         
         if (lastMsg !== messageText) {
@@ -1119,6 +1126,20 @@ app.get('/gmb-links', async (req, res) => {
 });
 
 // ============================================
+// ✅ DEBUG ENDPOINT - CHECK SERVER STATUS
+// ============================================
+app.get('/debug', (req, res) => {
+  res.json({
+    status: 'alive',
+    port: PORT,
+    time: getISTTime(),
+    uptime: process.uptime(),
+    mongodb: !!db,
+    env: process.env.NODE_ENV || 'production'
+  });
+});
+
+// ============================================
 // ✅ HEALTH CHECK
 // ============================================
 app.get('/health', async (req, res) => {
@@ -1127,6 +1148,7 @@ app.get('/health', async (req, res) => {
     uptime: process.uptime(),
     mongodb: 'connected',
     system: 'Unified Miss Call + GMB System',
+    port: PORT,
     time: getISTTime()
   });
 });
@@ -1138,11 +1160,13 @@ app.get('/', (req, res) => {
   res.json({
     message: '🚀 Unified UIC Support System (Miss Call + GMB)',
     version: '15.0.0',
+    port: PORT,
     endpoints: {
       tata_misscall: '/tata-misscall-whatsapp',
       wati_webhook: '/wati-webhook',
       gmb_webhook: '/gmb-webhook',
       gmb_links: '/gmb-links',
+      debug: '/debug',
       health: '/health',
       admin_dashboard: '/admin'
     }
@@ -1176,28 +1200,80 @@ function escapeHtml(text) {
 }
 
 // ============================================
-// ✅ START SERVER
+// ✅ START SERVER - ROBUST PORT BINDING
 // ============================================
 async function startServer() {
+  console.log('🔄 Initializing server...');
+  console.log(`📍 Configured PORT: ${PORT}`);
+  console.log(`📍 Node version: ${process.version}`);
+  
   try {
-    console.log('🔄 Starting Unified Server...');
+    console.log('📡 Connecting to MongoDB...');
     await connectDB();
+    console.log('✅ Database connected');
     
     const HOST = '0.0.0.0';
-    app.listen(PORT, HOST, () => {
+    console.log(`🔌 Binding to ${HOST}:${PORT}...`);
+    
+    const server = app.listen(PORT, HOST, () => {
       console.log('\n' + '='.repeat(60));
       console.log(`✅ UNIFIED SERVER RUNNING ON PORT ${PORT}`);
+      console.log(`📍 Host: ${HOST}`);
+      console.log(`📍 Time: ${getISTTime()}`);
       console.log(`📍 WATI Webhook: ${SELF_URL}/wati-webhook`);
       console.log(`📍 GMB Webhook: ${SELF_URL}/gmb-webhook`);
       console.log(`📍 Miss Call Webhook: ${SELF_URL}/tata-misscall-whatsapp`);
       console.log(`📍 GMB Links: ${SELF_URL}/gmb-links`);
       console.log(`📍 Admin Dashboard: ${SELF_URL}/admin`);
+      console.log(`📍 Debug: ${SELF_URL}/debug`);
       console.log('='.repeat(60) + '\n');
     });
+    
+    // Handle server errors
+    server.on('error', (err) => {
+      console.error('❌ Server error:', err);
+      if (err.code === 'EADDRINUSE') {
+        console.error(`❌ Port ${PORT} is already in use!`);
+        console.error('💡 Try changing PORT in environment variables');
+      }
+      process.exit(1);
+    });
+    
+    // Handle uncaught exceptions
+    process.on('uncaughtException', (err) => {
+      console.error('❌ Uncaught Exception:', err);
+      console.error(err.stack);
+      // Don't exit, keep server running
+    });
+    
+    // Handle unhandled rejections
+    process.on('unhandledRejection', (reason, promise) => {
+      console.error('❌ Unhandled Rejection:', reason);
+    });
+    
+    // Graceful shutdown
+    process.on('SIGTERM', () => {
+      console.log('🛑 SIGTERM received, closing gracefully...');
+      server.close(() => {
+        console.log('✅ Server closed');
+        process.exit(0);
+      });
+    });
+    
+    process.on('SIGINT', () => {
+      console.log('🛑 SIGINT received, closing gracefully...');
+      server.close(() => {
+        console.log('✅ Server closed');
+        process.exit(0);
+      });
+    });
+    
   } catch (error) {
-    console.error('❌ Failed to start:', error.message);
+    console.error('❌ Startup failed:', error.message);
+    console.error(error.stack);
     process.exit(1);
   }
 }
 
+// Start the server
 startServer();
