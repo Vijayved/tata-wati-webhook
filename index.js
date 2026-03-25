@@ -64,7 +64,7 @@ const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3
 const LEAD_TEMPLATE_NAME = 'lead_notification_v6';
 
 // GMB Template Names
-const GOOGLE_LEAD_TEMPLATE = 'google_lead_notification_v1';
+const GOOGLE_LEAD_TEMPLATE = 'google_lead_notification_v5';
 const GOOGLE_FOLLOWUP_NO_REPLY = 'google_followup_no_reply';
 const GOOGLE_FOLLOWUP_WAITING = 'google_followup_waiting';
 const GOOGLE_EXECUTIVE_REPORT = 'google_executive_report';
