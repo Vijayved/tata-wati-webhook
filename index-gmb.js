@@ -3,7 +3,6 @@ const express = require('express');
 const axios = require('axios');
 const { MongoClient } = require('mongodb');
 const crypto = require('crypto');
-const rateLimit = require('express-rate-limit');
 
 // ============================================
 // ✅ FORCE PORT BINDING
@@ -20,17 +19,52 @@ process.env.TZ = 'Asia/Kolkata';
 
 const app = express();
 
-app.use(express.json({ limit: '50mb', verify: (req, res, buf) => { req.rawBody = buf.toString(); } }));
-app.use(express.urlencoded({ extended: true, verify: (req, res, buf) => { req.rawBody = buf.toString(); } }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Rate limiting
-const webhookLimiter = rateLimit({ windowMs: 1000, max: 20 });
+// ============================================
+// ✅ SIMPLE RATE LIMITING
+// ============================================
+const rateLimitMap = new Map();
+
+function simpleRateLimit(req, res, next) {
+  const ip = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  const windowMs = 1000;
+  const max = 20;
+  
+  if (!rateLimitMap.has(ip)) {
+    rateLimitMap.set(ip, []);
+  }
+  
+  const timestamps = rateLimitMap.get(ip);
+  const recent = timestamps.filter(t => t > now - windowMs);
+  
+  if (recent.length >= max) {
+    return res.status(429).json({ error: 'Too many requests' });
+  }
+  
+  recent.push(now);
+  rateLimitMap.set(ip, recent);
+  next();
+}
+
+app.use('/gmb-webhook', simpleRateLimit);
+app.use('/wati-webhook', simpleRateLimit);
 
 // ============================================
 // ✅ IST TIME HELPER
 // ============================================
 function getISTTime(date = new Date()) {
-  return date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return date.toLocaleString('en-IN', { 
+    timeZone: 'Asia/Kolkata',
+    day: 'numeric',
+    month: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
 }
 
 // ============================================
@@ -44,7 +78,6 @@ const WATI_NUMBER = process.env.WATI_NUMBER || '919725504245';
 // Template Names
 const GOOGLE_LEAD_TEMPLATE = 'google_lead_notification_v5';
 const CUSTOMER_WELCOME_TEMPLATE = 'gmb_customer_welcome';
-const TEXT_MESSAGE_TEMPLATE = 'text_message';
 
 // Executive Numbers
 const GMB_EXECUTIVES = {
@@ -122,6 +155,7 @@ let googleLeadsCollection;
 let processedCollection;
 
 async function connectDB() {
+  console.log('🔄 Connecting to MongoDB...');
   const client = new MongoClient(MONGODB_URI);
   await client.connect();
   db = client.db('executive_system');
@@ -132,20 +166,35 @@ async function connectDB() {
   await googleLeadsCollection.createIndex({ phoneNumber: 1 }, { unique: true });
   await googleLeadsCollection.createIndex({ clickedAt: -1 });
   await patientsCollection.createIndex({ patientPhone: 1, source: 1 }, { unique: true });
+  await processedCollection.createIndex({ messageId: 1 }, { unique: true });
   
   console.log('✅ GMB Database connected');
+}
+
+async function isMessageProcessed(messageId) {
+  return !!(await processedCollection.findOne({ messageId }));
+}
+
+async function markMessageProcessed(messageId) {
+  await processedCollection.updateOne(
+    { messageId },
+    { $set: { messageId, processedAt: new Date() } },
+    { upsert: true }
+  );
 }
 
 // ============================================
 // ✅ WATI TEMPLATE SENDER
 // ============================================
 async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
+  console.log(`📤 Sending ${templateName} to ${whatsappNumber}`);
   const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
   const payload = { template_name: templateName, broadcast_name: `msg_${Date.now()}`, parameters };
   const response = await axios.post(url, payload, {
     headers: { Authorization: `${WATI_TOKEN}`, 'Content-Type': 'application/json' },
     timeout: 15000
   });
+  console.log(`✅ Template sent`);
   return response.data;
 }
 
@@ -222,7 +271,7 @@ async function classifyGMBMessage(messageText, patientContext = {}) {
 // ============================================
 // ✅ GMB WEBHOOK
 // ============================================
-app.post('/gmb-webhook', webhookLimiter, async (req, res) => {
+app.post('/gmb-webhook', async (req, res) => {
   try {
     console.log('\n📍 GMB WEBHOOK RECEIVED');
     
@@ -290,16 +339,20 @@ app.post('/gmb-webhook', webhookLimiter, async (req, res) => {
 // ============================================
 // ✅ WATI WEBHOOK (GMB Patient Replies)
 // ============================================
-app.post('/wati-webhook', webhookLimiter, async (req, res) => {
+app.post('/wati-webhook', async (req, res) => {
   try {
     console.log('\n📨 WATI WEBHOOK (GMB)');
     
     const msg = req.body;
     const msgId = msg.id || msg.messageId;
     if (!msgId) return res.sendStatus(200);
+    if (await isMessageProcessed(msgId)) return res.sendStatus(200);
     
     const senderNumber = msg.whatsappNumber || msg.from || msg.waId;
-    if (!senderNumber) return res.sendStatus(200);
+    if (!senderNumber) {
+      await markMessageProcessed(msgId);
+      return res.sendStatus(200);
+    }
     
     let messageText = '';
     if (msg.text) messageText = msg.text;
@@ -316,7 +369,7 @@ app.post('/wati-webhook', webhookLimiter, async (req, res) => {
     });
     
     if (!patient) {
-      // Not a GMB patient, ignore
+      await markMessageProcessed(msgId);
       return res.sendStatus(200);
     }
     
@@ -375,6 +428,7 @@ app.post('/wati-webhook', webhookLimiter, async (req, res) => {
       }
     }
     
+    await markMessageProcessed(msgId);
     res.sendStatus(200);
   } catch (error) {
     console.error('❌ GMB webhook error:', error);
@@ -421,6 +475,9 @@ app.get('/api/google-lead-stats', async (req, res) => {
 app.get('/health', (req, res) => res.json({ success: true, system: 'GMB System' }));
 app.get('/', (req, res) => res.json({ message: 'GMB System', version: '2.0' }));
 
+// ============================================
+// ✅ START SERVER
+// ============================================
 async function startServer() {
   await connectDB();
   app.listen(PORT, '0.0.0.0', () => console.log(`✅ GMB System running on port ${PORT}`));
