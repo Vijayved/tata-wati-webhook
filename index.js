@@ -6,7 +6,6 @@ const cron = require('node-cron');
 const OpenAI = require('openai');
 const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
-const rateLimit = require('express-rate-limit');
 
 // ============================================
 // ✅ FORCE PORT BINDING
@@ -34,12 +33,36 @@ app.use(express.urlencoded({ extended: true, limit: '50mb', verify: (req, res, b
   req.rawBody = buf.toString();
 } }));
 
-// Rate limiting
-const webhookLimiter = rateLimit({
-  windowMs: 1000,
-  max: 20,
-  message: { error: 'Too many requests' }
-});
+// ============================================
+// ✅ SIMPLE RATE LIMITING (No external package)
+// ============================================
+const rateLimitMap = new Map();
+
+function simpleRateLimit(req, res, next) {
+  const ip = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  const windowMs = 1000;
+  const max = 20;
+  
+  if (!rateLimitMap.has(ip)) {
+    rateLimitMap.set(ip, []);
+  }
+  
+  const timestamps = rateLimitMap.get(ip);
+  const recent = timestamps.filter(t => t > now - windowMs);
+  
+  if (recent.length >= max) {
+    return res.status(429).json({ error: 'Too many requests' });
+  }
+  
+  recent.push(now);
+  rateLimitMap.set(ip, recent);
+  next();
+}
+
+// Apply rate limiting to webhooks
+app.use('/wati-webhook', simpleRateLimit);
+app.use('/tata-misscall-whatsapp', simpleRateLimit);
 
 // ============================================
 // ✅ IST TIME HELPER
@@ -282,6 +305,23 @@ async function connectDB() {
 }
 
 // ============================================
+// ✅ DATABASE FUNCTIONS
+// ============================================
+async function isMessageProcessed(messageId) {
+  if (!processedCollection) return false;
+  return !!(await processedCollection.findOne({ messageId }));
+}
+
+async function markMessageProcessed(messageId) {
+  if (!processedCollection) return;
+  await processedCollection.updateOne(
+    { messageId },
+    { $set: { messageId, processedAt: new Date() } },
+    { upsert: true }
+  );
+}
+
+// ============================================
 // ✅ SESSION FUNCTIONS
 // ============================================
 async function getOrCreateChatSession(patient) {
@@ -457,7 +497,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 // ============================================
 // ✅ WATI WEBHOOK (Miss Call Only)
 // ============================================
-app.post('/wati-webhook', webhookLimiter, async (req, res) => {
+app.post('/wati-webhook', async (req, res) => {
   try {
     console.log('\n📨 WATI WEBHOOK');
     
@@ -628,10 +668,11 @@ app.use('/admin', (req, res, next) => {
   next();
 }, dashboardRouter);
 
-async function isMessageProcessed(id) { return !!(await processedCollection.findOne({ messageId: id })); }
-async function markMessageProcessed(id) { await processedCollection.updateOne({ messageId: id }, { $set: { messageId: id, processedAt: new Date() } }, { upsert: true }); }
 function escapeHtml(text) { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
+// ============================================
+// ✅ START SERVER
+// ============================================
 async function startServer() {
   await connectDB();
   app.listen(PORT, '0.0.0.0', () => console.log(`✅ Miss Call System running on port ${PORT}`));
