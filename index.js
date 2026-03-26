@@ -6,6 +6,7 @@ const cron = require('node-cron');
 const OpenAI = require('openai');
 const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 
 // ============================================
 // ✅ FORCE PORT BINDING
@@ -13,7 +14,7 @@ const crypto = require('crypto');
 const PORT = parseInt(process.env.PORT) || 10000;
 process.env.PORT = PORT;
 
-console.log(`🚀 Starting server with PORT=${PORT}`);
+console.log(`🚀 Starting Miss Call System on PORT=${PORT}`);
 
 // ============================================
 // ✅ TIMEZONE SETUP - IST
@@ -21,41 +22,27 @@ console.log(`🚀 Starting server with PORT=${PORT}`);
 process.env.TZ = 'Asia/Kolkata';
 
 const app = express();
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// ============================================
-// ✅ SECURITY - HMAC SECRET VALIDATION
-// ============================================
-const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
-
-// HMAC verification middleware
-function verifyHmacSignature(req, res, next) {
-  const signature = req.headers['x-signature'] || req.headers['x-wati-signature'];
-  if (!signature) {
-    console.warn('⚠️ No signature header present');
-    return next();
+// Raw body for HMAC
+app.use(express.json({
+  limit: '50mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
   }
-  
-  const expected = crypto
-    .createHmac('sha256', HMAC_SECRET)
-    .update(JSON.stringify(req.body))
-    .digest('hex');
-  
-  if (signature !== expected) {
-    console.error('❌ Invalid HMAC signature');
-    return res.status(403).json({ error: 'Invalid signature' });
-  }
-  
-  next();
-}
+}));
+app.use(express.urlencoded({ extended: true, limit: '50mb', verify: (req, res, buf) => {
+  req.rawBody = buf.toString();
+} }));
 
-// Apply HMAC verification to webhook endpoints
-app.use('/wati-webhook', verifyHmacSignature);
-app.use('/gmb-webhook', verifyHmacSignature);
+// Rate limiting
+const webhookLimiter = rateLimit({
+  windowMs: 1000,
+  max: 20,
+  message: { error: 'Too many requests' }
+});
 
 // ============================================
-// ✅ IST TIME HELPER FUNCTIONS
+// ✅ IST TIME HELPER
 // ============================================
 function getISTTime(date = new Date()) {
   return date.toLocaleString('en-IN', { 
@@ -81,9 +68,13 @@ function getISTDateTime(date = new Date()) {
 }
 
 function isNightTime() {
-  const now = new Date();
-  const hours = now.getHours();
-  return hours >= 20 || hours < 8;
+  const hourStr = new Date().toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    hour12: false
+  });
+  const hour = parseInt(hourStr.split(':')[0]);
+  return hour >= 20 || hour < 8;
 }
 
 // ============================================
@@ -94,42 +85,21 @@ const WATI_BASE_URL = process.env.WATI_BASE_URL;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
-const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '91';
-const DEDUPE_WINDOW_MS = 5000;
+const HMAC_SECRET = process.env.HMAC_SECRET || 'tata_wati_hmac_2026';
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = 'lead_notification_v6';
 
-// GMB Template Names
-const GOOGLE_LEAD_TEMPLATE = 'google_lead_notification_v5';
-const GOOGLE_FOLLOWUP_NO_REPLY = 'google_followup_no_reply';
-const GOOGLE_FOLLOWUP_WAITING = 'google_followup_waiting';
-const GOOGLE_EXECUTIVE_REPORT = 'google_executive_report';
-const GOOGLE_ESCALATION_MANAGER = 'google_escalation_manager';
-const TEXT_MESSAGE_TEMPLATE = 'text_message';
-const CUSTOMER_WELCOME_TEMPLATE = 'gmb_customer_welcome';
-
-// Miss Call Follow-up Templates
+// Follow-up Templates
 const FOLLOWUP_NO_REPLY_TEMPLATE = 'followup_no_reply';
 const FOLLOWUP_WAITING_TEMPLATE = 'following_waiting';
 const ESCALATION_MANAGER_TEMPLATE = 'escalation_manager';
 const EXECUTIVE_REPORT_TEMPLATE = 'executive_report';
-
-// WATI Number
-const WATI_NUMBER = '919725504245';
+const TEXT_MESSAGE_TEMPLATE = 'text_message';
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS - CORRECT MAPPING
+// ✅ EXECUTIVE NUMBERS
 // ============================================
-
-const GMB_EXECUTIVES = {
-  'Aditi': '8488931212',
-  'Khyati': '7490029085',
-  'Jay': '9274682553',
-  'Mital': '9558591212',
-  'Manager': '7698011233'
-};
-
-const MISS_CALL_EXECUTIVES = {
+const EXECUTIVES = {
   'Naroda Team': (process.env.NARODA_EXECUTIVE || '919106959092').toString().trim(),
   'Usmanpura Team': (process.env.USMANPURA_EXECUTIVE || '917490029085').toString().trim(),
   'Vadaj Team': (process.env.VADAJ_EXECUTIVE || '918488931212').toString().trim(),
@@ -143,31 +113,11 @@ const MISS_CALL_EXECUTIVES = {
   'Manager': (process.env.MANAGER_NUMBER || '917698011233').toString().trim()
 };
 
-// ============================================
-// ✅ GMB BRANCH TO EXECUTIVE MAPPING
-// ============================================
-const GMB_BRANCHES = {
-  'naroda': { name: 'Naroda', executiveNumber: GMB_EXECUTIVES.Aditi, executiveName: 'Aditi' },
-  'ahmedabad': { name: 'Ahmedabad', executiveNumber: GMB_EXECUTIVES.Aditi, executiveName: 'Aditi' },
-  'gandhinagar': { name: 'Gandhinagar', executiveNumber: GMB_EXECUTIVES.Aditi, executiveName: 'Aditi' },
-  'sabarmati': { name: 'Sabarmati', executiveNumber: GMB_EXECUTIVES.Aditi, executiveName: 'Aditi' },
-  'anand': { name: 'Anand', executiveNumber: GMB_EXECUTIVES.Aditi, executiveName: 'Aditi' },
-  'usmanpura': { name: 'Usmanpura', executiveNumber: GMB_EXECUTIVES.Khyati, executiveName: 'Khyati' },
-  'satellite': { name: 'Satellite', executiveNumber: GMB_EXECUTIVES.Khyati, executiveName: 'Khyati' },
-  'nadiad': { name: 'Nadiad', executiveNumber: GMB_EXECUTIVES.Khyati, executiveName: 'Khyati' },
-  'jamnagar': { name: 'Jamnagar', executiveNumber: GMB_EXECUTIVES.Khyati, executiveName: 'Khyati' },
-  'bhavnagar': { name: 'Bhavnagar', executiveNumber: GMB_EXECUTIVES.Khyati, executiveName: 'Khyati' },
-  'bapunagar': { name: 'Bapunagar', executiveNumber: GMB_EXECUTIVES.Jay, executiveName: 'Jay' },
-  'juhapura': { name: 'Juhapura', executiveNumber: GMB_EXECUTIVES.Jay, executiveName: 'Jay' },
-  'surat': { name: 'Surat', executiveNumber: GMB_EXECUTIVES.Jay, executiveName: 'Jay' },
-  'changodar': { name: 'Changodar', executiveNumber: GMB_EXECUTIVES.Jay, executiveName: 'Jay' },
-  'bareja': { name: 'Bareja', executiveNumber: GMB_EXECUTIVES.Jay, executiveName: 'Jay' },
-  'vadaj': { name: 'Vadaj', executiveNumber: GMB_EXECUTIVES.Mital, executiveName: 'Mital' },
-  'maninagar': { name: 'Maninagar', executiveNumber: GMB_EXECUTIVES.Mital, executiveName: 'Mital' },
-  'rajkot': { name: 'Rajkot', executiveNumber: GMB_EXECUTIVES.Mital, executiveName: 'Mital' },
-  'vadodara': { name: 'Vadodara', executiveNumber: GMB_EXECUTIVES.Mital, executiveName: 'Mital' },
-  'morbi': { name: 'Morbi', executiveNumber: GMB_EXECUTIVES.Mital, executiveName: 'Mital' }
-};
+function getExecutiveNumber(branchName) {
+  const formattedBranch = branchName.charAt(0).toUpperCase() + branchName.slice(1).toLowerCase();
+  const teamName = `${formattedBranch} Team`;
+  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
+}
 
 // ============================================
 // ✅ HELPER FUNCTIONS
@@ -207,77 +157,62 @@ function getCallerNumberFromPayload(body) {
          '';
 }
 
-// Miss Call Branch Configuration
-const MISS_CALL_BRANCHES = {
-  [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: { name: 'Naroda', executive: MISS_CALL_EXECUTIVES['Naroda Team'] },
-  [normalizeIndianNumber('917969690922')]: { name: 'Naroda', executive: MISS_CALL_EXECUTIVES['Naroda Team'] },
-  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: { name: 'Usmanpura', executive: MISS_CALL_EXECUTIVES['Usmanpura Team'] },
-  [normalizeIndianNumber('917969690952')]: { name: 'Usmanpura', executive: MISS_CALL_EXECUTIVES['Usmanpura Team'] },
-  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: { name: 'Vadaj', executive: MISS_CALL_EXECUTIVES['Vadaj Team'] },
-  [normalizeIndianNumber('917969690917')]: { name: 'Vadaj', executive: MISS_CALL_EXECUTIVES['Vadaj Team'] },
-  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: { name: 'Satellite', executive: MISS_CALL_EXECUTIVES['Satellite Team'] },
-  [normalizeIndianNumber('917969690902')]: { name: 'Satellite', executive: MISS_CALL_EXECUTIVES['Satellite Team'] },
-  [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: { name: 'Maninagar', executive: MISS_CALL_EXECUTIVES['Maninagar Team'] },
-  [normalizeIndianNumber('917969690904')]: { name: 'Maninagar', executive: MISS_CALL_EXECUTIVES['Maninagar Team'] },
-  [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: { name: 'Bapunagar', executive: MISS_CALL_EXECUTIVES['Bapunagar Team'] },
-  [normalizeIndianNumber('917969690906')]: { name: 'Bapunagar', executive: MISS_CALL_EXECUTIVES['Bapunagar Team'] },
-  [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: { name: 'Juhapura', executive: MISS_CALL_EXECUTIVES['Juhapura Team'] },
-  [normalizeIndianNumber('917969690909')]: { name: 'Juhapura', executive: MISS_CALL_EXECUTIVES['Juhapura Team'] },
-  [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: { name: 'Gandhinagar', executive: MISS_CALL_EXECUTIVES['Gandhinagar Team'] },
-  [normalizeIndianNumber('917969690910')]: { name: 'Gandhinagar', executive: MISS_CALL_EXECUTIVES['Gandhinagar Team'] },
-  [normalizeIndianNumber('917969690913')]: { name: 'Rajkot', executive: MISS_CALL_EXECUTIVES['Rajkot Team'] },
-  [normalizeIndianNumber('917969690919')]: { name: 'Rajkot', executive: MISS_CALL_EXECUTIVES['Rajkot Team'] },
-  [normalizeIndianNumber('917969690942')]: { name: 'Sabarmati', executive: MISS_CALL_EXECUTIVES['Sabarmati Team'] },
-  [normalizeIndianNumber('917969690905')]: { name: 'Sabarmati', executive: MISS_CALL_EXECUTIVES['Sabarmati Team'] }
+// ============================================
+// ✅ BRANCH CONFIGURATION (Miss Call)
+// ============================================
+const BRANCHES = {
+  [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: { name: 'Naroda', executive: EXECUTIVES['Naroda Team'] },
+  [normalizeIndianNumber('917969690922')]: { name: 'Naroda', executive: EXECUTIVES['Naroda Team'] },
+  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: { name: 'Usmanpura', executive: EXECUTIVES['Usmanpura Team'] },
+  [normalizeIndianNumber('917969690952')]: { name: 'Usmanpura', executive: EXECUTIVES['Usmanpura Team'] },
+  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: { name: 'Vadaj', executive: EXECUTIVES['Vadaj Team'] },
+  [normalizeIndianNumber('917969690917')]: { name: 'Vadaj', executive: EXECUTIVES['Vadaj Team'] },
+  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: { name: 'Satellite', executive: EXECUTIVES['Satellite Team'] },
+  [normalizeIndianNumber('917969690902')]: { name: 'Satellite', executive: EXECUTIVES['Satellite Team'] },
+  [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: { name: 'Maninagar', executive: EXECUTIVES['Maninagar Team'] },
+  [normalizeIndianNumber('917969690904')]: { name: 'Maninagar', executive: EXECUTIVES['Maninagar Team'] },
+  [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: { name: 'Bapunagar', executive: EXECUTIVES['Bapunagar Team'] },
+  [normalizeIndianNumber('917969690906')]: { name: 'Bapunagar', executive: EXECUTIVES['Bapunagar Team'] },
+  [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: { name: 'Juhapura', executive: EXECUTIVES['Juhapura Team'] },
+  [normalizeIndianNumber('917969690909')]: { name: 'Juhapura', executive: EXECUTIVES['Juhapura Team'] },
+  [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: { name: 'Gandhinagar', executive: EXECUTIVES['Gandhinagar Team'] },
+  [normalizeIndianNumber('917969690910')]: { name: 'Gandhinagar', executive: EXECUTIVES['Gandhinagar Team'] },
+  [normalizeIndianNumber('917969690913')]: { name: 'Rajkot', executive: EXECUTIVES['Rajkot Team'] },
+  [normalizeIndianNumber('917969690919')]: { name: 'Rajkot', executive: EXECUTIVES['Rajkot Team'] },
+  [normalizeIndianNumber('917969690942')]: { name: 'Sabarmati', executive: EXECUTIVES['Sabarmati Team'] },
+  [normalizeIndianNumber('917969690905')]: { name: 'Sabarmati', executive: EXECUTIVES['Sabarmati Team'] }
 };
 
-function getMissCallBranchByCalledNumber(calledNumber) {
+function getBranchByCalledNumber(calledNumber) {
   const normalized = normalizeIndianNumber(calledNumber);
-  return MISS_CALL_BRANCHES[normalized] || { name: 'Main Branch', executive: process.env.DEFAULT_EXECUTIVE || '917880261858' };
-}
-
-function getMissCallExecutiveNumber(branchName) {
-  if (!branchName || branchName === 'Main Branch') {
-    return process.env.DEFAULT_EXECUTIVE || '917880261858';
-  }
-  const formattedBranch = branchName.charAt(0).toUpperCase() + branchName.slice(1).toLowerCase();
-  const teamName = `${formattedBranch} Team`;
-  return MISS_CALL_EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
-}
-
-// GMB Functions
-function detectGMBBranch(message) {
-  const msgLower = (message || '').toLowerCase();
-  const branches = ['naroda', 'ahmedabad', 'gandhinagar', 'sabarmati', 'anand', 'usmanpura', 'satellite', 'nadiad', 'jamnagar', 'bhavnagar', 'bapunagar', 'juhapura', 'surat', 'changodar', 'bareja', 'vadaj', 'maninagar', 'rajkot', 'vadodara', 'morbi'];
-  
-  for (const branch of branches) {
-    if (msgLower.includes(branch)) {
-      return branch.charAt(0).toUpperCase() + branch.slice(1);
-    }
-  }
-  return null;
-}
-
-function getGMBExecutiveByBranch(branchName) {
-  if (!branchName || branchName === 'Unknown') {
-    return { executiveNumber: GMB_EXECUTIVES.Manager, executiveName: 'Manager' };
-  }
-  const branch = GMB_BRANCHES[branchName?.toLowerCase()];
-  if (branch) {
-    return { executiveNumber: branch.executiveNumber, executiveName: branch.executiveName };
-  }
-  return { executiveNumber: GMB_EXECUTIVES.Manager, executiveName: 'Manager' };
+  return BRANCHES[normalized] || { name: 'Main Branch', executive: process.env.DEFAULT_EXECUTIVE || '917880261858' };
 }
 
 // ============================================
-// ✅ RETRY LOGIC FOR WATI API
+// ✅ STAGE TRACKING CONSTANTS
+// ============================================
+const STAGES = {
+  AWAITING_BRANCH: 'awaiting_branch',
+  AWAITING_NAME: 'awaiting_name',
+  AWAITING_TEST_TYPE: 'awaiting_test_type',
+  AWAITING_TEST_DETAILS: 'awaiting_test_details',
+  EXECUTIVE_NOTIFIED: 'executive_notified',
+  CONNECTED: 'connected',
+  CONVERTED: 'converted',
+  WAITING: 'waiting',
+  NOT_CONVERTED: 'not_converted',
+  ESCALATED: 'escalated'
+};
+
+// ============================================
+// ✅ RETRY LOGIC
 // ============================================
 async function sendWithRetry(fn, retries = 2, delay = 1000) {
   try {
     return await fn();
   } catch (error) {
     if (retries > 0) {
-      console.log(`⚠️ Retry attempt left: ${retries}, error: ${error.message}`);
+      console.log(`⚠️ Retry attempt left: ${retries}`);
       await new Promise(resolve => setTimeout(resolve, delay));
       return sendWithRetry(fn, retries - 1, delay);
     }
@@ -297,7 +232,7 @@ if (SELF_URL) {
 }
 
 if (!WATI_TOKEN || !WATI_BASE_URL) {
-  console.error('❌ Missing WATI configuration in .env');
+  console.error('❌ Missing WATI configuration');
   process.exit(1);
 }
 
@@ -307,232 +242,92 @@ if (!WATI_TOKEN || !WATI_BASE_URL) {
 let db;
 let processedCollection;
 let patientsCollection;
-let executivesCollection;
 let missCallsCollection;
 let chatSessionsCollection;
 let chatMessagesCollection;
 let followupCollection;
-let googleLeadsCollection;
 
 async function connectDB() {
   try {
     console.log('🔄 Connecting to MongoDB...');
-    if (!MONGODB_URI) throw new Error('MONGODB_URI is not defined');
+    if (!MONGODB_URI) throw new Error('MONGODB_URI not defined');
     const client = new MongoClient(MONGODB_URI);
     await client.connect();
-    console.log('✅ MongoDB connected successfully');
+    console.log('✅ MongoDB connected');
     
     db = client.db('executive_system');
     processedCollection = db.collection('processed_messages');
     patientsCollection = db.collection('patients');
-    executivesCollection = db.collection('executives');
     missCallsCollection = db.collection('miss_calls');
     chatSessionsCollection = db.collection('chat_sessions');
     chatMessagesCollection = db.collection('chat_messages');
     followupCollection = db.collection('followups');
-    googleLeadsCollection = db.collection('google_leads');
     
     // Indexes
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
-    await patientsCollection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
     await patientsCollection.createIndex({ patientPhone: 1, source: 1 }, { unique: true });
     await patientsCollection.createIndex({ patientPhone: 1, status: 1 });
-    await patientsCollection.createIndex({ patientPhone: 1, createdAt: -1 });
-    await patientsCollection.createIndex({ missCallCount: -1 });
-    await patientsCollection.createIndex({ executiveActionTaken: 1 });
-    await patientsCollection.createIndex({ currentStage: 1 });
-    
-    // ✅ Session unique index to prevent duplicate active sessions
+    await patientsCollection.createIndex({ createdAt: -1 });
     await chatSessionsCollection.createIndex({ sessionToken: 1 }, { unique: true });
-    await chatSessionsCollection.createIndex(
-      { patientPhone: 1, status: 1 },
-      { unique: true, partialFilterExpression: { status: 'active' } }
-    );
-    
+    await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
     await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
-    await followupCollection.createIndex({ patientId: 1, type: 1, createdAt: -1 });
-    await googleLeadsCollection.createIndex({ phoneNumber: 1 }, { unique: true });
-    await googleLeadsCollection.createIndex({ clickedAt: -1 });
-    await googleLeadsCollection.createIndex({ branch: 1 });
+    await followupCollection.createIndex({ patientId: 1, type: 1 });
     
     console.log('✅ Indexes created');
     return true;
   } catch (error) {
-    console.error('❌ MongoDB connection error:', error.message);
+    console.error('❌ DB error:', error.message);
     throw error;
-  }
-}
-
-// ============================================
-// ✅ STAGE TRACKING CONSTANTS
-// ============================================
-const STAGES = {
-  MISS_CALL_RECEIVED: 'miss_call_received',
-  AWAITING_BRANCH: 'awaiting_branch',
-  BRANCH_SELECTED: 'branch_selected',
-  AWAITING_NAME: 'awaiting_name',
-  AWAITING_TEST_TYPE: 'awaiting_test_type',
-  AWAITING_TEST_DETAILS: 'awaiting_test_details',
-  OCR_PROCESSING: 'ocr_processing',
-  OCR_COMPLETED: 'ocr_completed',
-  EXECUTIVE_NOTIFIED: 'executive_notified',
-  CONNECTED: 'connected',
-  CONVERTED: 'converted',
-  WAITING: 'waiting',
-  NOT_CONVERTED: 'not_converted',
-  ESCALATED: 'escalated'
-};
-
-// ============================================
-// ✅ DATABASE FUNCTIONS
-// ============================================
-async function isMessageProcessed(messageId) {
-  if (!processedCollection) return false;
-  return !!(await processedCollection.findOne({ messageId }));
-}
-
-async function markMessageProcessed(messageId) {
-  if (!processedCollection) return;
-  await processedCollection.updateOne(
-    { messageId },
-    { $set: { messageId, processedAt: new Date() } },
-    { upsert: true }
-  );
-}
-
-async function updatePatientStage(patientId, stage) {
-  try {
-    const patient = await patientsCollection.findOne({ _id: patientId });
-    if (patient) {
-      await patientsCollection.updateOne(
-        { _id: patientId },
-        { 
-          $set: { currentStage: stage, lastStageUpdate: new Date() },
-          $push: { stageHistory: { stage: stage, timestamp: new Date() } }
-        }
-      );
-    }
-    return true;
-  } catch (error) {
-    console.error('❌ Stage update failed:', error.message);
-    return false;
   }
 }
 
 // ============================================
 // ✅ SESSION FUNCTIONS
 // ============================================
-async function createChatSession(executiveNumber, patientPhone, patientName) {
-  const sessionToken = crypto.randomBytes(16).toString('hex');
-  await chatSessionsCollection.insertOne({
-    sessionToken,
-    executiveNumber: executiveNumber,
-    patientPhone: patientPhone,
-    patientName: patientName || 'Patient',
-    createdAt: new Date(),
-    lastActivity: new Date(),
-    status: 'active',
-    expiresAt: null
-  });
-  return sessionToken;
-}
-
 async function getOrCreateChatSession(patient) {
   try {
-    let session = await chatSessionsCollection.findOne({ 
-      patientPhone: patient.patientPhone,
-      status: 'active'
-    });
-    if (!session) {
-      const executiveNumber = patient.source === 'gmb' 
-        ? getGMBExecutiveByBranch(patient.branch).executiveNumber 
-        : getMissCallExecutiveNumber(patient.branch);
-      const sessionToken = await createChatSession(executiveNumber, patient.patientPhone, patient.patientName);
-      await patientsCollection.updateOne({ _id: patient._id }, { $set: { chatSessionToken: sessionToken } });
-      session = await chatSessionsCollection.findOne({ sessionToken });
-    }
-    return session;
+    const sessionToken = crypto.randomBytes(16).toString('hex');
+    const result = await chatSessionsCollection.findOneAndUpdate(
+      { patientPhone: patient.patientPhone, status: 'active' },
+      {
+        $setOnInsert: {
+          sessionToken,
+          executiveNumber: getExecutiveNumber(patient.branch),
+          patientPhone: patient.patientPhone,
+          patientName: patient.patientName,
+          createdAt: new Date(),
+          lastActivity: new Date(),
+          status: 'active'
+        }
+      },
+      { upsert: true, returnDocument: 'after' }
+    );
+    return result.value || { sessionToken };
   } catch (error) {
-    console.error('Session creation error:', error.message);
+    console.error('Session error:', error.message);
     return { sessionToken: crypto.randomBytes(16).toString('hex') };
   }
 }
 
 // ============================================
-// ✅ WATI TEMPLATE SENDER (WITH RETRY)
+// ✅ WATI TEMPLATE SENDER
 // ============================================
 async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
-  console.log(`📤 Sending template ${templateName} to ${whatsappNumber}`);
+  console.log(`📤 Sending ${templateName} to ${whatsappNumber}`);
   const url = `${WATI_BASE_URL}/api/v1/sendTemplateMessage?whatsappNumber=${encodeURIComponent(whatsappNumber)}`;
-  const payload = { template_name: templateName, broadcast_name: `msg_${Date.now()}`, parameters: parameters || [] };
+  const payload = { template_name: templateName, broadcast_name: `msg_${Date.now()}`, parameters };
   
   return await sendWithRetry(async () => {
     const response = await axios.post(url, payload, {
       headers: { Authorization: `${WATI_TOKEN}`, 'Content-Type': 'application/json' },
       timeout: 15000
     });
-    console.log(`✅ Template ${templateName} sent successfully`);
+    console.log(`✅ Template sent`);
     return response.data;
   });
 }
 
-// ============================================
-// ✅ SEND SESSION MESSAGE (WITH RETRY)
-// ============================================
-async function sendWhatsAppMessageToPatient(executiveNumber, patientPhone, message) {
-  console.log(`📤 Sending message from executive to patient ${patientPhone}`);
-  const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${patientPhone}`;
-  const payload = { messageText: message };
-  
-  return await sendWithRetry(async () => {
-    const response = await axios.post(url, payload, {
-      headers: { 'Authorization': WATI_TOKEN, 'Content-Type': 'application/json' },
-      timeout: 15000
-    });
-    console.log(`✅ Message sent successfully`);
-    return response.data;
-  });
-}
-
-// ============================================
-// ✅ GMB FUNCTIONS
-// ============================================
-async function sendGMBLeadNotification(executiveNumber, executiveName, patientName, patientPhone, branch, testDetails, testType, chatToken) {
-  console.log(`📤 Sending GMB LEAD notification to executive ${executiveName} (${executiveNumber})`);
-  const istTime = getISTTime();
-  const welcomeText = `Hi ${patientName}, I am from UIC Support Team (Google Lead).
-
-Your Details:
-Name: ${patientName}
-Test: ${testType} - ${testDetails}
-Branch: ${branch}
-Time: ${istTime}
-Source: Google My Business
-
-How can I help you?`;
-  const whatsappLink = `https://wa.me/${patientPhone}?text=${encodeURIComponent(welcomeText)}`;
-  const parameters = [
-    { name: "1", value: patientName || "Google Lead" },
-    { name: "2", value: patientPhone },
-    { name: "3", value: branch },
-    { name: "4", value: testType || "Not specified" },
-    { name: "5", value: testDetails || "Not specified" },
-    { name: "6", value: istTime },
-    { name: "7", value: whatsappLink }
-  ];
-  return await sendWatiTemplateMessage(executiveNumber, GOOGLE_LEAD_TEMPLATE, parameters);
-}
-
-async function sendCustomerWelcome(whatsappNumber, branchName) {
-  console.log(`📤 Sending customer welcome template to ${whatsappNumber} for ${branchName}`);
-  return await sendWatiTemplateMessage(whatsappNumber, CUSTOMER_WELCOME_TEMPLATE, [{ name: "1", value: branchName }]);
-}
-
-// ============================================
-// ✅ MISS CALL FUNCTIONS
-// ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
-  console.log(`📤 Sending lead notification to executive ${executiveNumber}`);
   const istTime = getISTDateTime();
   const welcomeText = `Hi ${patientName}, I am from UIC Support Team.
 
@@ -540,16 +335,16 @@ Your Details:
 Name: ${patientName}
 Test: ${testType} - ${testDetails}
 Branch: ${branch}
-Miss Call Time: ${istTime}
+Time: ${istTime}
 
 How can I help you?`;
   const whatsappLink = `https://wa.me/${patientPhone}?text=${encodeURIComponent(welcomeText)}`;
   const parameters = [
-    { name: "1", value: patientName || "Miss Call Patient" },
+    { name: "1", value: patientName },
     { name: "2", value: patientPhone },
     { name: "3", value: branch },
-    { name: "4", value: testDetails || "Not specified" },
-    { name: "5", value: testType || "Miss Call" },
+    { name: "4", value: testDetails },
+    { name: "5", value: testType },
     { name: "6", value: istTime },
     { name: "7", value: whatsappLink }
   ];
@@ -557,173 +352,114 @@ How can I help you?`;
 }
 
 // ============================================
-// ✅ BOT CLASSIFICATION (WITH TEST TYPE EXTRACTION)
+// ✅ BOT CLASSIFICATION
 // ============================================
 async function classifyMessage(messageText, patientContext = {}) {
   const upperMsg = messageText.toUpperCase();
   const wordCount = messageText.split(' ').length;
-  const lowerMsg = messageText.toLowerCase();
+  const cleanedMsg = messageText.replace(/[^a-zA-Z\s]/g, '').trim();
   
   const commands = ['UPLOAD PRESCRIPTION', 'MANUAL ENTRY', 'CHANGE BRANCH', 'CONNECT TO PATIENT', 'CONVERT DONE', 'WAITING', 'NOT CONVERT'];
   for (const cmd of commands) {
-    if (upperMsg.includes(cmd)) {
-      return { category: 'IGNORE', value: messageText, confidence: 1.0, reason: 'Command detected' };
-    }
+    if (upperMsg.includes(cmd)) return { category: 'IGNORE', confidence: 1 };
   }
   
   if (patientContext.currentStage === STAGES.AWAITING_NAME) {
-    return { category: 'PATIENT_NAME', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_name' };
+    return { category: 'PATIENT_NAME', value: cleanedMsg, confidence: 0.95 };
   }
   if (patientContext.currentStage === STAGES.AWAITING_TEST_TYPE) {
-    return { category: 'TEST_TYPE', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_test_type' };
+    return { category: 'TEST_TYPE', value: messageText, confidence: 0.95 };
   }
   if (patientContext.currentStage === STAGES.AWAITING_TEST_DETAILS) {
-    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.95, reason: 'Stage: awaiting_test_details' };
+    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.95 };
   }
   
-  const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY'];
-  const bodyParts = ['KNEE', 'SPINE', 'ABDOMEN', 'CHEST', 'BRAIN', 'HEAD', 'NECK', 'PELVIS', 'HIP', 'SHOULDER', 'WRIST', 'ANKLE'];
+  const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND'];
+  let hasTestKeyword = false;
+  for (const kw of testKeywords) if (upperMsg.includes(kw)) { hasTestKeyword = true; break; }
   
-  let hasTestKeyword = false, hasBodyPart = false;
-  let detectedTestType = null;
-  
-  for (const kw of testKeywords) {
-    if (upperMsg.includes(kw)) {
-      hasTestKeyword = true;
-      detectedTestType = kw;
-      break;
-    }
-  }
-  for (const bp of bodyParts) if (upperMsg.includes(bp)) { hasBodyPart = true; break; }
-  
-  // Improved name detection
   const nameRegex = /^[A-Za-z\s]{2,30}$/;
-  const isMedicalTerm = lowerMsg.includes('scan') || lowerMsg.includes('test') || lowerMsg.includes('report');
-  
-  if (nameRegex.test(messageText) && !hasTestKeyword && wordCount <= 3 && !isMedicalTerm) {
-    return { category: 'PATIENT_NAME', value: messageText, confidence: 0.9, reason: 'Name pattern match' };
-  }
-  
-  if (hasTestKeyword && hasBodyPart) {
-    return { 
-      category: 'TEST_DETAILS', 
-      value: messageText, 
-      extractedType: detectedTestType,
-      confidence: 0.98, 
-      reason: 'Test + body part' 
-    };
-  }
-  if (hasTestKeyword && wordCount > 1) {
-    return { 
-      category: 'TEST_DETAILS', 
-      value: messageText, 
-      extractedType: detectedTestType,
-      confidence: 0.85, 
-      reason: 'Test keyword with details' 
-    };
+  if (nameRegex.test(cleanedMsg) && !hasTestKeyword && wordCount <= 3) {
+    return { category: 'PATIENT_NAME', value: cleanedMsg, confidence: 0.9 };
   }
   if (hasTestKeyword && wordCount === 1) {
-    return { 
-      category: 'TEST_TYPE', 
-      value: messageText, 
-      extractedType: detectedTestType,
-      confidence: 0.99, 
-      reason: 'Single word test type' 
-    };
+    return { category: 'TEST_TYPE', value: messageText, confidence: 0.99 };
+  }
+  if (hasTestKeyword && wordCount > 1) {
+    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.85 };
   }
   
-  return { category: 'IGNORE', value: messageText, confidence: 0.5, reason: 'Default ignore' };
+  return { category: 'IGNORE', confidence: 0.5 };
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK (Miss Call Only)
+// ✅ TATA TELE WEBHOOK
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
-    console.log('\n📞 TATA TELE WEBHOOK RECEIVED');
+    console.log('\n📞 TATA TELE WEBHOOK');
     const apiKey = req.headers['x-api-key'];
     if (apiKey !== process.env.TATA_SECRET) return res.status(403).json({ error: 'Unauthorized' });
     
     const callerNumberRaw = getCallerNumberFromPayload(req.body);
-    if (!callerNumberRaw) return res.status(400).json({ error: 'Caller number not found' });
+    if (!callerNumberRaw) return res.status(400).json({ error: 'No caller number' });
     
     const whatsappNumber = normalizeWhatsAppNumber(callerNumberRaw);
     const calledNumber = req.body.call_to_number || '';
-    const branch = getMissCallBranchByCalledNumber(calledNumber);
+    const branch = getBranchByCalledNumber(calledNumber);
     
     console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
     
     await missCallsCollection.insertOne({
       phoneNumber: whatsappNumber,
-      calledNumber: calledNumber,
+      calledNumber,
       branch: branch.name,
-      createdAt: new Date(),
-      istTime: getISTTime()
+      createdAt: new Date()
     });
     
-    try {
-      const existingPatient = await patientsCollection.findOne({ 
+    const existingPatient = await patientsCollection.findOne({ 
+      patientPhone: whatsappNumber,
+      source: 'misscall'
+    });
+    
+    if (existingPatient) {
+      await patientsCollection.updateOne(
+        { _id: existingPatient._id },
+        { 
+          $set: { missCallTime: new Date(), branch: branch.name, status: 'awaiting_branch', currentStage: STAGES.AWAITING_BRANCH },
+          $inc: { missCallCount: 1 }
+        }
+      );
+    } else {
+      await patientsCollection.insertOne({
+        patientName: 'Miss Call Patient',
         patientPhone: whatsappNumber,
+        branch: branch.name,
+        testType: null,
+        testDetails: null,
+        sourceType: 'Miss Call',
+        executiveNumber: branch.executive,
+        status: 'awaiting_branch',
+        missCallCount: 1,
+        currentStage: STAGES.AWAITING_BRANCH,
         source: 'misscall'
       });
-      
-      if (existingPatient) {
-        await patientsCollection.updateOne(
-          { _id: existingPatient._id },
-          { 
-            $set: { missCallTime: new Date(), missCallTimeIST: getISTTime(), updatedAt: new Date(), branch: branch.name, status: 'awaiting_branch', currentStage: STAGES.AWAITING_BRANCH },
-            $inc: { missCallCount: 1 }
-          }
-        );
-      } else {
-        await patientsCollection.insertOne({
-          chatId: `${whatsappNumber}_${branch.name}`,
-          patientName: 'Miss Call Patient',
-          patientPhone: whatsappNumber,
-          branch: branch.name,
-          testType: null,
-          testDetails: null,
-          patientMessages: [],
-          sourceType: 'Miss Call',
-          executiveNumber: branch.executive,
-          status: 'awaiting_branch',
-          missCallCount: 1,
-          missCallTime: new Date(),
-          missCallTimeIST: getISTTime(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          currentStage: STAGES.AWAITING_BRANCH,
-          stageHistory: [{ stage: STAGES.AWAITING_BRANCH, timestamp: new Date() }],
-          source: 'misscall',
-          welcomeSent: false
-        });
-      }
-    } catch (error) {
-      if (error.code === 11000) {
-        console.log('⚠️ Duplicate patient, skipping insert');
-      } else {
-        throw error;
-      }
     }
     
-    try {
-      await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [{ name: '1', value: branch.name }]);
-      console.log(`✅ Welcome template sent`);
-    } catch (e) { console.error('❌ Template error:', e.message); }
-    
-    res.json({ success: true, whatsappNumber, branch: branch.name });
+    await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [{ name: '1', value: branch.name }]);
+    res.json({ success: true });
   } catch (error) {
-    console.error('❌ Tata Tele error:', error);
+    console.error('❌ Error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // ============================================
-// ✅ UNIFIED WATI WEBHOOK - COMPLETE WITH ALL FIXES
+// ✅ WATI WEBHOOK (Miss Call Only)
 // ============================================
-app.post('/wati-webhook', async (req, res) => {
+app.post('/wati-webhook', webhookLimiter, async (req, res) => {
   try {
-    console.log('\n📨 WATI WEBHOOK RECEIVED');
+    console.log('\n📨 WATI WEBHOOK');
     
     const msg = req.body;
     const msgId = msg.id || msg.messageId;
@@ -742,245 +478,73 @@ app.post('/wati-webhook', async (req, res) => {
     else if (msg.listReply) messageText = msg.listReply.title;
     else if (msg.buttonReply) messageText = msg.buttonReply.title;
     
-    const text = (messageText || '').toUpperCase().trim();
-    console.log(`📝 Message: "${text}" from ${senderNumber}`);
+    console.log(`📝 Message: "${messageText}" from ${senderNumber}`);
     
-    // ============================================
-    // ✅ ATOMIC PATIENT CREATION WITH welcomeSent FLAG
-    // ============================================
-    const detectedBranch = detectGMBBranch(messageText);
-    const gmbIntent = /book|appointment|scan|test|mri|ct|xray/i.test(messageText);
-    const isGMBInitial = gmbIntent && (detectedBranch !== null || messageText.toLowerCase().includes('hi i want to book'));
+    // Get or create patient (miss call only)
+    let patient = await patientsCollection.findOne({ 
+      patientPhone: senderNumber,
+      source: 'misscall'
+    });
     
-    let patient = await patientsCollection.findOne({ patientPhone: senderNumber });
-    
-    if (!patient && isGMBInitial) {
-      const branchName = detectedBranch || 'Unknown';
-      const branchInfo = getGMBExecutiveByBranch(branchName);
-      
-      try {
-        const result = await patientsCollection.findOneAndUpdate(
-          { patientPhone: senderNumber },
-          {
-            $setOnInsert: {
-              patientName: 'Google Lead',
-              patientPhone: senderNumber,
-              branch: branchName,
-              testType: null,
-              testDetails: null,
-              patientMessages: [{ text: messageText, timestamp: new Date() }],
-              sourceType: 'Google My Business',
-              executiveNumber: branchInfo.executiveNumber,
-              executiveName: branchInfo.executiveName,
-              status: 'pending',
-              currentStage: STAGES.AWAITING_NAME,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              source: 'gmb',
-              gmbBranch: branchName,
-              welcomeSent: false
-            }
-          },
-          { upsert: true, returnDocument: 'after' }
-        );
-        
-        patient = result.value;
-        
-        // Track lead
-        await googleLeadsCollection.updateOne(
-          { phoneNumber: senderNumber },
-          {
-            $set: {
-              branch: branchName,
-              executiveNumber: branchInfo.executiveNumber,
-              executiveName: branchInfo.executiveName,
-              status: 'clicked',
-              updatedAt: new Date(),
-              message: messageText.substring(0, 200)
-            },
-            $setOnInsert: {
-              clickedAt: new Date(),
-              clickedAtIST: getISTTime(),
-              source: 'google_my_business'
-            }
-          },
-          { upsert: true }
-        );
-        
-        console.log(`✅ New GMB patient created for ${branchName}`);
-        
-        // ✅ Send welcome template ONLY if not already sent
-        if (!patient.welcomeSent) {
-          await sendCustomerWelcome(senderNumber, branchName);
-          await patientsCollection.updateOne(
-            { _id: patient._id },
-            { $set: { welcomeSent: true } }
-          );
-          console.log(`✅ Welcome template sent to ${senderNumber}`);
-        }
-        
-        await markMessageProcessed(msgId);
-        return res.sendStatus(200);
-      } catch (error) {
-        if (error.code === 11000) {
-          patient = await patientsCollection.findOne({ patientPhone: senderNumber });
-          console.log(`⚠️ Race condition - patient already exists`);
-        } else {
-          throw error;
-        }
-      }
-    }
-    
-    // If still no patient, create as misscall
     if (!patient) {
-      try {
-        const result = await patientsCollection.findOneAndUpdate(
-          { patientPhone: senderNumber },
-          {
-            $setOnInsert: {
-              patientPhone: senderNumber,
-              patientName: 'Miss Call Patient',
-              patientMessages: [{ text: messageText, timestamp: new Date() }],
-              testType: null,
-              testDetails: null,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              currentStage: STAGES.AWAITING_BRANCH,
-              source: 'misscall',
-              welcomeSent: false
-            }
-          },
-          { upsert: true, returnDocument: 'after' }
-        );
-        patient = result.value;
-        console.log(`✅ New misscall patient created for ${senderNumber}`);
-      } catch (error) {
-        if (error.code === 11000) {
-          patient = await patientsCollection.findOne({ patientPhone: senderNumber });
-        } else {
-          throw error;
-        }
+      const result = await patientsCollection.insertOne({
+        patientPhone: senderNumber,
+        patientName: 'Miss Call Patient',
+        source: 'misscall',
+        currentStage: STAGES.AWAITING_BRANCH,
+        createdAt: new Date()
+      });
+      patient = { _id: result.insertedId };
+    }
+    
+    // Store message
+    await patientsCollection.updateOne(
+      { _id: patient._id },
+      { 
+        $push: { patientMessages: { $each: [{ text: messageText, timestamp: new Date() }], $slice: -20 } },
+        $set: { lastMessageAt: new Date() }
       }
-    }
+    );
     
-    // ============================================
-    // ✅ BETTER DEDUPLICATION WITH TIME WINDOW
-    // ============================================
-    const lastMsg = patient.patientMessages?.slice(-1)[0]?.text || '';
-    const normalizedCurrentMsg = messageText.trim().toLowerCase();
-    const normalizedLastMsg = lastMsg.trim().toLowerCase();
-    const lastMessageTime = patient.lastMessageAt ? new Date(patient.lastMessageAt).getTime() : 0;
-    const now = Date.now();
-    const timeDiff = now - lastMessageTime;
-    
-    if (normalizedCurrentMsg !== normalizedLastMsg || timeDiff > 10000) {
-      await patientsCollection.updateOne(
-        { _id: patient._id },
-        { 
-          $push: { 
-            patientMessages: {
-              $each: [{ text: messageText, timestamp: new Date() }],
-              $slice: -50  // ✅ Keep only last 50 messages
-            }
-          }, 
-          $set: { lastMessageAt: new Date() } 
-        }
-      );
-    }
-    
-    // ============================================
-    // ✅ CLASSIFICATION WITH TEST TYPE EXTRACTION
-    // ============================================
+    // Classify
     const context = { currentStage: patient.currentStage };
     const result = await classifyMessage(messageText, context);
     
     if (result.confidence >= 0.8) {
-      const updateFields = {};
-      
+      const update = {};
       if (result.category === 'PATIENT_NAME') {
-        updateFields.patientName = result.value;
-        updateFields.currentStage = STAGES.AWAITING_TEST_TYPE;
-        console.log(`✅ Name saved: ${result.value}`);
-      }
-      else if (result.category === 'TEST_TYPE') {
-        updateFields.testType = result.value;
-        updateFields.currentStage = STAGES.AWAITING_TEST_DETAILS;
-        console.log(`✅ Test type saved: ${result.value}`);
-      }
-      else if (result.category === 'TEST_DETAILS') {
-        updateFields.testDetails = result.value;
-        updateFields.currentStage = STAGES.EXECUTIVE_NOTIFIED;
-        console.log(`✅ Test details saved: ${result.value}`);
-        
-        // ✅ Auto-fill testType if missing
-        if (!patient.testType && result.extractedType) {
-          updateFields.testType = result.extractedType;
-          console.log(`✅ Auto-filled test type: ${result.extractedType}`);
-        }
+        update.patientName = result.value;
+        update.currentStage = STAGES.AWAITING_TEST_TYPE;
+      } else if (result.category === 'TEST_TYPE') {
+        update.testType = result.value;
+        update.currentStage = STAGES.AWAITING_TEST_DETAILS;
+      } else if (result.category === 'TEST_DETAILS') {
+        update.testDetails = result.value;
+        update.currentStage = STAGES.EXECUTIVE_NOTIFIED;
       }
       
-      if (Object.keys(updateFields).length > 0) {
-        await patientsCollection.updateOne(
-          { _id: patient._id },
-          { $set: updateFields }
+      if (Object.keys(update).length > 0) {
+        await patientsCollection.updateOne({ _id: patient._id }, { $set: update });
+        patient = await patientsCollection.findOne({ _id: patient._id });
+      }
+      
+      if (result.category === 'TEST_DETAILS') {
+        const session = await getOrCreateChatSession(patient);
+        const executiveNumber = getExecutiveNumber(patient.branch);
+        await sendLeadNotification(
+          executiveNumber,
+          patient.patientName,
+          senderNumber,
+          patient.branch,
+          patient.testDetails,
+          patient.testType,
+          session.sessionToken
         );
-      }
-      
-      // Send executive notification if stage changed to EXECUTIVE_NOTIFIED
-      if (result.category === 'TEST_DETAILS' || (patient.currentStage === STAGES.AWAITING_TEST_DETAILS && result.category === 'TEST_DETAILS')) {
-        // Re-fetch patient to get updated data
-        const updatedPatient = await patientsCollection.findOne({ _id: patient._id });
-        
-        // Get session with error handling
-        let session;
-        try {
-          session = await getOrCreateChatSession(updatedPatient);
-        } catch (e) {
-          console.error('Session error, using fallback token:', e.message);
-          session = { sessionToken: crypto.randomBytes(16).toString('hex') };
-        }
-        
-        // Send notification based on source
-        if (updatedPatient.source === 'gmb') {
-          const branchInfo = getGMBExecutiveByBranch(updatedPatient.branch);
-          try {
-            await sendGMBLeadNotification(
-              branchInfo.executiveNumber,
-              branchInfo.executiveName,
-              updatedPatient.patientName || 'Google Lead',
-              senderNumber,
-              updatedPatient.branch || 'Main Branch',
-              updatedPatient.testDetails || 'Not specified',
-              updatedPatient.testType || 'Not specified',
-              session.sessionToken
-            );
-            console.log(`✅ GMB Executive notification sent to ${branchInfo.executiveName}`);
-          } catch (notifError) {
-            console.error('❌ GMB Notification failed:', notifError.message);
-          }
-        } else {
-          const executiveNumber = getMissCallExecutiveNumber(updatedPatient.branch);
-          try {
-            await sendLeadNotification(
-              executiveNumber,
-              updatedPatient.patientName || 'Patient',
-              senderNumber,
-              updatedPatient.branch || 'Main Branch',
-              updatedPatient.testDetails || 'Not specified',
-              updatedPatient.testType || 'Not specified',
-              session.sessionToken
-            );
-            console.log(`✅ Miss Call Executive notification sent to ${executiveNumber}`);
-          } catch (notifError) {
-            console.error('❌ Miss Call Notification failed:', notifError.message);
-          }
-        }
       }
     }
     
     await markMessageProcessed(msgId);
     res.sendStatus(200);
-    
   } catch (error) {
     console.error('❌ Webhook error:', error);
     res.sendStatus(200);
@@ -988,240 +552,88 @@ app.post('/wati-webhook', async (req, res) => {
 });
 
 // ============================================
-// ✅ GMB WEBHOOK - Alternative endpoint
+// ✅ EXECUTIVE CHAT INTERFACE
 // ============================================
-app.post('/gmb-webhook', async (req, res) => {
-  try {
-    console.log('\n📍 GMB WEBHOOK RECEIVED');
-    const { from, waId, whatsappNumber, text, body } = req.body;
-    const patientPhone = normalizeWhatsAppNumber(from || waId || whatsappNumber);
-    if (!patientPhone) return res.status(400).json({ error: 'No phone number' });
-    
-    const message = text || body || '';
-    const branchName = detectGMBBranch(message) || 'Unknown';
-    const branchInfo = getGMBExecutiveByBranch(branchName);
-    
-    console.log(`📍 Patient: ${patientPhone}, Branch: ${branchName}, Executive: ${branchInfo.executiveName}`);
-    
-    await googleLeadsCollection.updateOne(
-      { phoneNumber: patientPhone },
-      {
-        $set: {
-          branch: branchName,
-          executiveNumber: branchInfo.executiveNumber,
-          executiveName: branchInfo.executiveName,
-          status: 'clicked',
-          updatedAt: new Date(),
-          message: message.substring(0, 200)
-        },
-        $setOnInsert: {
-          clickedAt: new Date(),
-          clickedAtIST: getISTTime(),
-          source: 'google_my_business'
-        }
-      },
-      { upsert: true }
-    );
-    
-    try {
-      const result = await patientsCollection.findOneAndUpdate(
-        { patientPhone, source: 'gmb' },
-        {
-          $setOnInsert: {
-            patientName: 'Google Lead',
-            patientPhone,
-            branch: branchName,
-            testType: null,
-            testDetails: null,
-            patientMessages: [{ text: message, timestamp: new Date() }],
-            sourceType: 'Google My Business',
-            executiveNumber: branchInfo.executiveNumber,
-            executiveName: branchInfo.executiveName,
-            status: 'pending',
-            currentStage: STAGES.AWAITING_NAME,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            source: 'gmb',
-            gmbBranch: branchName,
-            welcomeSent: false
-          }
-        },
-        { upsert: true, returnDocument: 'after' }
-      );
-    } catch (error) {
-      if (error.code !== 11000) throw error;
-    }
-    
-    await sendCustomerWelcome(patientPhone, branchName);
-    res.json({ success: true, branch: branchName, executive: branchInfo.executiveName });
-  } catch (error) {
-    console.error('❌ GMB webhook error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================
-// ✅ GET BRANCH LINKS FOR GMB
-// ============================================
-app.get('/gmb-links', async (req, res) => {
-  const html = `
-  <!DOCTYPE html>
-  <html>
-  <head><title>GMB Branch Links</title><meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#667eea,#764ba2);min-height:100vh;padding:20px}.container{max-width:1200px;margin:0 auto}h1{color:white;text-align:center;margin-bottom:10px}.subtitle{color:white;text-align:center;margin-bottom:30px}.links-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px}.link-card{background:white;border-radius:16px;padding:20px;box-shadow:0 10px 25px rgba(0,0,0,0.1)}.branch-name{font-size:1.4em;font-weight:bold;color:#075e54}.executive-info{background:#e8f5e9;padding:5px 10px;border-radius:8px;margin:10px 0;font-size:0.8em}.link{background:#f0f2f5;padding:12px;border-radius:10px;word-break:break-all;font-size:0.7em;margin:15px 0;font-family:monospace}.copy-btn{background:#075e54;color:white;border:none;padding:8px 20px;border-radius:8px;cursor:pointer}.footer{text-align:center;color:white;margin-top:40px;padding:20px}
-  </style>
-  <script>function copyLink(link,branch){navigator.clipboard.writeText(link);alert('✅ Link for '+branch+' copied!')}</script>
-  </head>
-  <body>
-    <div class="container"><h1>🏥 Google My Business - WhatsApp Links</h1><div class="subtitle">WATI Number: ${WATI_NUMBER}</div>
-    <div class="links-grid">
-      ${Object.entries(GMB_BRANCHES).map(([key, config]) => {
-        const link = `https://wa.me/${WATI_NUMBER}?text=Hi%20I%20want%20to%20book%20an%20appointment%20at%20${config.name}%20branch`;
-        return `<div class="link-card"><div class="branch-name">📍 ${config.name}</div>
-        <div class="executive-info">👤 Executive: ${config.executiveName} (${config.executiveNumber})</div>
-        <div class="link">${link}</div>
-        <button class="copy-btn" onclick="copyLink('${link}','${config.name}')">📋 Copy Link</button></div>`;
-      }).join('')}
+app.get('/executive-chat/:token', async (req, res) => {
+  const { token } = req.params;
+  const session = await chatSessionsCollection.findOne({ sessionToken: token, status: 'active' });
+  if (!session) return res.send('<h2>❌ Invalid Session</h2>');
+  
+  const messages = await chatMessagesCollection.find({ sessionToken: token }).sort({ timestamp: 1 }).toArray();
+  const patient = await patientsCollection.findOne({ patientPhone: session.patientPhone });
+  
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head><title>Chat</title><meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui;background:#f0f2f5;height:100vh}.chat{max-width:800px;margin:0 auto;height:100vh;display:flex;flex-direction:column;background:#fff}.header{background:#075e54;color:#fff;padding:15px}.messages{flex:1;overflow-y:auto;padding:20px;background:#e5ddd5}.message{margin:10px 0;display:flex}.message.patient{justify-content:flex-start}.message.executive{justify-content:flex-end}.bubble{max-width:70%;padding:10px 15px;border-radius:18px;background:#fff}.message.executive .bubble{background:#dcf8c6}.time{font-size:0.7em;color:#999;margin-top:5px}.input-area{display:flex;padding:15px;background:#f0f0f0;gap:10px}input{flex:1;padding:12px;border:none;border-radius:25px}button{background:#075e54;color:#fff;border:none;padding:10px 20px;border-radius:25px;cursor:pointer}
+    </style>
+    </head>
+    <body>
+    <div class="chat">
+    <div class="header"><strong>${session.patientName}</strong><br><small>${session.patientPhone}</small></div>
+    <div class="messages" id="messages">
+      ${messages.map(m => `<div class="message ${m.sender}"><div class="bubble">${escapeHtml(m.text)}<div class="time">${new Date(m.timestamp).toLocaleTimeString()}</div></div></div>`).join('')}
     </div>
-    <div class="footer"><strong>📌 How It Works:</strong><br>Patient clicks link → WhatsApp opens → Welcome template → Lead COUNTED → Executive notified</div></div>
-  </body>
-  </html>`;
-  res.send(html);
+    <div class="input-area"><input type="text" id="msgInput" placeholder="Type message..."><button onclick="send()">Send</button></div>
+    </div>
+    <script>
+      const token='${token}';let lastCount=${messages.length};
+      setInterval(async()=>{const r=await fetch('/api/messages/'+token+'?since='+lastCount);const d=await r.json();d.messages.forEach(m=>{const div=document.createElement('div');div.className='message '+m.sender;div.innerHTML='<div class="bubble">'+escapeHtml(m.text)+'<div class="time">'+new Date(m.timestamp).toLocaleTimeString()+'</div></div>';document.getElementById('messages').appendChild(div)});lastCount+=d.messages.length;document.getElementById('messages').scrollTop=document.getElementById('messages').scrollHeight},2000);
+      async function send(){const text=document.getElementById('msgInput').value.trim();if(!text)return;const r=await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionToken:token,text})});if(r.ok){const div=document.createElement('div');div.className='message executive';div.innerHTML='<div class="bubble">'+escapeHtml(text)+'<div class="time">Just now</div></div>';document.getElementById('messages').appendChild(div);document.getElementById('msgInput').value='';document.getElementById('messages').scrollTop=document.getElementById('messages').scrollHeight;lastCount++}}
+      function escapeHtml(t){const div=document.createElement('div');div.textContent=t;return div.innerHTML}
+    </script>
+    </body>
+    </html>
+  `);
 });
 
-// ============================================
-// ✅ DEBUG ENDPOINT
-// ============================================
-app.get('/debug', (req, res) => {
-  res.json({
-    status: 'alive',
-    port: PORT,
-    time: getISTTime(),
-    uptime: process.uptime(),
-    mongodb: !!db,
-    env: process.env.NODE_ENV || 'production'
+app.post('/api/send', async (req, res) => {
+  const { sessionToken, text } = req.body;
+  const session = await chatSessionsCollection.findOne({ sessionToken, status: 'active' });
+  if (!session) return res.status(404).json({ success: false });
+  
+  await sendWithRetry(async () => {
+    const url = `${WATI_BASE_URL}/api/v1/sendSessionMessage/${session.patientPhone}`;
+    await axios.post(url, { messageText: text }, { headers: { 'Authorization': WATI_TOKEN } });
   });
+  
+  await chatMessagesCollection.insertOne({ sessionToken, sender: 'executive', text, timestamp: new Date() });
+  res.json({ success: true });
+});
+
+app.get('/api/messages/:token', async (req, res) => {
+  const { token } = req.params;
+  const since = parseInt(req.query.since) || 0;
+  const messages = await chatMessagesCollection.find({ sessionToken: token }).sort({ timestamp: 1 }).toArray();
+  res.json({ messages: messages.slice(since), total: messages.length });
 });
 
 // ============================================
-// ✅ HEALTH CHECK
+// ✅ OTHER ENDPOINTS
 // ============================================
-app.get('/health', async (req, res) => {
-  res.json({
-    success: true,
-    uptime: process.uptime(),
-    mongodb: 'connected',
-    system: 'Unified Miss Call + GMB System',
-    port: PORT,
-    time: getISTTime()
-  });
-});
+app.get('/health', (req, res) => res.json({ success: true, uptime: process.uptime() }));
+app.get('/', (req, res) => res.json({ message: 'Miss Call System', version: '2.0' }));
 
-// ============================================
-// ✅ HOME ROUTE
-// ============================================
-app.get('/', (req, res) => {
-  res.json({
-    message: '🚀 Unified UIC Support System (Miss Call + GMB)',
-    version: '18.0.0',
-    port: PORT,
-    endpoints: {
-      tata_misscall: '/tata-misscall-whatsapp',
-      wati_webhook: '/wati-webhook',
-      gmb_webhook: '/gmb-webhook',
-      gmb_links: '/gmb-links',
-      debug: '/debug',
-      health: '/health',
-      admin_dashboard: '/admin'
-    }
-  });
-});
-
-// ============================================
-// ✅ DASHBOARD ROUTE
-// ============================================
+// Dashboard
 const dashboardRouter = require('./dashboard');
 app.use('/admin', (req, res, next) => {
-  if (!patientsCollection || !processedCollection) return res.status(503).send('Dashboard unavailable');
   req.patientsCollection = patientsCollection;
   req.processedCollection = processedCollection;
   req.missCallsCollection = missCallsCollection;
   req.chatSessionsCollection = chatSessionsCollection;
-  req.chatMessagesCollection = chatMessagesCollection;
   req.followupCollection = followupCollection;
-  req.googleLeadsCollection = googleLeadsCollection;
   req.STAGES = STAGES;
-  req.PORT = PORT;
   next();
 }, dashboardRouter);
 
-// ============================================
-// ✅ ESCAPE HTML HELPER
-// ============================================
-function escapeHtml(text) {
-  if (!text) return '';
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
+async function isMessageProcessed(id) { return !!(await processedCollection.findOne({ messageId: id })); }
+async function markMessageProcessed(id) { await processedCollection.updateOne({ messageId: id }, { $set: { messageId: id, processedAt: new Date() } }, { upsert: true }); }
+function escapeHtml(text) { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
-// ============================================
-// ✅ START SERVER
-// ============================================
 async function startServer() {
-  console.log('🔄 Initializing server...');
-  console.log(`📍 Configured PORT: ${PORT}`);
-  console.log(`📍 Node version: ${process.version}`);
-  
-  try {
-    console.log('📡 Connecting to MongoDB...');
-    await connectDB();
-    console.log('✅ Database connected');
-    
-    const HOST = '0.0.0.0';
-    console.log(`🔌 Binding to ${HOST}:${PORT}...`);
-    
-    const server = app.listen(PORT, HOST, () => {
-      console.log('\n' + '='.repeat(60));
-      console.log(`✅ UNIFIED SERVER RUNNING ON PORT ${PORT}`);
-      console.log(`📍 Host: ${HOST}`);
-      console.log(`📍 Time: ${getISTTime()}`);
-      console.log(`📍 WATI Webhook: ${SELF_URL}/wati-webhook`);
-      console.log(`📍 GMB Webhook: ${SELF_URL}/gmb-webhook`);
-      console.log(`📍 Miss Call Webhook: ${SELF_URL}/tata-misscall-whatsapp`);
-      console.log(`📍 GMB Links: ${SELF_URL}/gmb-links`);
-      console.log(`📍 Admin Dashboard: ${SELF_URL}/admin`);
-      console.log(`📍 Debug: ${SELF_URL}/debug`);
-      console.log('='.repeat(60) + '\n');
-    });
-    
-    server.on('error', (err) => {
-      console.error('❌ Server error:', err);
-      if (err.code === 'EADDRINUSE') {
-        console.error(`❌ Port ${PORT} is already in use!`);
-      }
-      process.exit(1);
-    });
-    
-    process.on('uncaughtException', (err) => {
-      console.error('❌ Uncaught Exception:', err);
-    });
-    
-    process.on('unhandledRejection', (reason) => {
-      console.error('❌ Unhandled Rejection:', reason);
-    });
-    
-    process.on('SIGTERM', () => {
-      console.log('🛑 SIGTERM received, closing...');
-      server.close(() => {
-        console.log('✅ Server closed');
-        process.exit(0);
-      });
-    });
-    
-  } catch (error) {
-    console.error('❌ Startup failed:', error.message);
-    process.exit(1);
-  }
+  await connectDB();
+  app.listen(PORT, '0.0.0.0', () => console.log(`✅ Miss Call System running on port ${PORT}`));
 }
-
 startServer();
