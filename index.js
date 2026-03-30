@@ -196,7 +196,11 @@ async function connectDB() {
   try {
     console.log('🔄 Connecting to MongoDB...');
     if (!MONGODB_URI) throw new Error('MONGODB_URI not defined');
-    const client = new MongoClient(MONGODB_URI);
+    const client = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: 30000,
+      connectTimeoutMS: 30000,
+      socketTimeoutMS: 30000
+    });
     await client.connect();
     console.log('✅ MongoDB connected');
     
@@ -314,7 +318,7 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
 }
 
 // ============================================
-// ✅ BOT CLASSIFICATION (FIXED)
+// ✅ IMPROVED BOT CLASSIFICATION
 // ============================================
 async function classifyMessage(messageText, patientContext = {}) {
   const upperMsg = messageText.toUpperCase();
@@ -328,8 +332,9 @@ async function classifyMessage(messageText, patientContext = {}) {
     }
   }
   
+  // ✅ Stage-based classification - HIGHEST PRIORITY
   if (patientContext.currentStage === STAGES.AWAITING_NAME) {
-    return { category: 'PATIENT_NAME', value: cleanedMsg, confidence: 0.95 };
+    return { category: 'PATIENT_NAME', value: cleanedMsg || messageText, confidence: 0.95 };
   }
   if (patientContext.currentStage === STAGES.AWAITING_TEST_TYPE) {
     return { category: 'TEST_TYPE', value: messageText, confidence: 0.95 };
@@ -338,25 +343,48 @@ async function classifyMessage(messageText, patientContext = {}) {
     return { category: 'TEST_DETAILS', value: messageText, confidence: 0.95 };
   }
   
-  const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND'];
+  // Test keywords
+  const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY', 'SCAN', 'REPORT'];
   let hasTestKeyword = false;
+  let detectedTestType = null;
   for (const kw of testKeywords) {
     if (upperMsg.includes(kw)) {
       hasTestKeyword = true;
+      detectedTestType = kw;
       break;
     }
   }
   
-  // ✅ FIXED: Proper nameRegex declaration
+  // ✅ Improved name detection - only if NO test keywords and NOT medical term
   const nameRegex = /^[A-Za-z\s]{2,30}$/;
-  if (nameRegex.test(cleanedMsg) && !hasTestKeyword && wordCount <= 3) {
-    return { category: 'PATIENT_NAME', value: cleanedMsg, confidence: 0.9 };
+  const isMedicalTerm = /scan|test|report|mri|ct|xray|ultrasound|usg|knee|brain|spine|chest|abdomen/i.test(messageText);
+  
+  if (nameRegex.test(cleanedMsg) && !hasTestKeyword && wordCount <= 3 && !isMedicalTerm) {
+    return { category: 'PATIENT_NAME', value: cleanedMsg, confidence: 0.85 };
   }
+  
+  // Test type detection (single word test)
   if (hasTestKeyword && wordCount === 1) {
-    return { category: 'TEST_TYPE', value: messageText, confidence: 0.99 };
+    return { category: 'TEST_TYPE', value: detectedTestType, confidence: 0.99 };
   }
+  
+  // Test details detection (multiple words with test keyword)
   if (hasTestKeyword && wordCount > 1) {
-    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.85 };
+    return { category: 'TEST_DETAILS', value: messageText, extractedType: detectedTestType, confidence: 0.85 };
+  }
+  
+  // Check if message looks like a test (contains body part)
+  const bodyParts = ['KNEE', 'SPINE', 'BRAIN', 'CHEST', 'ABDOMEN', 'HIP', 'SHOULDER', 'WRIST', 'ANKLE', 'PELVIS', 'NECK', 'HEAD'];
+  let hasBodyPart = false;
+  for (const bp of bodyParts) {
+    if (upperMsg.includes(bp)) {
+      hasBodyPart = true;
+      break;
+    }
+  }
+  
+  if (hasBodyPart && wordCount <= 3) {
+    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.75 };
   }
   
   return { category: 'IGNORE', confidence: 0.5 };
@@ -460,7 +488,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ INTELLIGENT WATI WEBHOOK
+// ✅ INTELLIGENT WATI WEBHOOK (FIXED STAGE LOGIC)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -510,6 +538,8 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
+    console.log(`📋 Patient stage: ${patient.currentStage}, Name: ${patient.patientName || 'Not set'}, Test: ${patient.testType || 'Not set'}`);
+    
     // Store message
     await patientsCollection.updateOne(
       { _id: patient._id },
@@ -534,37 +564,53 @@ app.post('/wati-webhook', async (req, res) => {
       source: patient.source
     });
     
-    // Classify message
+    // Classify message with current stage
     const context = { currentStage: patient.currentStage };
     const result = await classifyMessage(messageText, context);
     
+    console.log(`🔍 Classification: category=${result.category}, confidence=${result.confidence}`);
+    
     if (result.confidence >= 0.8 && result.category !== 'IGNORE') {
       const update = {};
+      let stageChanged = false;
       
       if (result.category === 'PATIENT_NAME') {
         update.patientName = result.value || 'Patient';
         update.currentStage = STAGES.AWAITING_TEST_TYPE;
-        console.log(`✅ Name saved: ${result.value}`);
-      } else if (result.category === 'TEST_TYPE') {
+        stageChanged = true;
+        console.log(`✅ Name saved: "${result.value}" | Stage: ${STAGES.AWAITING_TEST_TYPE}`);
+      } 
+      else if (result.category === 'TEST_TYPE') {
         update.testType = result.value || 'Not Specified';
         update.currentStage = STAGES.AWAITING_TEST_DETAILS;
-        console.log(`✅ Test type saved: ${result.value}`);
-      } else if (result.category === 'TEST_DETAILS') {
+        stageChanged = true;
+        console.log(`✅ Test type saved: "${result.value}" | Stage: ${STAGES.AWAITING_TEST_DETAILS}`);
+      } 
+      else if (result.category === 'TEST_DETAILS') {
         update.testDetails = result.value || 'Not Specified';
         update.currentStage = STAGES.EXECUTIVE_NOTIFIED;
-        console.log(`✅ Test details saved: ${result.value}`);
+        stageChanged = true;
+        // Auto-fill test type if extracted
+        if (result.extractedType && (!patient.testType || patient.testType === 'Not Specified')) {
+          update.testType = result.extractedType;
+          console.log(`✅ Auto-filled test type: ${result.extractedType}`);
+        }
+        console.log(`✅ Test details saved: "${result.value}" | Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
       }
       
-      if (Object.keys(update).length > 0) {
+      if (stageChanged) {
         await patientsCollection.updateOne({ _id: patient._id }, { $set: update });
+        // ✅ IMPORTANT: Refresh patient variable with updated data
         patient = await patientsCollection.findOne({ _id: patient._id });
+        console.log(`🔄 Patient stage updated to: ${patient.currentStage}`);
       }
       
       // Send notification to executive when test details received
-      if (result.category === 'TEST_DETAILS') {
+      if (result.category === 'TEST_DETAILS' && patient.currentStage === STAGES.EXECUTIVE_NOTIFIED) {
         const session = await getOrCreateChatSession(patient);
         const executiveNumber = getExecutiveNumber(patient.branch);
         
+        console.log(`📤 Sending lead notification to executive: ${executiveNumber}`);
         await sendLeadNotification(
           executiveNumber,
           patient.patientName || 'Patient',
@@ -576,6 +622,8 @@ app.post('/wati-webhook', async (req, res) => {
         );
         console.log(`✅ Executive notification sent to ${executiveNumber}`);
       }
+    } else {
+      console.log(`⏭️ Message ignored (confidence: ${result.confidence})`);
     }
     
     await markMessageProcessed(msgId);
@@ -782,6 +830,7 @@ try {
     req.processedCollection = processedCollection;
     req.missCallsCollection = missCallsCollection;
     req.chatSessionsCollection = chatSessionsCollection;
+    req.chatMessagesCollection = chatMessagesCollection;
     req.followupCollection = followupCollection;
     req.STAGES = STAGES;
     next();
@@ -825,6 +874,8 @@ async function startServer() {
       console.log('   ✅ Blank Message Handler');
       console.log('   ✅ WATI 400 Error Protection');
       console.log('   ✅ Rate Limiting (20 req/sec)');
+      console.log('   ✅ Improved Name/Test Classification');
+      console.log('   ✅ Stage-based Message Routing');
       console.log('='.repeat(60) + '\n');
     });
     
