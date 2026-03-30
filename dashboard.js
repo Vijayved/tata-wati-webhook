@@ -31,6 +31,7 @@ router.post('/reset', async (req, res) => {
 
 router.get('/', async (req, res) => {
   try {
+    // Get collections from request (set in index.js)
     const patientsCollection = req.patientsCollection;
     const processedCollection = req.processedCollection;
     const missCallsCollection = req.missCallsCollection;
@@ -40,8 +41,9 @@ router.get('/', async (req, res) => {
     const googleLeadsCollection = req.googleLeadsCollection;
     const STAGES = req.STAGES;
     
-    if (!patientsCollection || !processedCollection) {
-      throw new Error('Database collections not available');
+    // ✅ FIX: Check if collections exist before using them
+    if (!patientsCollection) {
+      throw new Error('Database collections not available - patientsCollection missing');
     }
     
     // Get filter parameters
@@ -100,12 +102,12 @@ router.get('/', async (req, res) => {
       'Morbi': { executive: 'Mital', number: '9558591212' }
     };
     
-    // Get all data
+    // ✅ FIX: Safe data fetching with null checks
     const allPatients = await patientsCollection.find({}).toArray();
-    const allMissCalls = await missCallsCollection.find({}).toArray();
-    const allFollowups = await followupCollection.find({}).toArray();
-    const allSessions = await chatSessionsCollection.find({}).toArray();
-    const allMessages = await chatMessagesCollection.find({}).toArray();
+    const allMissCalls = missCallsCollection ? await missCallsCollection.find({}).toArray() : [];
+    const allFollowups = followupCollection ? await followupCollection.find({}).toArray() : [];
+    const allSessions = chatSessionsCollection ? await chatSessionsCollection.find({}).toArray() : [];
+    const allMessages = chatMessagesCollection ? await chatMessagesCollection.find({}).toArray() : [];
     
     // Separate Miss Call and GMB Patients
     const missCallPatients = allPatients.filter(p => p.source !== 'gmb');
@@ -424,7 +426,7 @@ router.get('/', async (req, res) => {
     
   } catch (error) {
     console.error('Dashboard error:', error);
-    res.status(500).send(`<h2>Error: ${error.message}</h2><pre>${error.stack}</pre>`);
+    res.status(500).send(`<h2>❌ Dashboard Error</h2><p>${error.message}</p><pre>${error.stack}</pre><p><a href="/health">Check Health Status</a></p>`);
   }
 });
 
@@ -642,23 +644,23 @@ function getDashboardHTML(data) {
         <form method="GET" action="/admin" id="filterForm">
           <input type="hidden" name="tab" value="${activeTab}">
           <div class="filter-row">
-            <div class="filter-group"><label>📅 Date Range</label><select name="dateRange" onchange="toggleCustomDate()"><option value="all">All Time</option><option value="today">Today</option><option value="yesterday">Yesterday</option><option value="last7days">Last 7 Days</option><option value="last30days">Last 30 Days</option><option value="custom">Custom</option></select></div>
-            <div id="customDateRange" style="display:none; gap:10px;"><div class="filter-group"><label>From</label><input type="date" name="startDate"></div><div class="filter-group"><label>To</label><input type="date" name="endDate"></div></div>
-            <div class="filter-group"><label>🏢 Branch</label><select name="branch"><option value="all">All Branches</option>${branches.map(b => `<option value="${b}">${b}</option>`).join('')}</select></div>
-            <div class="filter-group"><label>👤 Executive</label><select name="executive"><option value="all">All Executives</option>${executivesList.map(e => `<option value="${e}">${e}</option>`).join('')}</select></div>
+            <div class="filter-group"><label>📅 Date Range</label><select name="dateRange" onchange="toggleCustomDate()"><option value="all" ${filters.dateRange === 'all' ? 'selected' : ''}>All Time</option><option value="today" ${filters.dateRange === 'today' ? 'selected' : ''}>Today</option><option value="yesterday" ${filters.dateRange === 'yesterday' ? 'selected' : ''}>Yesterday</option><option value="last7days" ${filters.dateRange === 'last7days' ? 'selected' : ''}>Last 7 Days</option><option value="last30days" ${filters.dateRange === 'last30days' ? 'selected' : ''}>Last 30 Days</option><option value="custom" ${filters.dateRange === 'custom' ? 'selected' : ''}>Custom</option></select></div>
+            <div id="customDateRange" style="display:${filters.dateRange === 'custom' ? 'flex' : 'none'}; gap:10px;"><div class="filter-group"><label>From</label><input type="date" name="startDate" value="${filters.startDate || ''}"></div><div class="filter-group"><label>To</label><input type="date" name="endDate" value="${filters.endDate || ''}"></div></div>
+            <div class="filter-group"><label>🏢 Branch</label><select name="branch"><option value="all">All Branches</option>${branches.map(b => `<option value="${b}" ${filters.branch === b ? 'selected' : ''}>${b}</option>`).join('')}</select></div>
+            <div class="filter-group"><label>👤 Executive</label><select name="executive"><option value="all">All Executives</option>${executivesList.map(e => `<option value="${e}" ${filters.executive === e ? 'selected' : ''}>${e}</option>`).join('')}</select></div>
           </div>
           <div class="filter-row">
-            <div class="filter-group"><label>🔬 Modality</label><select name="modality"><option value="all">All</option><option value="MRI">MRI</option><option value="CT">CT</option><option value="X-RAY">X-RAY</option><option value="USG">USG</option><option value="OTHER">OTHER</option></select></div>
-            <div class="filter-group"><label>📊 Status</label><select name="status"><option value="all">All</option><option value="pending">Pending</option><option value="converted">Converted</option><option value="waiting">Waiting</option><option value="not_converted">Not Converted</option></select></div>
-            <div class="filter-group"><label>🎯 Stage</label><select name="stage"><option value="all">All</option><option value="awaiting_branch">Awaiting Branch</option><option value="executive_notified">Notified</option><option value="connected">Connected</option><option value="converted">Converted</option><option value="waiting">Waiting</option></select></div>
-            <div class="filter-group"><label>🔍 Search</label><input type="text" name="search" placeholder="Name or Phone"></div>
-            <div class="filter-actions"><button type="submit" class="btn-filter">🔍 Apply</button><a href="/admin" class="btn-reset-filter">🔄 Reset</a><button type="button" class="btn-export" onclick="exportToExcel()">📊 Excel</button><button type="button" class="btn-reset-db" onclick="resetDatabase()">🗑️ Reset DB</button></div>
+            <div class="filter-group"><label>🔬 Modality</label><select name="modality"><option value="all" ${filters.modality === 'all' ? 'selected' : ''}>All</option><option value="MRI" ${filters.modality === 'MRI' ? 'selected' : ''}>MRI</option><option value="CT" ${filters.modality === 'CT' ? 'selected' : ''}>CT</option><option value="X-RAY" ${filters.modality === 'X-RAY' ? 'selected' : ''}>X-RAY</option><option value="USG" ${filters.modality === 'USG' ? 'selected' : ''}>USG</option><option value="OTHER" ${filters.modality === 'OTHER' ? 'selected' : ''}>OTHER</option></select></div>
+            <div class="filter-group"><label>📊 Status</label><select name="status"><option value="all" ${filters.status === 'all' ? 'selected' : ''}>All</option><option value="pending" ${filters.status === 'pending' ? 'selected' : ''}>Pending</option><option value="converted" ${filters.status === 'converted' ? 'selected' : ''}>Converted</option><option value="waiting" ${filters.status === 'waiting' ? 'selected' : ''}>Waiting</option><option value="not_converted" ${filters.status === 'not_converted' ? 'selected' : ''}>Not Converted</option></select></div>
+            <div class="filter-group"><label>🎯 Stage</label><select name="stage"><option value="all" ${filters.stage === 'all' ? 'selected' : ''}>All</option><option value="awaiting_branch" ${filters.stage === 'awaiting_branch' ? 'selected' : ''}>Awaiting Branch</option><option value="executive_notified" ${filters.stage === 'executive_notified' ? 'selected' : ''}>Notified</option><option value="connected" ${filters.stage === 'connected' ? 'selected' : ''}>Connected</option><option value="converted" ${filters.stage === 'converted' ? 'selected' : ''}>Converted</option><option value="waiting" ${filters.stage === 'waiting' ? 'selected' : ''}>Waiting</option></select></div>
+            <div class="filter-group"><label>🔍 Search</label><input type="text" name="search" placeholder="Name or Phone" value="${filters.search || ''}"></div>
+            <div class="filter-actions"><button type="submit" class="btn-filter">🔍 Apply</button><a href="/admin?tab=${activeTab}" class="btn-reset-filter">🔄 Reset</a><button type="button" class="btn-export" onclick="exportToExcel()">📊 Excel</button><button type="button" class="btn-reset-db" onclick="resetDatabase()">🗑️ Reset DB</button></div>
           </div>
         </form>
       </div>
       
       <!-- ==================== MISS CALL TAB ==================== -->
-      <div id="tab-misscall" class="tab-content active">
+      <div id="tab-misscall" class="tab-content ${activeTab === 'misscall' ? 'active' : ''}">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
           <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
           <div class="last-updated">Last updated: ${new Date().toLocaleString()}</div>
@@ -812,7 +814,7 @@ function getDashboardHTML(data) {
       </div>
       
       <!-- ==================== GOOGLE MY BUSINESS TAB ==================== -->
-      <div id="tab-gmb" class="tab-content">
+      <div id="tab-gmb" class="tab-content ${activeTab === 'gmb' ? 'active' : ''}">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
           <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
           <div class="last-updated">Last updated: ${new Date().toLocaleString()}</div>
@@ -879,7 +881,7 @@ function getDashboardHTML(data) {
                   <td><strong>${lead.branch}</strong></td>
                   <td>${lead.phoneNumber}</td>
                   <td>${lead.executiveName || 'N/A'}</td>
-                  <td><span class="google-status-badge status-${lead.status}">${lead.status.replace(/_/g, ' ')}</span></td>
+                  <td><span class="google-status-badge status-${lead.status}">${lead.status ? lead.status.replace(/_/g, ' ') : 'clicked'}</span></td>
                 </tr>
               `).join('')}</tbody>
             </table>
@@ -891,7 +893,7 @@ function getDashboardHTML(data) {
           <div class="card-title">📋 Google Lead Templates</div>
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px;">
             <div style="background: rgba(0,0,0,0.2); border-radius: 12px; padding: 15px;">
-              <div style="font-weight: 600; color: #10b981; margin-bottom: 8px;">google_lead_notification_v1</div>
+              <div style="font-weight: 600; color: #10b981; margin-bottom: 8px;">google_lead_notification_v5</div>
               <div style="font-size: 0.7rem; color: #94a3b8;">New lead alert to executive with buttons</div>
             </div>
             <div style="background: rgba(0,0,0,0.2); border-radius: 12px; padding: 15px;">
