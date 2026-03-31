@@ -1,7 +1,7 @@
 {
   "name": "tata-wati-webhook",
-  "version": "3.0.0",
-  "description": "Unified Miss Call + GMB Lead System with WATI Integration",
+  "version": "4.0.0",
+  "description": "Unified Miss Call + Blood Test Campaign System with Hybrid AI",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
