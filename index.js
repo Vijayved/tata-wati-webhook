@@ -109,6 +109,7 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = 'lead_notification_v6';
+const BLOOD_TEST_NUMBER = process.env.BLOOD_TEST_NUMBER || '919725504245';
 
 // ============================================
 // ✅ EXECUTIVE NUMBERS & BRANCHES
@@ -166,6 +167,7 @@ const STAGES = {
   AWAITING_NAME: 'awaiting_name',
   AWAITING_TEST_TYPE: 'awaiting_test_type',
   AWAITING_TEST_DETAILS: 'awaiting_test_details',
+  AWAITING_ADDRESS: 'awaiting_address',
   EXECUTIVE_NOTIFIED: 'executive_notified',
   CONNECTED: 'connected',
   CONVERTED: 'converted',
@@ -317,7 +319,28 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK
+// ✅ BLOOD TEST NOTIFICATION (Only Phone + Address)
+// ============================================
+async function sendBloodTestNotification(executiveNumber, patientPhone, address, chatToken) {
+  const istTime = getISTDateTime();
+  
+  const safeAddress = address || 'Not Provided';
+  const safePhone = patientPhone || 'Not Provided';
+
+  const whatsappLink = `https://wa.me/${patientPhone}?text=Hi%2C%20I%20am%20from%20UIC%20Support%20Team.%20I%20am%20following%20up%20on%20your%20blood%20test%20booking.`;
+
+  const parameters = [
+    { name: "1", value: safePhone },
+    { name: "2", value: safeAddress },
+    { name: "3", value: istTime },
+    { name: "4", value: whatsappLink }
+  ];
+  
+  return await sendWatiTemplateMessage(executiveNumber, 'blood_test_lead_v1', parameters);
+}
+
+// ============================================
+// ✅ TATA TELE WEBHOOK (With Blood Test Detection)
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -336,12 +359,17 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     const calledNumber = req.body.call_to_number || '';
     const branch = getBranchByCalledNumber(calledNumber);
     
-    console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
+    // Detect if this is blood test campaign
+    const isBloodTestCampaign = calledNumber.includes(BLOOD_TEST_NUMBER) || 
+                                 normalizeIndianNumber(calledNumber) === normalizeIndianNumber(BLOOD_TEST_NUMBER);
+    
+    console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}, Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}`);
     
     await missCallsCollection.insertOne({
       phoneNumber: whatsappNumber,
       calledNumber,
       branch: branch.name,
+      campaign: isBloodTestCampaign ? 'blood_test' : 'regular',
       createdAt: new Date(),
       istTime: getISTTime()
     });
@@ -370,20 +398,23 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
             missCallTime: now,
             missCallTimeIST: getISTTime(),
             branch: branch.name,
-            status: 'pending',
-            currentStage: STAGES.AWAITING_NAME,
+            campaign: isBloodTestCampaign ? 'blood_test' : (existingPatient.campaign || 'regular'),
+            currentStage: isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME,
             updatedAt: now
           },
           $inc: { missCallCount: 1 }
         }
       );
+      console.log(`✅ Patient updated - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}`);
     } else {
       await patientsCollection.insertOne({
         patientName: '',
         patientPhone: whatsappNumber,
         branch: branch.name,
-        testType: '',
-        testDetails: '',
+        testType: isBloodTestCampaign ? 'Blood Test' : '',
+        testDetails: isBloodTestCampaign ? 'Home Collection' : '',
+        address: '',
+        campaign: isBloodTestCampaign ? 'blood_test' : 'regular',
         sourceType: 'Miss Call',
         executiveNumber: branch.executive,
         status: 'pending',
@@ -392,19 +423,24 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         missCallTimeIST: getISTTime(),
         createdAt: now,
         updatedAt: now,
-        currentStage: STAGES.AWAITING_NAME,
+        currentStage: isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME,
         source: 'misscall',
         welcomeSent: false
       });
-      console.log(`✅ New patient created for ${whatsappNumber} - Stage: ${STAGES.AWAITING_NAME}`);
+      console.log(`✅ New patient created for ${whatsappNumber} - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}`);
     }
     
     if (shouldSendWelcome) {
-      await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [{ name: '1', value: branch.name }]);
-      console.log(`✅ Welcome template sent to ${whatsappNumber}`);
+      if (isBloodTestCampaign) {
+        await sendWatiTemplateMessage(whatsappNumber, 'blood_test_welcome', [{ name: '1', value: 'Blood Test' }]);
+        console.log(`✅ Blood test welcome sent to ${whatsappNumber}`);
+      } else {
+        await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [{ name: '1', value: branch.name }]);
+        console.log(`✅ Regular welcome sent to ${whatsappNumber}`);
+      }
     }
     
-    res.json({ success: true, whatsappNumber, branch: branch.name });
+    res.json({ success: true, whatsappNumber, branch: branch.name, campaign: isBloodTestCampaign ? 'blood_test' : 'regular' });
   } catch (error) {
     console.error('❌ Tata Tele error:', error);
     res.status(500).json({ error: error.message });
@@ -412,7 +448,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK (With Hybrid AI Classifier)
+// ✅ WATI WEBHOOK (With Blood Test Address Collection)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -454,13 +490,14 @@ app.post('/wati-webhook', async (req, res) => {
     
     if (!patient) {
       console.log(`⚠️ No patient found for ${senderNumber}, creating new patient...`);
-      // Create new patient if not exists
       const result = await patientsCollection.insertOne({
         patientName: '',
         patientPhone: senderNumber,
         branch: 'Main Branch',
         testType: '',
         testDetails: '',
+        address: '',
+        campaign: 'regular',
         source: 'misscall',
         currentStage: STAGES.AWAITING_NAME,
         status: 'pending',
@@ -470,7 +507,7 @@ app.post('/wati-webhook', async (req, res) => {
       patient = await patientsCollection.findOne({ _id: result.insertedId });
     }
     
-    console.log(`📋 Current State - Stage: ${patient.currentStage}, Name: "${patient.patientName || ''}", Test: "${patient.testType || ''}", Details: "${patient.testDetails || ''}"`);
+    console.log(`📋 Current State - Campaign: ${patient.campaign}, Stage: ${patient.currentStage}, Address: "${patient.address || ''}"`);
     
     // Store message
     await patientsCollection.updateOne(
@@ -505,69 +542,90 @@ app.post('/wati-webhook', async (req, res) => {
     let shouldNotifyExecutive = false;
     
     if (result.confidence >= 0.65 && result.category !== 'IGNORE' && result.category !== 'UNKNOWN') {
-      switch (result.category) {
-        case 'PATIENT_NAME':
-          updateFields.patientName = result.value;
-          updateFields.currentStage = STAGES.AWAITING_TEST_TYPE;
-          stageChanged = true;
-          console.log(`✅ Name saved: "${result.value}" → Stage: ${STAGES.AWAITING_TEST_TYPE}`);
-          break;
-          
-        case 'TEST_TYPE':
-          updateFields.testType = result.value;
-          updateFields.currentStage = STAGES.AWAITING_TEST_DETAILS;
-          stageChanged = true;
-          console.log(`✅ Test type saved: "${result.value}" → Stage: ${STAGES.AWAITING_TEST_DETAILS}`);
-          break;
-          
-        case 'TEST_DETAILS':
-          updateFields.testDetails = result.value;
+      
+      // 🆕 BLOOD TEST CAMPAIGN HANDLING
+      if (patient.campaign === 'blood_test') {
+        
+        // Any message in awaiting_address stage is considered address
+        if (patient.currentStage === STAGES.AWAITING_ADDRESS || result.category === 'ADDRESS') {
+          updateFields.address = messageText;
           updateFields.currentStage = STAGES.EXECUTIVE_NOTIFIED;
           stageChanged = true;
           shouldNotifyExecutive = true;
-          if (result.extractedTest && (!patient.testType || patient.testType === '')) {
-            updateFields.testType = result.extractedTest;
-            console.log(`✅ Auto-filled test type: ${result.extractedTest}`);
-          }
-          console.log(`✅ Test details saved: "${result.value}" → Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
-          break;
-          
-        case 'GREETING':
-          console.log(`👋 Greeting detected, no action needed`);
-          break;
+          console.log(`✅ Blood Test - Address saved: "${messageText.substring(0, 50)}..." → Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
+        }
+        
+      } else {
+        // Regular campaign handling (name, test type, test details)
+        switch (result.category) {
+          case 'PATIENT_NAME':
+            updateFields.patientName = result.value;
+            updateFields.currentStage = STAGES.AWAITING_TEST_TYPE;
+            stageChanged = true;
+            console.log(`✅ Name saved: "${result.value}" → Stage: ${STAGES.AWAITING_TEST_TYPE}`);
+            break;
+            
+          case 'TEST_TYPE':
+            updateFields.testType = result.value;
+            updateFields.currentStage = STAGES.AWAITING_TEST_DETAILS;
+            stageChanged = true;
+            console.log(`✅ Test type saved: "${result.value}" → Stage: ${STAGES.AWAITING_TEST_DETAILS}`);
+            break;
+            
+          case 'TEST_DETAILS':
+            updateFields.testDetails = result.value;
+            updateFields.currentStage = STAGES.EXECUTIVE_NOTIFIED;
+            stageChanged = true;
+            shouldNotifyExecutive = true;
+            if (result.extractedTest && (!patient.testType || patient.testType === '')) {
+              updateFields.testType = result.extractedTest;
+              console.log(`✅ Auto-filled test type: ${result.extractedTest}`);
+            }
+            console.log(`✅ Test details saved: "${result.value}" → Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
+            break;
+            
+          case 'GREETING':
+            console.log(`👋 Greeting detected, no action needed`);
+            break;
+        }
       }
       
       if (stageChanged) {
         await patientsCollection.updateOne({ _id: patient._id }, { $set: updateFields });
         patient = await patientsCollection.findOne({ _id: patient._id });
-        console.log(`🔄 Patient updated - Name: "${patient.patientName}", Test: "${patient.testType}", Details: "${patient.testDetails}", Stage: ${patient.currentStage}`);
+        console.log(`🔄 Patient updated - Campaign: ${patient.campaign}, Stage: ${patient.currentStage}`);
       }
     } else {
       console.log(`⏭️ Message ignored (confidence: ${result.confidence}, category: ${result.category})`);
     }
     
-    // Send notification to executive when we have complete data
-    if (shouldNotifyExecutive || (patient.currentStage === STAGES.EXECUTIVE_NOTIFIED && patient.testDetails && patient.testDetails !== '')) {
-      const finalName = patient.patientName || 'Patient';
-      const finalTestType = patient.testType || 'Not Specified';
-      const finalTestDetails = patient.testDetails || 'Not Specified';
-      
+    // Send notification to executive
+    if (shouldNotifyExecutive) {
       const session = await getOrCreateChatSession(patient);
       const executiveNumber = getExecutiveNumber(patient.branch);
       
-      console.log(`📤 Sending lead notification to executive: ${executiveNumber}`);
-      console.log(`   Data: Name=${finalName}, Test=${finalTestType}, Details=${finalTestDetails}, Branch=${patient.branch}`);
-      
-      await sendLeadNotification(
-        executiveNumber,
-        finalName,
-        senderNumber,
-        patient.branch || 'Main Branch',
-        finalTestDetails,
-        finalTestType,
-        session.sessionToken
-      );
-      console.log(`✅ Executive notification sent successfully`);
+      if (patient.campaign === 'blood_test') {
+        // Blood test notification (only phone + address)
+        await sendBloodTestNotification(
+          executiveNumber,
+          senderNumber,
+          patient.address || 'Not Provided',
+          session.sessionToken
+        );
+        console.log(`✅ Blood Test lead sent to ${executiveNumber} - Phone: ${senderNumber}, Address: ${(patient.address || 'Not Provided').substring(0, 30)}...`);
+      } else {
+        // Regular notification (all details)
+        await sendLeadNotification(
+          executiveNumber,
+          patient.patientName || 'Patient',
+          senderNumber,
+          patient.branch || 'Main Branch',
+          patient.testDetails || 'Not Specified',
+          patient.testType || 'Not Specified',
+          session.sessionToken
+        );
+        console.log(`✅ Regular lead sent to ${executiveNumber} - Name: ${patient.patientName}, Test: ${patient.testType}`);
+      }
     }
     
     await markMessageProcessed(msgId);
@@ -734,7 +792,7 @@ app.get('/api/messages/:token', async (req, res) => {
 });
 
 // ============================================
-// ✅ ADMIN ENDPOINTS (Cache Management)
+// ✅ ADMIN ENDPOINTS
 // ============================================
 app.post('/admin/clear-cache', async (req, res) => {
   try {
@@ -767,19 +825,21 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     mongodb: db ? 'connected' : 'disconnected',
     time: getISTTime(),
-    system: 'Miss Call System with Hybrid AI',
+    system: 'Miss Call System with Blood Test Campaign',
     classifier: 'rules + openai'
   });
 });
 
 app.get('/', (req, res) => {
   res.json({
-    message: '🚀 Miss Call System with Hybrid AI Classifier',
+    message: '🚀 Miss Call System with Blood Test Campaign',
     version: '4.0.0',
     port: PORT,
     time: getISTTime(),
     features: {
       classification: 'Rules + OpenAI (80/20 hybrid)',
+      campaigns: 'Regular + Blood Test',
+      blood_test: 'Collects only Phone + Address',
       anti_spam: '2-hour cooldown',
       rate_limit: '20 req/sec',
       cache: 'AI results cached (24h TTL)'
@@ -827,7 +887,7 @@ try {
 // ✅ START SERVER
 // ============================================
 async function startServer() {
-  console.log('🔄 Initializing Miss Call System with Hybrid AI...');
+  console.log('🔄 Initializing Miss Call System with Blood Test Campaign...');
   console.log(`📍 Configured PORT: ${PORT}`);
   console.log(`📍 Node version: ${process.version}`);
   
@@ -843,10 +903,10 @@ async function startServer() {
       console.log(`✅ MISS CALL SYSTEM RUNNING ON PORT ${PORT}`);
       console.log(`📍 Host: ${HOST}`);
       console.log(`📍 Time: ${getISTTime()}`);
+      console.log(`📍 Blood Test Number: ${BLOOD_TEST_NUMBER}`);
       console.log(`📍 WATI Webhook: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/wati-webhook`);
       console.log(`📍 Miss Call Webhook: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/tata-misscall-whatsapp`);
       console.log(`📍 Executive Chat: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/executive-chat/:token`);
-      console.log(`📍 Health Check: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/health`);
       console.log('='.repeat(60));
       console.log('🧠 HYBRID AI CLASSIFIER ENABLED:');
       console.log('   ✅ Fast Rules (0-5ms) - 80% of messages');
@@ -854,6 +914,12 @@ async function startServer() {
       console.log('   ✅ AI Cache (24h TTL) - Prevents duplicate calls');
       console.log('   ✅ Stage-aware Classification');
       console.log('   ✅ Hinglish Language Support');
+      console.log('='.repeat(60));
+      console.log('🩸 BLOOD TEST CAMPAIGN:');
+      console.log('   ✅ Detects calls to Blood Test Number');
+      console.log('   ✅ Asks for Address only');
+      console.log('   ✅ Sends Phone + Address to Executive');
+      console.log('   ✅ Template: blood_test_lead_v1');
       console.log('='.repeat(60));
       console.log('🛡️ OTHER FEATURES:');
       console.log('   ✅ Anti-Spam Cooldown (2 hours)');
