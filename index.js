@@ -6,6 +6,7 @@ const cron = require('node-cron');
 const OpenAI = require('openai');
 const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
+const { classifyWithStage, clearAICache, getCacheStats } = require('./classifier');
 
 // ============================================
 // ✅ FORCE PORT BINDING
@@ -104,7 +105,6 @@ function getCallerNumberFromPayload(body) {
 // ============================================
 const WATI_TOKEN = process.env.WATI_TOKEN;
 const WATI_BASE_URL = process.env.WATI_BASE_URL;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
@@ -269,7 +269,7 @@ async function getOrCreateChatSession(patient) {
 }
 
 // ============================================
-// ✅ INTELLIGENT WATI TEMPLATE SENDER
+// ✅ WATI TEMPLATE SENDER
 // ============================================
 async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters) {
   console.log(`📤 Sending ${templateName} to ${whatsappNumber}`);
@@ -296,7 +296,6 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
   const istTime = getISTDateTime();
   
-  // 🧠 INTELLIGENCE: Safe Payload Mapping (Fixes 400 Bad Request)
   const safePatientName = patientName || 'Patient';
   const safeBranch = branch || 'Main Branch';
   const safeTestType = testType || 'Not Specified';
@@ -318,80 +317,7 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
 }
 
 // ============================================
-// ✅ IMPROVED BOT CLASSIFICATION
-// ============================================
-async function classifyMessage(messageText, patientContext = {}) {
-  const upperMsg = messageText.toUpperCase();
-  const wordCount = messageText.split(' ').length;
-  const cleanedMsg = messageText.replace(/[^a-zA-Z\s]/g, '').trim();
-  
-  const commands = ['UPLOAD PRESCRIPTION', 'MANUAL ENTRY', 'CHANGE BRANCH', 'CONNECT TO PATIENT', 'CONVERT DONE', 'WAITING', 'NOT CONVERT'];
-  for (const cmd of commands) {
-    if (upperMsg.includes(cmd)) {
-      return { category: 'IGNORE', confidence: 1 };
-    }
-  }
-  
-  // ✅ Stage-based classification - HIGHEST PRIORITY
-  if (patientContext.currentStage === STAGES.AWAITING_NAME) {
-    return { category: 'PATIENT_NAME', value: cleanedMsg || messageText, confidence: 0.95 };
-  }
-  if (patientContext.currentStage === STAGES.AWAITING_TEST_TYPE) {
-    return { category: 'TEST_TYPE', value: messageText, confidence: 0.95 };
-  }
-  if (patientContext.currentStage === STAGES.AWAITING_TEST_DETAILS) {
-    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.95 };
-  }
-  
-  // Test keywords
-  const testKeywords = ['MRI', 'CT', 'USG', 'X-RAY', 'XRAY', 'ULTRASOUND', 'SONOGRAPHY', 'SCAN', 'REPORT'];
-  let hasTestKeyword = false;
-  let detectedTestType = null;
-  for (const kw of testKeywords) {
-    if (upperMsg.includes(kw)) {
-      hasTestKeyword = true;
-      detectedTestType = kw;
-      break;
-    }
-  }
-  
-  // ✅ Improved name detection - only if NO test keywords and NOT medical term
-  const nameRegex = /^[A-Za-z\s]{2,30}$/;
-  const isMedicalTerm = /scan|test|report|mri|ct|xray|ultrasound|usg|knee|brain|spine|chest|abdomen/i.test(messageText);
-  
-  if (nameRegex.test(cleanedMsg) && !hasTestKeyword && wordCount <= 3 && !isMedicalTerm) {
-    return { category: 'PATIENT_NAME', value: cleanedMsg, confidence: 0.85 };
-  }
-  
-  // Test type detection (single word test)
-  if (hasTestKeyword && wordCount === 1) {
-    return { category: 'TEST_TYPE', value: detectedTestType, confidence: 0.99 };
-  }
-  
-  // Test details detection (multiple words with test keyword)
-  if (hasTestKeyword && wordCount > 1) {
-    return { category: 'TEST_DETAILS', value: messageText, extractedType: detectedTestType, confidence: 0.85 };
-  }
-  
-  // Check if message looks like a test (contains body part)
-  const bodyParts = ['KNEE', 'SPINE', 'BRAIN', 'CHEST', 'ABDOMEN', 'HIP', 'SHOULDER', 'WRIST', 'ANKLE', 'PELVIS', 'NECK', 'HEAD'];
-  let hasBodyPart = false;
-  for (const bp of bodyParts) {
-    if (upperMsg.includes(bp)) {
-      hasBodyPart = true;
-      break;
-    }
-  }
-  
-  if (hasBodyPart && wordCount <= 3) {
-    return { category: 'TEST_DETAILS', value: messageText, confidence: 0.75 };
-  }
-  
-  return { category: 'IGNORE', confidence: 0.5 };
-}
-
-// ============================================
-// ✅ INTELLIGENT TATA TELE WEBHOOK
+// ✅ TATA TELE WEBHOOK
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -412,7 +338,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     
     console.log(`📱 Caller: ${whatsappNumber}, Branch: ${branch.name}`);
     
-    // Store miss call record
     await missCallsCollection.insertOne({
       phoneNumber: whatsappNumber,
       calledNumber,
@@ -430,7 +355,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     let shouldSendWelcome = true;
 
     if (existingPatient) {
-      // 🧠 INTELLIGENCE: 2-Hour Cooldown Timer for Spam Control
       const lastCallTime = existingPatient.missCallTime ? new Date(existingPatient.missCallTime) : new Date(0);
       const hoursSinceLastCall = (now - lastCallTime) / (1000 * 60 * 60);
       
@@ -446,8 +370,8 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
             missCallTime: now,
             missCallTimeIST: getISTTime(),
             branch: branch.name,
-            status: 'awaiting_branch',
-            currentStage: STAGES.AWAITING_BRANCH,
+            status: 'pending',
+            currentStage: STAGES.AWAITING_NAME,
             updatedAt: now
           },
           $inc: { missCallCount: 1 }
@@ -455,24 +379,24 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       );
     } else {
       await patientsCollection.insertOne({
-        patientName: 'Miss Call Patient',
+        patientName: '',
         patientPhone: whatsappNumber,
         branch: branch.name,
-        testType: 'Not Specified',
-        testDetails: 'Not Specified',
+        testType: '',
+        testDetails: '',
         sourceType: 'Miss Call',
         executiveNumber: branch.executive,
-        status: 'awaiting_branch',
+        status: 'pending',
         missCallCount: 1,
         missCallTime: now,
         missCallTimeIST: getISTTime(),
         createdAt: now,
         updatedAt: now,
-        currentStage: STAGES.AWAITING_BRANCH,
+        currentStage: STAGES.AWAITING_NAME,
         source: 'misscall',
         welcomeSent: false
       });
-      console.log(`✅ New patient created for ${whatsappNumber}`);
+      console.log(`✅ New patient created for ${whatsappNumber} - Stage: ${STAGES.AWAITING_NAME}`);
     }
     
     if (shouldSendWelcome) {
@@ -488,7 +412,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ INTELLIGENT WATI WEBHOOK (FIXED STAGE LOGIC)
+// ✅ WATI WEBHOOK (With Hybrid AI Classifier)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -497,7 +421,6 @@ app.post('/wati-webhook', async (req, res) => {
     const msg = req.body;
     const msgId = msg.id || msg.messageId;
     
-    // 🧠 INTELLIGENCE: Block Duplicate Webhooks
     if (!msgId || await isMessageProcessed(msgId)) {
       return res.sendStatus(200);
     }
@@ -508,7 +431,6 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // 🧠 INTELLIGENCE: Ignore Delivery/Read Receipts
     if (msg.eventType && msg.eventType !== 'message') {
       console.log(`⏭️ Ignoring event type: ${msg.eventType}`);
       await markMessageProcessed(msgId);
@@ -517,7 +439,6 @@ app.post('/wati-webhook', async (req, res) => {
     
     let messageText = (msg.text || msg.body || (msg.listReply && msg.listReply.title) || (msg.buttonReply && msg.buttonReply.title) || '').trim();
     
-    // 🧠 INTELLIGENCE: Ignore Blank Text (Images/Files without captions)
     if (!messageText) {
       console.log(`⚠️ Ignored blank or non-text message from ${senderNumber}`);
       await markMessageProcessed(msgId);
@@ -526,19 +447,30 @@ app.post('/wati-webhook', async (req, res) => {
     
     console.log(`📝 Message: "${messageText}" from ${senderNumber}`);
     
-    // Find patient (miss call only)
     let patient = await patientsCollection.findOne({
       patientPhone: senderNumber,
       source: 'misscall'
     });
     
     if (!patient) {
-      console.log(`⚠️ No patient found for ${senderNumber}, ignoring message`);
-      await markMessageProcessed(msgId);
-      return res.sendStatus(200);
+      console.log(`⚠️ No patient found for ${senderNumber}, creating new patient...`);
+      // Create new patient if not exists
+      const result = await patientsCollection.insertOne({
+        patientName: '',
+        patientPhone: senderNumber,
+        branch: 'Main Branch',
+        testType: '',
+        testDetails: '',
+        source: 'misscall',
+        currentStage: STAGES.AWAITING_NAME,
+        status: 'pending',
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+      patient = await patientsCollection.findOne({ _id: result.insertedId });
     }
     
-    console.log(`📋 Patient stage: ${patient.currentStage}, Name: ${patient.patientName || 'Not set'}, Test: ${patient.testType || 'Not set'}`);
+    console.log(`📋 Current State - Stage: ${patient.currentStage}, Name: "${patient.patientName || ''}", Test: "${patient.testType || ''}", Details: "${patient.testDetails || ''}"`);
     
     // Store message
     await patientsCollection.updateOne(
@@ -554,7 +486,6 @@ app.post('/wati-webhook', async (req, res) => {
       }
     );
     
-    // Also store in separate messages collection
     await chatMessagesCollection.insertOne({
       patientId: patient._id,
       patientPhone: patient.patientPhone,
@@ -564,66 +495,79 @@ app.post('/wati-webhook', async (req, res) => {
       source: patient.source
     });
     
-    // Classify message with current stage
-    const context = { currentStage: patient.currentStage };
-    const result = await classifyMessage(messageText, context);
+    // 🔥 HYBRID AI CLASSIFICATION
+    const result = await classifyWithStage(messageText, patient.currentStage);
     
-    console.log(`🔍 Classification: category=${result.category}, confidence=${result.confidence}`);
+    console.log(`🔍 Classification: ${result.category} (${result.method}, confidence: ${result.confidence})`);
     
-    if (result.confidence >= 0.8 && result.category !== 'IGNORE') {
-      const update = {};
-      let stageChanged = false;
-      
-      if (result.category === 'PATIENT_NAME') {
-        update.patientName = result.value || 'Patient';
-        update.currentStage = STAGES.AWAITING_TEST_TYPE;
-        stageChanged = true;
-        console.log(`✅ Name saved: "${result.value}" | Stage: ${STAGES.AWAITING_TEST_TYPE}`);
-      } 
-      else if (result.category === 'TEST_TYPE') {
-        update.testType = result.value || 'Not Specified';
-        update.currentStage = STAGES.AWAITING_TEST_DETAILS;
-        stageChanged = true;
-        console.log(`✅ Test type saved: "${result.value}" | Stage: ${STAGES.AWAITING_TEST_DETAILS}`);
-      } 
-      else if (result.category === 'TEST_DETAILS') {
-        update.testDetails = result.value || 'Not Specified';
-        update.currentStage = STAGES.EXECUTIVE_NOTIFIED;
-        stageChanged = true;
-        // Auto-fill test type if extracted
-        if (result.extractedType && (!patient.testType || patient.testType === 'Not Specified')) {
-          update.testType = result.extractedType;
-          console.log(`✅ Auto-filled test type: ${result.extractedType}`);
-        }
-        console.log(`✅ Test details saved: "${result.value}" | Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
+    let updateFields = {};
+    let stageChanged = false;
+    let shouldNotifyExecutive = false;
+    
+    if (result.confidence >= 0.65 && result.category !== 'IGNORE' && result.category !== 'UNKNOWN') {
+      switch (result.category) {
+        case 'PATIENT_NAME':
+          updateFields.patientName = result.value;
+          updateFields.currentStage = STAGES.AWAITING_TEST_TYPE;
+          stageChanged = true;
+          console.log(`✅ Name saved: "${result.value}" → Stage: ${STAGES.AWAITING_TEST_TYPE}`);
+          break;
+          
+        case 'TEST_TYPE':
+          updateFields.testType = result.value;
+          updateFields.currentStage = STAGES.AWAITING_TEST_DETAILS;
+          stageChanged = true;
+          console.log(`✅ Test type saved: "${result.value}" → Stage: ${STAGES.AWAITING_TEST_DETAILS}`);
+          break;
+          
+        case 'TEST_DETAILS':
+          updateFields.testDetails = result.value;
+          updateFields.currentStage = STAGES.EXECUTIVE_NOTIFIED;
+          stageChanged = true;
+          shouldNotifyExecutive = true;
+          if (result.extractedTest && (!patient.testType || patient.testType === '')) {
+            updateFields.testType = result.extractedTest;
+            console.log(`✅ Auto-filled test type: ${result.extractedTest}`);
+          }
+          console.log(`✅ Test details saved: "${result.value}" → Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
+          break;
+          
+        case 'GREETING':
+          console.log(`👋 Greeting detected, no action needed`);
+          break;
       }
       
       if (stageChanged) {
-        await patientsCollection.updateOne({ _id: patient._id }, { $set: update });
-        // ✅ IMPORTANT: Refresh patient variable with updated data
+        await patientsCollection.updateOne({ _id: patient._id }, { $set: updateFields });
         patient = await patientsCollection.findOne({ _id: patient._id });
-        console.log(`🔄 Patient stage updated to: ${patient.currentStage}`);
-      }
-      
-      // Send notification to executive when test details received
-      if (result.category === 'TEST_DETAILS' && patient.currentStage === STAGES.EXECUTIVE_NOTIFIED) {
-        const session = await getOrCreateChatSession(patient);
-        const executiveNumber = getExecutiveNumber(patient.branch);
-        
-        console.log(`📤 Sending lead notification to executive: ${executiveNumber}`);
-        await sendLeadNotification(
-          executiveNumber,
-          patient.patientName || 'Patient',
-          senderNumber,
-          patient.branch || 'Main Branch',
-          patient.testDetails || 'Not Specified',
-          patient.testType || 'Not Specified',
-          session.sessionToken
-        );
-        console.log(`✅ Executive notification sent to ${executiveNumber}`);
+        console.log(`🔄 Patient updated - Name: "${patient.patientName}", Test: "${patient.testType}", Details: "${patient.testDetails}", Stage: ${patient.currentStage}`);
       }
     } else {
-      console.log(`⏭️ Message ignored (confidence: ${result.confidence})`);
+      console.log(`⏭️ Message ignored (confidence: ${result.confidence}, category: ${result.category})`);
+    }
+    
+    // Send notification to executive when we have complete data
+    if (shouldNotifyExecutive || (patient.currentStage === STAGES.EXECUTIVE_NOTIFIED && patient.testDetails && patient.testDetails !== '')) {
+      const finalName = patient.patientName || 'Patient';
+      const finalTestType = patient.testType || 'Not Specified';
+      const finalTestDetails = patient.testDetails || 'Not Specified';
+      
+      const session = await getOrCreateChatSession(patient);
+      const executiveNumber = getExecutiveNumber(patient.branch);
+      
+      console.log(`📤 Sending lead notification to executive: ${executiveNumber}`);
+      console.log(`   Data: Name=${finalName}, Test=${finalTestType}, Details=${finalTestDetails}, Branch=${patient.branch}`);
+      
+      await sendLeadNotification(
+        executiveNumber,
+        finalName,
+        senderNumber,
+        patient.branch || 'Main Branch',
+        finalTestDetails,
+        finalTestType,
+        session.sessionToken
+      );
+      console.log(`✅ Executive notification sent successfully`);
     }
     
     await markMessageProcessed(msgId);
@@ -645,7 +589,6 @@ app.get('/executive-chat/:token', async (req, res) => {
   }
   
   const messages = await chatMessagesCollection.find({ sessionToken: token }).sort({ timestamp: 1 }).toArray();
-  const patient = await patientsCollection.findOne({ patientPhone: session.patientPhone });
   
   function escapeHtml(text) {
     if (!text) return '';
@@ -791,6 +734,31 @@ app.get('/api/messages/:token', async (req, res) => {
 });
 
 // ============================================
+// ✅ ADMIN ENDPOINTS (Cache Management)
+// ============================================
+app.post('/admin/clear-cache', async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (password !== '2311') {
+      return res.status(403).json({ error: 'Invalid password' });
+    }
+    const result = clearAICache();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/admin/cache-stats', async (req, res) => {
+  try {
+    const stats = getCacheStats();
+    res.json({ success: true, ...stats });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
 // ✅ OTHER ENDPOINTS
 // ============================================
 app.get('/health', (req, res) => {
@@ -799,28 +767,37 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     mongodb: db ? 'connected' : 'disconnected',
     time: getISTTime(),
-    system: 'Miss Call System'
+    system: 'Miss Call System with Hybrid AI',
+    classifier: 'rules + openai'
   });
 });
 
 app.get('/', (req, res) => {
   res.json({
-    message: '🚀 Miss Call System (UIC Support)',
-    version: '3.0.0',
+    message: '🚀 Miss Call System with Hybrid AI Classifier',
+    version: '4.0.0',
     port: PORT,
     time: getISTTime(),
+    features: {
+      classification: 'Rules + OpenAI (80/20 hybrid)',
+      anti_spam: '2-hour cooldown',
+      rate_limit: '20 req/sec',
+      cache: 'AI results cached (24h TTL)'
+    },
     endpoints: {
       tata_misscall: '/tata-misscall-whatsapp',
       wati_webhook: '/wati-webhook',
       executive_chat: '/executive-chat/:token',
       health: '/health',
-      admin: '/admin'
+      admin: '/admin',
+      cache_stats: '/admin/cache-stats',
+      clear_cache: '/admin/clear-cache (POST with password)'
     }
   });
 });
 
 // ============================================
-// ✅ DASHBOARD ROUTER (Optional)
+// ✅ DASHBOARD ROUTER
 // ============================================
 let dashboardRouter;
 try {
@@ -839,7 +816,10 @@ try {
 } catch (err) {
   console.log('⚠️ Dashboard router not found, admin endpoint disabled');
   app.get('/admin', (req, res) => {
-    res.json({ message: 'Admin dashboard not configured', status: 'available at /admin only if dashboard.js exists' });
+    res.json({ 
+      message: 'Admin dashboard not configured', 
+      status: 'available endpoints: /admin/cache-stats, /admin/clear-cache'
+    });
   });
 }
 
@@ -847,7 +827,7 @@ try {
 // ✅ START SERVER
 // ============================================
 async function startServer() {
-  console.log('🔄 Initializing Miss Call System...');
+  console.log('🔄 Initializing Miss Call System with Hybrid AI...');
   console.log(`📍 Configured PORT: ${PORT}`);
   console.log(`📍 Node version: ${process.version}`);
   
@@ -868,14 +848,18 @@ async function startServer() {
       console.log(`📍 Executive Chat: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/executive-chat/:token`);
       console.log(`📍 Health Check: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/health`);
       console.log('='.repeat(60));
-      console.log('🧠 INTELLIGENCE FEATURES ENABLED:');
+      console.log('🧠 HYBRID AI CLASSIFIER ENABLED:');
+      console.log('   ✅ Fast Rules (0-5ms) - 80% of messages');
+      console.log('   ✅ OpenAI Fallback (500-1500ms) - 20% of messages');
+      console.log('   ✅ AI Cache (24h TTL) - Prevents duplicate calls');
+      console.log('   ✅ Stage-aware Classification');
+      console.log('   ✅ Hinglish Language Support');
+      console.log('='.repeat(60));
+      console.log('🛡️ OTHER FEATURES:');
       console.log('   ✅ Anti-Spam Cooldown (2 hours)');
       console.log('   ✅ Duplicate Webhook Blocker');
       console.log('   ✅ Blank Message Handler');
-      console.log('   ✅ WATI 400 Error Protection');
       console.log('   ✅ Rate Limiting (20 req/sec)');
-      console.log('   ✅ Improved Name/Test Classification');
-      console.log('   ✅ Stage-based Message Routing');
       console.log('='.repeat(60) + '\n');
     });
     
