@@ -110,56 +110,65 @@ const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = 'lead_notification_v6';
 const BLOOD_TEST_NUMBER = process.env.BLOOD_TEST_NUMBER || '919725504245';
+const BLOOD_TEST_TEMPLATE_NAME = 'blood_test_book';
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS & BRANCHES
+// ✅ EXECUTIVE NUMBERS (UPDATED - Khyati Added)
 // ============================================
-const EXECUTIVES = {
-  'Naroda Team': (process.env.NARODA_EXECUTIVE || '919106959092').toString().trim(),
-  'Usmanpura Team': (process.env.USMANPURA_EXECUTIVE || '917490029085').toString().trim(),
-  'Vadaj Team': (process.env.VADAJ_EXECUTIVE || '918488931212').toString().trim(),
-  'Satellite Team': (process.env.SATELLITE_EXECUTIVE || '917490029085').toString().trim(),
-  'Maninagar Team': (process.env.MANINAGAR_EXECUTIVE || '918488931212').toString().trim(),
-  'Bapunagar Team': (process.env.BAPUNAGAR_EXECUTIVE || '919274682553').toString().trim(),
-  'Juhapura Team': (process.env.JUHAPURA_EXECUTIVE || '919274682553').toString().trim(),
-  'Gandhinagar Team': (process.env.GANDHINAGAR_EXECUTIVE || '919558591212').toString().trim(),
-  'Rajkot Team': (process.env.RAJKOT_EXECUTIVE || '917880261858').toString().trim(),
-  'Sabarmati Team': (process.env.SABARMATI_EXECUTIVE || '917880261858').toString().trim(),
-  'Manager': (process.env.MANAGER_NUMBER || '917698011233').toString().trim()
-};
+const EXECUTIVES_LIST = [
+  { name: 'Aditi', number: '8488931212', active: true, totalAssigned: 0 },
+  { name: 'Khyati', number: '7490029085', active: true, totalAssigned: 0 },
+  { name: 'Jay', number: '9274682553', active: true, totalAssigned: 0 },
+  { name: 'Mital', number: '9558591212', active: true, totalAssigned: 0 }
+];
 
-function getExecutiveNumber(branchName) {
-  const formattedBranch = branchName.charAt(0).toUpperCase() + branchName.slice(1).toLowerCase();
-  const teamName = `${formattedBranch} Team`;
-  return EXECUTIVES[teamName] || process.env.DEFAULT_EXECUTIVE || '917880261858';
+let currentRoundRobinIndex = 0;
+
+function getNextExecutive() {
+  const activeExecs = EXECUTIVES_LIST.filter(e => e.active);
+  if (activeExecs.length === 0) return null;
+  const exec = activeExecs[currentRoundRobinIndex % activeExecs.length];
+  currentRoundRobinIndex++;
+  return exec;
 }
 
+function getExecutiveByNumber(number) {
+  return EXECUTIVES_LIST.find(e => e.number === number);
+}
+
+// Executive numbers list for skipping messages
+const EXECUTIVE_NUMBERS = EXECUTIVES_LIST.map(e => e.number);
+console.log(`👥 Executive Numbers: ${EXECUTIVE_NUMBERS.join(', ')}`);
+
+// ============================================
+// ✅ BRANCH CONFIGURATION
+// ============================================
 const BRANCHES = {
-  [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: { name: 'Naroda', executive: EXECUTIVES['Naroda Team'] },
-  [normalizeIndianNumber('917969690922')]: { name: 'Naroda', executive: EXECUTIVES['Naroda Team'] },
-  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: { name: 'Usmanpura', executive: EXECUTIVES['Usmanpura Team'] },
-  [normalizeIndianNumber('917969690952')]: { name: 'Usmanpura', executive: EXECUTIVES['Usmanpura Team'] },
-  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: { name: 'Vadaj', executive: EXECUTIVES['Vadaj Team'] },
-  [normalizeIndianNumber('917969690917')]: { name: 'Vadaj', executive: EXECUTIVES['Vadaj Team'] },
-  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: { name: 'Satellite', executive: EXECUTIVES['Satellite Team'] },
-  [normalizeIndianNumber('917969690902')]: { name: 'Satellite', executive: EXECUTIVES['Satellite Team'] },
-  [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: { name: 'Maninagar', executive: EXECUTIVES['Maninagar Team'] },
-  [normalizeIndianNumber('917969690904')]: { name: 'Maninagar', executive: EXECUTIVES['Maninagar Team'] },
-  [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: { name: 'Bapunagar', executive: EXECUTIVES['Bapunagar Team'] },
-  [normalizeIndianNumber('917969690906')]: { name: 'Bapunagar', executive: EXECUTIVES['Bapunagar Team'] },
-  [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: { name: 'Juhapura', executive: EXECUTIVES['Juhapura Team'] },
-  [normalizeIndianNumber('917969690909')]: { name: 'Juhapura', executive: EXECUTIVES['Juhapura Team'] },
-  [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: { name: 'Gandhinagar', executive: EXECUTIVES['Gandhinagar Team'] },
-  [normalizeIndianNumber('917969690910')]: { name: 'Gandhinagar', executive: EXECUTIVES['Gandhinagar Team'] },
-  [normalizeIndianNumber('917969690913')]: { name: 'Rajkot', executive: EXECUTIVES['Rajkot Team'] },
-  [normalizeIndianNumber('917969690919')]: { name: 'Rajkot', executive: EXECUTIVES['Rajkot Team'] },
-  [normalizeIndianNumber('917969690942')]: { name: 'Sabarmati', executive: EXECUTIVES['Sabarmati Team'] },
-  [normalizeIndianNumber('917969690905')]: { name: 'Sabarmati', executive: EXECUTIVES['Sabarmati Team'] }
+  [normalizeIndianNumber(process.env.NARODA_NUMBER || '07969690935')]: { name: 'Naroda' },
+  [normalizeIndianNumber('917969690922')]: { name: 'Naroda' },
+  [normalizeIndianNumber(process.env.USMANPURA_NUMBER || '9898989897')]: { name: 'Usmanpura' },
+  [normalizeIndianNumber('917969690952')]: { name: 'Usmanpura' },
+  [normalizeIndianNumber(process.env.VADAJ_NUMBER || '9898989896')]: { name: 'Vadaj' },
+  [normalizeIndianNumber('917969690917')]: { name: 'Vadaj' },
+  [normalizeIndianNumber(process.env.SATELLITE_NUMBER || '9898989898')]: { name: 'Satellite' },
+  [normalizeIndianNumber('917969690902')]: { name: 'Satellite' },
+  [normalizeIndianNumber(process.env.MANINAGAR_NUMBER || '9898989895')]: { name: 'Maninagar' },
+  [normalizeIndianNumber('917969690904')]: { name: 'Maninagar' },
+  [normalizeIndianNumber(process.env.BAPUNAGAR_NUMBER || '9898989894')]: { name: 'Bapunagar' },
+  [normalizeIndianNumber('917969690906')]: { name: 'Bapunagar' },
+  [normalizeIndianNumber(process.env.JUHAPURA_NUMBER || '9898989893')]: { name: 'Juhapura' },
+  [normalizeIndianNumber('917969690909')]: { name: 'Juhapura' },
+  [normalizeIndianNumber(process.env.GANDHINAGAR_NUMBER || '9898989892')]: { name: 'Gandhinagar' },
+  [normalizeIndianNumber('917969690910')]: { name: 'Gandhinagar' },
+  [normalizeIndianNumber('917969690913')]: { name: 'Rajkot' },
+  [normalizeIndianNumber('917969690919')]: { name: 'Rajkot' },
+  [normalizeIndianNumber('917969690942')]: { name: 'Sabarmati' },
+  [normalizeIndianNumber('917969690905')]: { name: 'Sabarmati' }
 };
 
 function getBranchByCalledNumber(calledNumber) {
   const normalized = normalizeIndianNumber(calledNumber);
-  return BRANCHES[normalized] || { name: 'Main Branch', executive: process.env.DEFAULT_EXECUTIVE || '917880261858' };
+  return BRANCHES[normalized] || { name: 'Main Branch' };
 }
 
 const STAGES = {
@@ -253,7 +262,7 @@ async function getOrCreateChatSession(patient) {
       {
         $setOnInsert: {
           sessionToken,
-          executiveNumber: getExecutiveNumber(patient.branch),
+          executiveNumber: patient.executiveNumber,
           patientPhone: patient.patientPhone,
           patientName: patient.patientName || 'Patient',
           createdAt: new Date(),
@@ -295,6 +304,9 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
   });
 }
 
+// ============================================
+// ✅ LEAD NOTIFICATION (Regular Campaign)
+// ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
   const istTime = getISTDateTime();
   
@@ -303,8 +315,7 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
   const safeTestType = testType || 'Not Specified';
   const safeTestDetails = testDetails || 'Not Specified';
 
-  const welcomeText = `Hi ${safePatientName}, I am from UIC Support Team.\n\nYour Details:\nName: ${safePatientName}\nTest: ${safeTestType} - ${safeTestDetails}\nBranch: ${safeBranch}\nTime: ${istTime}\n\nHow can I help you?`;
-  const whatsappLink = `https://wa.me/${patientPhone}?text=${encodeURIComponent(welcomeText)}`;
+  const whatsappLink = `https://wa.me/${patientPhone}?text=Hi%20${encodeURIComponent(safePatientName)}%2C%20I%20am%20from%20UIC%20Support%20Team.%20Your%20test%20details%3A%20${encodeURIComponent(safeTestType)}%20-%20${encodeURIComponent(safeTestDetails)}`;
   
   const parameters = [
     { name: "1", value: safePatientName },
@@ -319,7 +330,7 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
 }
 
 // ============================================
-// ✅ BLOOD TEST NOTIFICATION (Only Phone + Address)
+// ✅ BLOOD TEST NOTIFICATION (Using blood_test_book template)
 // ============================================
 async function sendBloodTestNotification(executiveNumber, patientPhone, address, chatToken) {
   const istTime = getISTDateTime();
@@ -336,11 +347,11 @@ async function sendBloodTestNotification(executiveNumber, patientPhone, address,
     { name: "4", value: whatsappLink }
   ];
   
-  return await sendWatiTemplateMessage(executiveNumber, 'blood_test_lead_v1', parameters);
+  return await sendWatiTemplateMessage(executiveNumber, BLOOD_TEST_TEMPLATE_NAME, parameters);
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK (With Blood Test Detection)
+// ✅ TATA TELE WEBHOOK (With Round Robin Executive Assignment)
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -359,7 +370,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
     const calledNumber = req.body.call_to_number || '';
     const branch = getBranchByCalledNumber(calledNumber);
     
-    // Detect if this is blood test campaign
     const isBloodTestCampaign = calledNumber.includes(BLOOD_TEST_NUMBER) || 
                                  normalizeIndianNumber(calledNumber) === normalizeIndianNumber(BLOOD_TEST_NUMBER);
     
@@ -407,6 +417,16 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       );
       console.log(`✅ Patient updated - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}`);
     } else {
+      // ✅ Get next executive using Round Robin
+      const assignedExecutive = getNextExecutive();
+      if (!assignedExecutive) {
+        console.log('❌ No executives available!');
+        return res.status(500).json({ error: 'No executives available' });
+      }
+      
+      assignedExecutive.totalAssigned += 1;
+      console.log(`📊 Round Robin - Assigned to: ${assignedExecutive.name} (${assignedExecutive.number}) - Total: ${assignedExecutive.totalAssigned}`);
+      
       await patientsCollection.insertOne({
         patientName: '',
         patientPhone: whatsappNumber,
@@ -415,8 +435,9 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         testDetails: isBloodTestCampaign ? 'Home Collection' : '',
         address: '',
         campaign: isBloodTestCampaign ? 'blood_test' : 'regular',
+        executiveNumber: assignedExecutive.number,
+        executiveName: assignedExecutive.name,
         sourceType: 'Miss Call',
-        executiveNumber: branch.executive,
         status: 'pending',
         missCallCount: 1,
         missCallTime: now,
@@ -427,12 +448,12 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
         source: 'misscall',
         welcomeSent: false
       });
-      console.log(`✅ New patient created for ${whatsappNumber} - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}`);
+      console.log(`✅ New patient created for ${whatsappNumber} - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}, Executive: ${assignedExecutive.name}`);
     }
     
     if (shouldSendWelcome) {
       if (isBloodTestCampaign) {
-        await sendWatiTemplateMessage(whatsappNumber, 'blood_test_welcome', [{ name: '1', value: 'Blood Test' }]);
+        await sendWatiTemplateMessage(whatsappNumber, BLOOD_TEST_TEMPLATE_NAME, [{ name: '1', value: 'Blood Test' }]);
         console.log(`✅ Blood test welcome sent to ${whatsappNumber}`);
       } else {
         await sendWatiTemplateMessage(whatsappNumber, TEMPLATE_NAME, [{ name: '1', value: branch.name }]);
@@ -448,7 +469,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK (With Blood Test Address Collection)
+// ✅ WATI WEBHOOK (With Executive Skip)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -463,6 +484,13 @@ app.post('/wati-webhook', async (req, res) => {
     
     const senderNumber = msg.whatsappNumber || msg.from || msg.waId;
     if (!senderNumber) {
+      await markMessageProcessed(msgId);
+      return res.sendStatus(200);
+    }
+
+    // ✅ Skip messages from executives
+    if (EXECUTIVE_NUMBERS.includes(senderNumber)) {
+      console.log(`⏭️ Skipping message from executive: ${senderNumber}`);
       await markMessageProcessed(msgId);
       return res.sendStatus(200);
     }
@@ -490,6 +518,7 @@ app.post('/wati-webhook', async (req, res) => {
     
     if (!patient) {
       console.log(`⚠️ No patient found for ${senderNumber}, creating new patient...`);
+      const assignedExecutive = getNextExecutive();
       const result = await patientsCollection.insertOne({
         patientName: '',
         patientPhone: senderNumber,
@@ -498,6 +527,8 @@ app.post('/wati-webhook', async (req, res) => {
         testDetails: '',
         address: '',
         campaign: 'regular',
+        executiveNumber: assignedExecutive ? assignedExecutive.number : EXECUTIVES_LIST[0].number,
+        executiveName: assignedExecutive ? assignedExecutive.name : EXECUTIVES_LIST[0].name,
         source: 'misscall',
         currentStage: STAGES.AWAITING_NAME,
         status: 'pending',
@@ -507,7 +538,7 @@ app.post('/wati-webhook', async (req, res) => {
       patient = await patientsCollection.findOne({ _id: result.insertedId });
     }
     
-    console.log(`📋 Current State - Campaign: ${patient.campaign}, Stage: ${patient.currentStage}, Address: "${patient.address || ''}"`);
+    console.log(`📋 Current State - Campaign: ${patient.campaign}, Stage: ${patient.currentStage}, Executive: ${patient.executiveName || 'Not assigned'}, Address: "${patient.address || ''}"`);
     
     // Store message
     await patientsCollection.updateOne(
@@ -543,10 +574,16 @@ app.post('/wati-webhook', async (req, res) => {
     
     if (result.confidence >= 0.65 && result.category !== 'IGNORE' && result.category !== 'UNKNOWN') {
       
-      // 🆕 BLOOD TEST CAMPAIGN HANDLING
+      // Handle ASK_AGAIN - Send clarification using existing template
+      if (result.category === 'ASK_AGAIN') {
+        await sendWatiTemplateMessage(senderNumber, TEMPLATE_NAME, [{ name: '1', value: result.value }]);
+        console.log(`❓ Asking patient: ${result.value}`);
+        await markMessageProcessed(msgId);
+        return res.sendStatus(200);
+      }
+      
+      // 🩸 BLOOD TEST CAMPAIGN HANDLING
       if (patient.campaign === 'blood_test') {
-        
-        // Any message in awaiting_address stage is considered address
         if (patient.currentStage === STAGES.AWAITING_ADDRESS || result.category === 'ADDRESS') {
           updateFields.address = messageText;
           updateFields.currentStage = STAGES.EXECUTIVE_NOTIFIED;
@@ -593,7 +630,7 @@ app.post('/wati-webhook', async (req, res) => {
       if (stageChanged) {
         await patientsCollection.updateOne({ _id: patient._id }, { $set: updateFields });
         patient = await patientsCollection.findOne({ _id: patient._id });
-        console.log(`🔄 Patient updated - Campaign: ${patient.campaign}, Stage: ${patient.currentStage}`);
+        console.log(`🔄 Patient updated - Campaign: ${patient.campaign}, Stage: ${patient.currentStage}, Executive: ${patient.executiveName}`);
       }
     } else {
       console.log(`⏭️ Message ignored (confidence: ${result.confidence}, category: ${result.category})`);
@@ -602,10 +639,11 @@ app.post('/wati-webhook', async (req, res) => {
     // Send notification to executive
     if (shouldNotifyExecutive) {
       const session = await getOrCreateChatSession(patient);
-      const executiveNumber = getExecutiveNumber(patient.branch);
+      const executiveNumber = patient.executiveNumber;
       
-      if (patient.campaign === 'blood_test') {
-        // Blood test notification (only phone + address)
+      if (!executiveNumber) {
+        console.log(`❌ No executive assigned for patient ${senderNumber}`);
+      } else if (patient.campaign === 'blood_test') {
         await sendBloodTestNotification(
           executiveNumber,
           senderNumber,
@@ -614,7 +652,6 @@ app.post('/wati-webhook', async (req, res) => {
         );
         console.log(`✅ Blood Test lead sent to ${executiveNumber} - Phone: ${senderNumber}, Address: ${(patient.address || 'Not Provided').substring(0, 30)}...`);
       } else {
-        // Regular notification (all details)
         await sendLeadNotification(
           executiveNumber,
           patient.patientName || 'Patient',
@@ -816,6 +853,33 @@ app.get('/admin/cache-stats', async (req, res) => {
   }
 });
 
+app.get('/admin/executive-stats', async (req, res) => {
+  try {
+    const stats = EXECUTIVES_LIST.map(e => ({
+      name: e.name,
+      number: e.number,
+      totalAssigned: e.totalAssigned
+    }));
+    res.json({ success: true, executives: stats, currentIndex: currentRoundRobinIndex });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/admin/reset-executive-stats', async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (password !== '2311') {
+      return res.status(403).json({ error: 'Invalid password' });
+    }
+    EXECUTIVES_LIST.forEach(e => e.totalAssigned = 0);
+    currentRoundRobinIndex = 0;
+    res.json({ success: true, message: 'Executive stats reset' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============================================
 // ✅ OTHER ENDPOINTS
 // ============================================
@@ -826,23 +890,24 @@ app.get('/health', (req, res) => {
     mongodb: db ? 'connected' : 'disconnected',
     time: getISTTime(),
     system: 'Miss Call System with Blood Test Campaign',
-    classifier: 'rules + openai'
+    executives: EXECUTIVES_LIST.map(e => ({ name: e.name, number: e.number, totalAssigned: e.totalAssigned }))
   });
 });
 
 app.get('/', (req, res) => {
   res.json({
-    message: '🚀 Miss Call System with Blood Test Campaign',
-    version: '4.0.0',
+    message: '🚀 Miss Call System with Blood Test Campaign & Round Robin',
+    version: '5.0.0',
     port: PORT,
     time: getISTTime(),
+    executives: EXECUTIVES_LIST.map(e => ({ name: e.name, number: e.number })),
     features: {
       classification: 'Rules + OpenAI (80/20 hybrid)',
       campaigns: 'Regular + Blood Test',
-      blood_test: 'Collects only Phone + Address',
+      assignment: 'Round Robin',
+      blood_test_template: BLOOD_TEST_TEMPLATE_NAME,
       anti_spam: '2-hour cooldown',
-      rate_limit: '20 req/sec',
-      cache: 'AI results cached (24h TTL)'
+      rate_limit: '20 req/sec'
     },
     endpoints: {
       tata_misscall: '/tata-misscall-whatsapp',
@@ -850,8 +915,7 @@ app.get('/', (req, res) => {
       executive_chat: '/executive-chat/:token',
       health: '/health',
       admin: '/admin',
-      cache_stats: '/admin/cache-stats',
-      clear_cache: '/admin/clear-cache (POST with password)'
+      executive_stats: '/admin/executive-stats'
     }
   });
 });
@@ -878,7 +942,7 @@ try {
   app.get('/admin', (req, res) => {
     res.json({ 
       message: 'Admin dashboard not configured', 
-      status: 'available endpoints: /admin/cache-stats, /admin/clear-cache'
+      status: 'available endpoints: /admin/executive-stats, /admin/cache-stats, /admin/clear-cache, /admin/reset-executive-stats'
     });
   });
 }
@@ -890,6 +954,10 @@ async function startServer() {
   console.log('🔄 Initializing Miss Call System with Blood Test Campaign...');
   console.log(`📍 Configured PORT: ${PORT}`);
   console.log(`📍 Node version: ${process.version}`);
+  console.log(`👥 Executives (Round Robin):`);
+  EXECUTIVES_LIST.forEach((e, i) => {
+    console.log(`   ${i + 1}. ${e.name} - ${e.number}`);
+  });
   
   try {
     await connectDB();
@@ -904,27 +972,29 @@ async function startServer() {
       console.log(`📍 Host: ${HOST}`);
       console.log(`📍 Time: ${getISTTime()}`);
       console.log(`📍 Blood Test Number: ${BLOOD_TEST_NUMBER}`);
+      console.log(`📍 Blood Test Template: ${BLOOD_TEST_TEMPLATE_NAME}`);
       console.log(`📍 WATI Webhook: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/wati-webhook`);
       console.log(`📍 Miss Call Webhook: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/tata-misscall-whatsapp`);
-      console.log(`📍 Executive Chat: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/executive-chat/:token`);
+      console.log('='.repeat(60));
+      console.log('👥 ROUND ROBIN EXECUTIVE ASSIGNMENT:');
+      EXECUTIVES_LIST.forEach((e, i) => {
+        console.log(`   ${i + 1}. ${e.name} - ${e.number}`);
+      });
       console.log('='.repeat(60));
       console.log('🧠 HYBRID AI CLASSIFIER ENABLED:');
       console.log('   ✅ Fast Rules (0-5ms) - 80% of messages');
       console.log('   ✅ OpenAI Fallback (500-1500ms) - 20% of messages');
-      console.log('   ✅ AI Cache (24h TTL) - Prevents duplicate calls');
       console.log('   ✅ Stage-aware Classification');
-      console.log('   ✅ Hinglish Language Support');
       console.log('='.repeat(60));
       console.log('🩸 BLOOD TEST CAMPAIGN:');
       console.log('   ✅ Detects calls to Blood Test Number');
       console.log('   ✅ Asks for Address only');
       console.log('   ✅ Sends Phone + Address to Executive');
-      console.log('   ✅ Template: blood_test_lead_v1');
+      console.log(`   ✅ Template: ${BLOOD_TEST_TEMPLATE_NAME}`);
       console.log('='.repeat(60));
       console.log('🛡️ OTHER FEATURES:');
       console.log('   ✅ Anti-Spam Cooldown (2 hours)');
-      console.log('   ✅ Duplicate Webhook Blocker');
-      console.log('   ✅ Blank Message Handler');
+      console.log('   ✅ Executive Messages Skipped');
       console.log('   ✅ Rate Limiting (20 req/sec)');
       console.log('='.repeat(60) + '\n');
     });
