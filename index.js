@@ -113,7 +113,7 @@ const BLOOD_TEST_NUMBER = process.env.BLOOD_TEST_NUMBER || '919725504245';
 const BLOOD_TEST_TEMPLATE_NAME = 'blood_test_book';
 
 // ============================================
-// ✅ EXECUTIVE NUMBERS (UPDATED - Khyati Added)
+// ✅ EXECUTIVE NUMBERS (Round Robin)
 // ============================================
 const EXECUTIVES_LIST = [
   { name: 'Aditi', number: '8488931212', active: true, totalAssigned: 0 },
@@ -132,13 +132,17 @@ function getNextExecutive() {
   return exec;
 }
 
-function getExecutiveByNumber(number) {
-  return EXECUTIVES_LIST.find(e => e.number === number);
-}
+// ✅ Executive numbers to skip (all executives + old numbers)
+const EXECUTIVE_NUMBERS = [
+  '8488931212',   // Aditi
+  '7490029085',   // Khyati
+  '9274682553',   // Jay
+  '9558591212',   // Mital
+  '919106959092', // Old executive number (to skip)
+  '917698011233'  // Manager
+];
 
-// Executive numbers list for skipping messages
-const EXECUTIVE_NUMBERS = EXECUTIVES_LIST.map(e => e.number);
-console.log(`👥 Executive Numbers: ${EXECUTIVE_NUMBERS.join(', ')}`);
+console.log(`👥 Executive Numbers (Skipping messages from): ${EXECUTIVE_NUMBERS.join(', ')}`);
 
 // ============================================
 // ✅ BRANCH CONFIGURATION
@@ -351,7 +355,7 @@ async function sendBloodTestNotification(executiveNumber, patientPhone, address,
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK (With Round Robin Executive Assignment)
+// ✅ TATA TELE WEBHOOK (With Round Robin & Blood Test Detection)
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -410,12 +414,14 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
             branch: branch.name,
             campaign: isBloodTestCampaign ? 'blood_test' : (existingPatient.campaign || 'regular'),
             currentStage: isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME,
+            executiveNumber: existingPatient.executiveNumber,
+            executiveName: existingPatient.executiveName,
             updatedAt: now
           },
           $inc: { missCallCount: 1 }
         }
       );
-      console.log(`✅ Patient updated - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}`);
+      console.log(`✅ Patient updated - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}, Executive: ${existingPatient.executiveName || 'Not assigned'}`);
     } else {
       // ✅ Get next executive using Round Robin
       const assignedExecutive = getNextExecutive();
@@ -469,7 +475,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK (With Executive Skip)
+// ✅ WATI WEBHOOK (With Executive Skip & Stage Persistence)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -907,7 +913,8 @@ app.get('/', (req, res) => {
       assignment: 'Round Robin',
       blood_test_template: BLOOD_TEST_TEMPLATE_NAME,
       anti_spam: '2-hour cooldown',
-      rate_limit: '20 req/sec'
+      rate_limit: '20 req/sec',
+      stage_persistence: 'Patient can reply anytime, system remembers stage'
     },
     endpoints: {
       tata_misscall: '/tata-misscall-whatsapp',
@@ -958,6 +965,7 @@ async function startServer() {
   EXECUTIVES_LIST.forEach((e, i) => {
     console.log(`   ${i + 1}. ${e.name} - ${e.number}`);
   });
+  console.log(`⏭️ Skipping messages from executives: ${EXECUTIVE_NUMBERS.join(', ')}`);
   
   try {
     await connectDB();
@@ -985,6 +993,7 @@ async function startServer() {
       console.log('   ✅ Fast Rules (0-5ms) - 80% of messages');
       console.log('   ✅ OpenAI Fallback (500-1500ms) - 20% of messages');
       console.log('   ✅ Stage-aware Classification');
+      console.log('   ✅ Stage Persistence - Patient can reply anytime');
       console.log('='.repeat(60));
       console.log('🩸 BLOOD TEST CAMPAIGN:');
       console.log('   ✅ Detects calls to Blood Test Number');
@@ -996,6 +1005,7 @@ async function startServer() {
       console.log('   ✅ Anti-Spam Cooldown (2 hours)');
       console.log('   ✅ Executive Messages Skipped');
       console.log('   ✅ Rate Limiting (20 req/sec)');
+      console.log('   ✅ Patient can reply anytime, system remembers stage');
       console.log('='.repeat(60) + '\n');
     });
     
