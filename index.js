@@ -109,12 +109,12 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = 'lead_notification_v6';
-const HEALTH_CAMPAIGN_TEMPLATE = 'health_campaign_lead';
+const HEALTH_CAMPAIGN_TEMPLATE = process.env.HEALTH_CAMPAIGN_TEMPLATE || 'health_campaign_lead';
 
 // ✅ Health Campaign Executive (Single for both Women & Men)
 const HEALTH_EXECUTIVE = {
   name: 'Health Campaign Executive',
-  number: '9227184434'
+  number: process.env.HEALTH_EXECUTIVE_NUMBER || '9227184434'
 };
 
 // ✅ Women Tests
@@ -145,13 +145,13 @@ function getNextExecutive() {
   return exec;
 }
 
-// ✅ Executive numbers to skip
+// ✅ Executive numbers to track (NOT SKIP - just count)
 const EXECUTIVE_NUMBERS = [
   '8488931212', '7490029085', '9274682553', '9558591212',
   '919106959092', '917698011233', '9227184434'
 ];
 
-console.log(`👥 Skipping messages from executives: ${EXECUTIVE_NUMBERS.join(', ')}`);
+console.log(`👥 Tracking messages from executives: ${EXECUTIVE_NUMBERS.join(', ')}`);
 
 // ============================================
 // ✅ BRANCH CONFIGURATION
@@ -190,6 +190,7 @@ const STAGES = {
   AWAITING_TEST_TYPE: 'awaiting_test_type',
   AWAITING_TEST_DETAILS: 'awaiting_test_details',
   AWAITING_ADDRESS: 'awaiting_address',
+  AWAITING_CONFIRM_NAME: 'awaiting_confirm_name',
   EXECUTIVE_NOTIFIED: 'executive_notified',
   CONNECTED: 'connected',
   CONVERTED: 'converted',
@@ -214,7 +215,7 @@ async function sendWithRetry(fn, retries = 2, delay = 1000) {
   }
 }
 
-let db, processedCollection, patientsCollection, missCallsCollection, chatSessionsCollection, chatMessagesCollection, followupCollection;
+let db, processedCollection, patientsCollection, missCallsCollection, chatSessionsCollection, chatMessagesCollection, followupCollection, executiveMessagesCollection;
 
 async function connectDB() {
   try {
@@ -235,6 +236,7 @@ async function connectDB() {
     chatSessionsCollection = db.collection('chat_sessions');
     chatMessagesCollection = db.collection('chat_messages');
     followupCollection = db.collection('followups');
+    executiveMessagesCollection = db.collection('executive_messages');
     
     await processedCollection.createIndex({ messageId: 1 }, { unique: true });
     await patientsCollection.createIndex({ patientPhone: 1, source: 1 }, { unique: true });
@@ -244,6 +246,7 @@ async function connectDB() {
     await chatSessionsCollection.createIndex({ patientPhone: 1, status: 1 });
     await chatMessagesCollection.createIndex({ sessionToken: 1, timestamp: 1 });
     await followupCollection.createIndex({ patientId: 1, type: 1 });
+    await executiveMessagesCollection.createIndex({ executiveNumber: 1, timestamp: -1 });
     
     console.log('✅ Indexes created');
     return true;
@@ -318,7 +321,7 @@ async function sendWatiTemplateMessage(whatsappNumber, templateName, parameters)
 }
 
 // ============================================
-// ✅ HEALTH CAMPAIGN NOTIFICATION (Single template)
+// ✅ HEALTH CAMPAIGN NOTIFICATION
 // ============================================
 async function sendHealthCampaignNotification(executiveNumber, patientName, patientPhone, testName, chatToken) {
   const istTime = getISTDateTime();
@@ -344,7 +347,7 @@ async function sendHealthCampaignNotification(executiveNumber, patientName, pati
 }
 
 // ============================================
-// ✅ LEAD NOTIFICATION (Regular Campaign - Round Robin)
+// ✅ LEAD NOTIFICATION (Regular Campaign)
 // ============================================
 async function sendLeadNotification(executiveNumber, patientName, patientPhone, branch, testDetails, testType, chatToken) {
   const istTime = getISTDateTime();
@@ -369,7 +372,7 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK (Regular Miss Call - NO CHANGES)
+// ✅ TATA TELE WEBHOOK (Regular Miss Call - Same as before)
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -473,7 +476,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK (Health Campaign + Regular Campaign)
+// ✅ WATI WEBHOOK (With Executive Message Counting)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -492,11 +495,25 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // ✅ Skip messages from executives
+    // ✅ COUNT EXECUTIVE MESSAGES BUT DO NOT SKIP
     if (EXECUTIVE_NUMBERS.includes(senderNumber)) {
-      console.log(`⏭️ Skipping message from executive: ${senderNumber}`);
-      await markMessageProcessed(msgId);
-      return res.sendStatus(200);
+      // Count executive messages
+      const execCount = await executiveMessagesCollection.countDocuments({ executiveNumber: senderNumber });
+      const newCount = execCount + 1;
+      
+      // Store executive message
+      await executiveMessagesCollection.insertOne({
+        executiveNumber: senderNumber,
+        message: (msg.text || msg.body || '').trim(),
+        timestamp: new Date(),
+        istTime: getISTTime(),
+        messageCount: newCount
+      });
+      
+      console.log(`📊 EXECUTIVE MESSAGE #${newCount} from ${senderNumber}`);
+      console.log(`📝 Message: "${msg.text || msg.body || ''}"`);
+      
+      // ✅ CONTINUE PROCESSING - DO NOT SKIP
     }
 
     if (msg.eventType && msg.eventType !== 'message') {
@@ -599,7 +616,7 @@ app.post('/wati-webhook', async (req, res) => {
         
         console.log(`✅ New Health Campaign patient created - Campaign: ${detectedCampaign}, Test: ${detectedTest}`);
         
-        // ✅ ASK FOR NAME (Text message, not template)
+        // Ask for name
         await sendWatiTemplateMessage(senderNumber, TEMPLATE_NAME, [{ name: '1', value: `Please share your name for ${detectedTest}` }]);
         console.log(`✅ Asked for name to ${senderNumber}`);
         
@@ -627,7 +644,7 @@ app.post('/wati-webhook', async (req, res) => {
         patient = await patientsCollection.findOne({ _id: patient._id });
         console.log(`✅ Patient converted to Health Campaign - ${detectedCampaign} - Test: ${detectedTest}`);
         
-        // ✅ ASK FOR NAME (Text message)
+        // Ask for name
         await sendWatiTemplateMessage(senderNumber, TEMPLATE_NAME, [{ name: '1', value: `Please share your name for ${detectedTest}` }]);
         console.log(`✅ Asked for name to ${senderNumber}`);
         
@@ -676,7 +693,7 @@ app.post('/wati-webhook', async (req, res) => {
           patient = await patientsCollection.findOne({ _id: patient._id });
           console.log(`✅ Name saved: "${finalMessage}" → Stage: AWAITING_CONFIRM_NAME`);
           
-          // ✅ ASK FOR CONFIRMATION (Text message)
+          // Ask for confirmation
           await sendWatiTemplateMessage(senderNumber, TEMPLATE_NAME, [{ name: '1', value: `Is your name "${finalMessage}"? Reply YES or NO` }]);
           console.log(`✅ Asked for name confirmation to ${senderNumber}`);
           
@@ -715,7 +732,7 @@ app.post('/wati-webhook', async (req, res) => {
             );
             console.log(`✅ Health Campaign lead sent to ${HEALTH_EXECUTIVE.number}`);
             
-            // ✅ THANK YOU MESSAGE (Text message)
+            // Thank you message
             await sendWatiTemplateMessage(senderNumber, TEMPLATE_NAME, [{ name: '1', value: `Thank you! Our health expert will contact you shortly regarding ${patient.testType}.` }]);
             console.log(`✅ Thank you sent to ${senderNumber}`);
             
@@ -1081,6 +1098,18 @@ app.get('/admin/executive-stats', async (req, res) => {
   }
 });
 
+app.get('/admin/executive-messages', async (req, res) => {
+  try {
+    const messages = await executiveMessagesCollection.find({})
+      .sort({ timestamp: -1 })
+      .limit(100)
+      .toArray();
+    res.json({ success: true, messages });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/admin/reset-executive-stats', async (req, res) => {
   try {
     const { password } = req.body;
@@ -1106,6 +1135,7 @@ app.get('/health', (req, res) => {
     time: getISTTime(),
     system: 'Health Campaign System',
     health_executive: HEALTH_EXECUTIVE.number,
+    health_campaign_template: HEALTH_CAMPAIGN_TEMPLATE,
     women_tests: WOMEN_TESTS,
     men_tests: MEN_TESTS
   });
@@ -1118,13 +1148,24 @@ app.get('/', (req, res) => {
     port: PORT,
     time: getISTTime(),
     health_executive: HEALTH_EXECUTIVE.number,
+    health_campaign_template: HEALTH_CAMPAIGN_TEMPLATE,
     women_tests: WOMEN_TESTS,
     men_tests: MEN_TESTS,
     features: {
       health_campaign: 'Women + Men tests with single executive',
       flow: 'Test Select → Name → Confirm Name → Executive Notification',
       regular_campaign: 'Round robin to 4 executives',
-      anti_spam: '2-hour cooldown'
+      anti_spam: '2-hour cooldown',
+      executive_messages: 'Counted and stored in database'
+    },
+    endpoints: {
+      tata_misscall: '/tata-misscall-whatsapp',
+      wati_webhook: '/wati-webhook',
+      executive_chat: '/executive-chat/:token',
+      health: '/health',
+      admin: '/admin',
+      executive_stats: '/admin/executive-stats',
+      executive_messages: '/admin/executive-messages'
     }
   });
 });
@@ -1142,6 +1183,7 @@ try {
     req.chatSessionsCollection = chatSessionsCollection;
     req.chatMessagesCollection = chatMessagesCollection;
     req.followupCollection = followupCollection;
+    req.executiveMessagesCollection = executiveMessagesCollection;
     req.STAGES = STAGES;
     next();
   }, dashboardRouter);
@@ -1151,7 +1193,7 @@ try {
   app.get('/admin', (req, res) => {
     res.json({ 
       message: 'Admin dashboard not configured', 
-      status: 'available endpoints: /admin/executive-stats, /admin/cache-stats, /admin/clear-cache, /admin/reset-executive-stats'
+      status: 'available endpoints: /admin/executive-stats, /admin/executive-messages, /admin/cache-stats, /admin/clear-cache, /admin/reset-executive-stats'
     });
   });
 }
@@ -1164,13 +1206,14 @@ async function startServer() {
   console.log(`📍 Configured PORT: ${PORT}`);
   console.log(`📍 Node version: ${process.version}`);
   console.log(`🏥 Health Campaign Executive: ${HEALTH_EXECUTIVE.number}`);
+  console.log(`📋 Health Campaign Template: ${HEALTH_CAMPAIGN_TEMPLATE}`);
   console.log(`👩 Women Tests: ${WOMEN_TESTS.join(', ')}`);
   console.log(`👨 Men Tests: ${MEN_TESTS.join(', ')}`);
   console.log(`👥 Regular Executives (Round Robin):`);
   EXECUTIVES_LIST.forEach((e, i) => {
     console.log(`   ${i + 1}. ${e.name} - ${e.number}`);
   });
-  console.log(`⏭️ Skipping messages from executives: ${EXECUTIVE_NUMBERS.join(', ')}`);
+  console.log(`📊 Tracking messages from executives: ${EXECUTIVE_NUMBERS.join(', ')}`);
   
   try {
     await connectDB();
@@ -1185,6 +1228,7 @@ async function startServer() {
       console.log(`📍 Host: ${HOST}`);
       console.log(`📍 Time: ${getISTTime()}`);
       console.log(`🏥 Health Campaign Executive: ${HEALTH_EXECUTIVE.number}`);
+      console.log(`📋 Health Campaign Template: ${HEALTH_CAMPAIGN_TEMPLATE}`);
       console.log(`📍 WATI Webhook: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/wati-webhook`);
       console.log(`📍 Miss Call Webhook: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/tata-misscall-whatsapp`);
       console.log('='.repeat(60));
@@ -1203,9 +1247,14 @@ async function startServer() {
         console.log(`   ${i + 1}. ${e.name} - ${e.number}`);
       });
       console.log('='.repeat(60));
+      console.log('📊 EXECUTIVE MESSAGE TRACKING:');
+      console.log('   ✅ Executive messages are COUNTED and STORED');
+      console.log('   ✅ Messages are NOT SKIPPED');
+      console.log('   ✅ View counts at /admin/executive-messages');
+      console.log('='.repeat(60));
       console.log('🛡️ OTHER FEATURES:');
       console.log('   ✅ Anti-Spam Cooldown (2 hours)');
-      console.log('   ✅ Executive Messages Skipped');
+      console.log('   ✅ Executive Messages Counted');
       console.log('   ✅ Rate Limiting (20 req/sec)');
       console.log('   ✅ Only one template needed: health_campaign_lead');
       console.log('='.repeat(60) + '\n');
