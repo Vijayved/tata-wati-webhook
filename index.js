@@ -474,7 +474,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK (With Blood Test Detection + Address Collection)
+// ✅ WATI WEBHOOK (With Blood Test Priority)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -531,7 +531,7 @@ app.post('/wati-webhook', async (req, res) => {
     
     console.log(`📝 Message: "${finalMessage}" from ${senderNumber}`);
     
-    // ✅ BLOOD TEST DETECTION - UPDATED
+    // ✅ BLOOD TEST DETECTION - HIGHEST PRIORITY
     const lowerMsg = finalMessage.toLowerCase();
     const isBloodTestCampaign = 
       lowerMsg.includes('blood test') ||
@@ -544,7 +544,7 @@ app.post('/wati-webhook', async (req, res) => {
     
     console.log(`🔍 Blood Test Campaign Detected: ${isBloodTestCampaign ? '✅ YES' : '❌ NO'}`);
     
-    // ✅ FIRST CHECK IF PATIENT EXISTS
+    // ✅ Find existing patient
     let patient = await patientsCollection.findOne({
       patientPhone: senderNumber,
       source: 'misscall'
@@ -556,6 +556,143 @@ app.post('/wati-webhook', async (req, res) => {
         source: 'wati_campaign'
       });
     }
+    
+    // ✅ CRITICAL: If blood test detected, handle it FIRST (before classification)
+    if (isBloodTestCampaign) {
+      console.log(`🩸 BLOOD TEST CAMPAIGN FLOW - Processing...`);
+      
+      if (!patient) {
+        // Create new patient for blood test
+        const assignedExecutive = getNextExecutive();
+        if (!assignedExecutive) {
+          console.log('❌ No executives available!');
+          await markMessageProcessed(msgId);
+          return res.sendStatus(200);
+        }
+        
+        assignedExecutive.totalAssigned += 1;
+        
+        await patientsCollection.insertOne({
+          patientName: '',
+          patientPhone: senderNumber,
+          branch: 'Main Branch',
+          testType: 'Blood Test',
+          testDetails: 'Home Collection',
+          address: '',
+          campaign: 'blood_test',
+          executiveNumber: assignedExecutive.number,
+          executiveName: assignedExecutive.name,
+          source: 'wati_campaign',
+          currentStage: STAGES.AWAITING_ADDRESS,
+          status: 'pending',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          welcomeSent: false,
+          patientMessages: [{ text: finalMessage, timestamp: new Date() }]
+        });
+        
+        console.log(`✅ New Blood Test patient created - Executive: ${assignedExecutive.name}`);
+        
+        // Send blood test welcome message
+        await sendWatiTemplateMessage(senderNumber, BLOOD_TEST_TEMPLATE_NAME, [{ name: '1', value: 'Blood Test' }]);
+        console.log(`✅ Blood test welcome sent to ${senderNumber}`);
+        
+        await markMessageProcessed(msgId);
+        return res.sendStatus(200);
+      }
+      
+      // Existing patient - Convert to blood test campaign if not already
+      if (patient.campaign !== 'blood_test') {
+        console.log(`🩸 Converting existing patient (${patient.campaign}) to blood_test campaign...`);
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          {
+            $set: {
+              campaign: 'blood_test',
+              testType: 'Blood Test',
+              testDetails: 'Home Collection',
+              currentStage: STAGES.AWAITING_ADDRESS,
+              updatedAt: new Date()
+            }
+          }
+        );
+        patient = await patientsCollection.findOne({ _id: patient._id });
+        console.log(`✅ Patient converted to Blood Test campaign - Stage: ${STAGES.AWAITING_ADDRESS}`);
+        
+        // Send blood test welcome message
+        await sendWatiTemplateMessage(senderNumber, BLOOD_TEST_TEMPLATE_NAME, [{ name: '1', value: 'Blood Test' }]);
+        console.log(`✅ Blood test welcome sent to ${senderNumber}`);
+        
+        await markMessageProcessed(msgId);
+        return res.sendStatus(200);
+      }
+      
+      // Already blood test campaign - just store message and check for address
+      if (patient.campaign === 'blood_test') {
+        // Store message
+        await patientsCollection.updateOne(
+          { _id: patient._id },
+          {
+            $push: {
+              patientMessages: {
+                $each: [{ text: finalMessage, timestamp: new Date() }],
+                $slice: -20
+              }
+            },
+            $set: { lastMessageAt: new Date() }
+          }
+        );
+        
+        await chatMessagesCollection.insertOne({
+          patientId: patient._id,
+          patientPhone: patient.patientPhone,
+          sender: 'patient',
+          text: finalMessage,
+          timestamp: new Date(),
+          source: patient.source
+        });
+        
+        // Check if this is an address (more than 10 chars, not a command)
+        const isAddress = finalMessage.length > 10 && 
+                          !finalMessage.toLowerCase().includes('book') &&
+                          !finalMessage.toLowerCase().includes('test');
+        
+        if (patient.currentStage === STAGES.AWAITING_ADDRESS && isAddress) {
+          console.log(`✅ Blood Test - Address detected: "${finalMessage.substring(0, 50)}..."`);
+          await patientsCollection.updateOne(
+            { _id: patient._id },
+            {
+              $set: {
+                address: finalMessage,
+                currentStage: STAGES.EXECUTIVE_NOTIFIED
+              }
+            }
+          );
+          patient = await patientsCollection.findOne({ _id: patient._id });
+          
+          // Send notification to executive
+          const session = await getOrCreateChatSession(patient);
+          const executiveNumber = patient.executiveNumber;
+          
+          if (executiveNumber) {
+            await sendBloodTestNotification(
+              executiveNumber,
+              senderNumber,
+              finalMessage,
+              session.sessionToken
+            );
+            console.log(`✅ Blood Test lead sent to ${executiveNumber} - Address: ${finalMessage.substring(0, 50)}...`);
+          }
+        }
+        
+        await markMessageProcessed(msgId);
+        return res.sendStatus(200);
+      }
+    }
+    
+    // ============================================
+    // REGULAR CAMPAIGN FLOW (No Blood Test)
+    // ============================================
     
     if (!patient) {
       console.log(`⚠️ No patient found for ${senderNumber}, creating new patient...`);
@@ -572,14 +709,14 @@ app.post('/wati-webhook', async (req, res) => {
         patientName: '',
         patientPhone: senderNumber,
         branch: 'Main Branch',
-        testType: isBloodTestCampaign ? 'Blood Test' : '',
-        testDetails: isBloodTestCampaign ? 'Home Collection' : '',
+        testType: '',
+        testDetails: '',
         address: '',
-        campaign: isBloodTestCampaign ? 'blood_test' : 'regular',
+        campaign: 'regular',
         executiveNumber: assignedExecutive.number,
         executiveName: assignedExecutive.name,
         source: 'wati_campaign',
-        currentStage: isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME,
+        currentStage: STAGES.AWAITING_NAME,
         status: 'pending',
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -588,48 +725,16 @@ app.post('/wati-webhook', async (req, res) => {
       });
       
       patient = await patientsCollection.findOne({ patientPhone: senderNumber });
-      console.log(`✅ New patient created - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}, Executive: ${assignedExecutive.name}`);
+      console.log(`✅ New regular patient created - Executive: ${assignedExecutive.name}`);
       
-      // Send welcome message based on campaign
-      if (isBloodTestCampaign) {
-        await sendWatiTemplateMessage(senderNumber, BLOOD_TEST_TEMPLATE_NAME, [{ name: '1', value: 'Blood Test' }]);
-        console.log(`✅ Blood test welcome sent to ${senderNumber}`);
-      } else {
-        await sendWatiTemplateMessage(senderNumber, TEMPLATE_NAME, [{ name: '1', value: 'Main Branch' }]);
-        console.log(`✅ Regular welcome sent to ${senderNumber}`);
-      }
+      await sendWatiTemplateMessage(senderNumber, TEMPLATE_NAME, [{ name: '1', value: 'Main Branch' }]);
+      console.log(`✅ Regular welcome sent to ${senderNumber}`);
       
       await markMessageProcessed(msgId);
       return res.sendStatus(200);
     }
     
-    // ✅ CRITICAL FIX: If blood test detected and patient is in regular campaign, update to blood test
-    if (isBloodTestCampaign && patient.campaign !== 'blood_test') {
-      console.log(`🩸 Converting patient from ${patient.campaign} to blood_test campaign...`);
-      await patientsCollection.updateOne(
-        { _id: patient._id },
-        {
-          $set: {
-            campaign: 'blood_test',
-            testType: 'Blood Test',
-            testDetails: 'Home Collection',
-            currentStage: STAGES.AWAITING_ADDRESS,
-            updatedAt: new Date()
-          }
-        }
-      );
-      patient = await patientsCollection.findOne({ _id: patient._id });
-      console.log(`✅ Patient converted to Blood Test campaign - Stage: ${STAGES.AWAITING_ADDRESS}`);
-      
-      // Send blood test welcome message
-      await sendWatiTemplateMessage(senderNumber, BLOOD_TEST_TEMPLATE_NAME, [{ name: '1', value: 'Blood Test' }]);
-      console.log(`✅ Blood test welcome sent to ${senderNumber}`);
-      
-      await markMessageProcessed(msgId);
-      return res.sendStatus(200);
-    }
-    
-    console.log(`📋 Current State - Campaign: ${patient.campaign}, Stage: ${patient.currentStage}, Executive: ${patient.executiveName || 'Not assigned'}, Address: "${patient.address || ''}"`);
+    console.log(`📋 Regular Campaign - Stage: ${patient.currentStage}, Executive: ${patient.executiveName}`);
     
     // Store message
     await patientsCollection.updateOne(
@@ -654,9 +759,8 @@ app.post('/wati-webhook', async (req, res) => {
       source: patient.source
     });
     
-    // 🔥 HYBRID AI CLASSIFICATION
+    // Classification for regular campaign
     const result = await classifyWithStage(finalMessage, patient.currentStage);
-    
     console.log(`🔍 Classification: ${result.category} (${result.method}, confidence: ${result.confidence})`);
     
     let updateFields = {};
@@ -672,76 +776,50 @@ app.post('/wati-webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
-      // 🩸 BLOOD TEST CAMPAIGN HANDLING
-      if (patient.campaign === 'blood_test') {
-        if (patient.currentStage === STAGES.AWAITING_ADDRESS || result.category === 'ADDRESS') {
-          updateFields.address = finalMessage;
+      switch (result.category) {
+        case 'PATIENT_NAME':
+          updateFields.patientName = result.value;
+          updateFields.currentStage = STAGES.AWAITING_TEST_TYPE;
+          stageChanged = true;
+          console.log(`✅ Name saved: "${result.value}" → Stage: ${STAGES.AWAITING_TEST_TYPE}`);
+          break;
+          
+        case 'TEST_TYPE':
+          updateFields.testType = result.value;
+          updateFields.currentStage = STAGES.AWAITING_TEST_DETAILS;
+          stageChanged = true;
+          console.log(`✅ Test type saved: "${result.value}" → Stage: ${STAGES.AWAITING_TEST_DETAILS}`);
+          break;
+          
+        case 'TEST_DETAILS':
+          updateFields.testDetails = result.value;
           updateFields.currentStage = STAGES.EXECUTIVE_NOTIFIED;
           stageChanged = true;
           shouldNotifyExecutive = true;
-          console.log(`✅ Blood Test - Address saved: "${finalMessage.substring(0, 50)}..." → Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
-        }
-        
-      } else {
-        // Regular campaign handling
-        switch (result.category) {
-          case 'PATIENT_NAME':
-            updateFields.patientName = result.value;
-            updateFields.currentStage = STAGES.AWAITING_TEST_TYPE;
-            stageChanged = true;
-            console.log(`✅ Name saved: "${result.value}" → Stage: ${STAGES.AWAITING_TEST_TYPE}`);
-            break;
-            
-          case 'TEST_TYPE':
-            updateFields.testType = result.value;
-            updateFields.currentStage = STAGES.AWAITING_TEST_DETAILS;
-            stageChanged = true;
-            console.log(`✅ Test type saved: "${result.value}" → Stage: ${STAGES.AWAITING_TEST_DETAILS}`);
-            break;
-            
-          case 'TEST_DETAILS':
-            updateFields.testDetails = result.value;
-            updateFields.currentStage = STAGES.EXECUTIVE_NOTIFIED;
-            stageChanged = true;
-            shouldNotifyExecutive = true;
-            if (result.extractedTest && (!patient.testType || patient.testType === '')) {
-              updateFields.testType = result.extractedTest;
-              console.log(`✅ Auto-filled test type: ${result.extractedTest}`);
-            }
-            console.log(`✅ Test details saved: "${result.value}" → Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
-            break;
-            
-          case 'GREETING':
-            console.log(`👋 Greeting detected, no action needed`);
-            break;
-        }
+          if (result.extractedTest && (!patient.testType || patient.testType === '')) {
+            updateFields.testType = result.extractedTest;
+            console.log(`✅ Auto-filled test type: ${result.extractedTest}`);
+          }
+          console.log(`✅ Test details saved: "${result.value}" → Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
+          break;
+          
+        case 'GREETING':
+          console.log(`👋 Greeting detected, no action needed`);
+          break;
       }
       
       if (stageChanged) {
         await patientsCollection.updateOne({ _id: patient._id }, { $set: updateFields });
         patient = await patientsCollection.findOne({ _id: patient._id });
-        console.log(`🔄 Patient updated - Campaign: ${patient.campaign}, Stage: ${patient.currentStage}, Executive: ${patient.executiveName}`);
       }
-    } else {
-      console.log(`⏭️ Message ignored (confidence: ${result.confidence}, category: ${result.category})`);
     }
     
-    // Send notification to executive
+    // Send notification to executive for regular campaign
     if (shouldNotifyExecutive) {
       const session = await getOrCreateChatSession(patient);
       const executiveNumber = patient.executiveNumber;
       
-      if (!executiveNumber) {
-        console.log(`❌ No executive assigned for patient ${senderNumber}`);
-      } else if (patient.campaign === 'blood_test') {
-        await sendBloodTestNotification(
-          executiveNumber,
-          senderNumber,
-          patient.address || 'Not Provided',
-          session.sessionToken
-        );
-        console.log(`✅ Blood Test lead sent to ${executiveNumber} - Phone: ${senderNumber}, Address: ${(patient.address || 'Not Provided').substring(0, 30)}...`);
-      } else {
+      if (executiveNumber) {
         await sendLeadNotification(
           executiveNumber,
           patient.patientName || 'Patient',
@@ -1081,8 +1159,8 @@ async function startServer() {
       console.log('='.repeat(60));
       console.log('🩸 BLOOD TEST CAMPAIGN:');
       console.log('   ✅ Detects "FULL BODY BLOODTEST 3000" button click');
-      console.log('   ✅ Detects blood test keywords in messages');
-      console.log('   ✅ Converts existing regular patients to blood_test campaign');
+      console.log('   ✅ Highest priority - bypasses regular classification');
+      console.log('   ✅ Converts existing regular patients to blood_test');
       console.log('   ✅ Asks for Address only');
       console.log('   ✅ Sends Phone + Address to Executive');
       console.log(`   ✅ Template: ${BLOOD_TEST_TEMPLATE_NAME}`);
@@ -1092,8 +1170,7 @@ async function startServer() {
       console.log('   ✅ Executive Messages Skipped');
       console.log('   ✅ Rate Limiting (20 req/sec)');
       console.log('   ✅ Patient can reply anytime, system remembers stage');
-      console.log('   ✅ Duplicate patient fix (checks existing before creating)');
-      console.log('   ✅ Blood test campaign override for existing patients');
+      console.log('   ✅ Blood test campaign has highest priority');
       console.log('='.repeat(60) + '\n');
     });
     
