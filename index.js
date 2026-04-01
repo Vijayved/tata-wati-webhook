@@ -110,7 +110,9 @@ const TATA_SECRET = process.env.TATA_SECRET || 'tata_webhook_secret';
 const TEMPLATE_NAME = process.env.MISSCALL_TEMPLATE_NAME || 'misscall_welcome_v3';
 const LEAD_TEMPLATE_NAME = 'lead_notification_v6';
 const BLOOD_TEST_NUMBER = process.env.BLOOD_TEST_NUMBER || '919725504245';
-const BLOOD_TEST_TEMPLATE_NAME = 'blood_test_book';
+const BLOOD_TEST_TEMPLATE_NAME = process.env.BLOOD_TEST_TEMPLATE_NAME || 'blood_test_book';
+
+console.log(`📋 Blood Test Template: ${BLOOD_TEST_TEMPLATE_NAME}`);
 
 // ============================================
 // ✅ EXECUTIVE NUMBERS (Round Robin)
@@ -132,17 +134,13 @@ function getNextExecutive() {
   return exec;
 }
 
-// ✅ Executive numbers to skip (all executives + old numbers)
+// ✅ Executive numbers to skip
 const EXECUTIVE_NUMBERS = [
-  '8488931212',   // Aditi
-  '7490029085',   // Khyati
-  '9274682553',   // Jay
-  '9558591212',   // Mital
-  '919106959092', // Old executive number (to skip)
-  '917698011233'  // Manager
+  '8488931212', '7490029085', '9274682553', '9558591212',
+  '919106959092', '917698011233'
 ];
 
-console.log(`👥 Executive Numbers (Skipping messages from): ${EXECUTIVE_NUMBERS.join(', ')}`);
+console.log(`👥 Skipping messages from executives: ${EXECUTIVE_NUMBERS.join(', ')}`);
 
 // ============================================
 // ✅ BRANCH CONFIGURATION
@@ -334,7 +332,7 @@ async function sendLeadNotification(executiveNumber, patientName, patientPhone, 
 }
 
 // ============================================
-// ✅ BLOOD TEST NOTIFICATION (Using blood_test_book template)
+// ✅ BLOOD TEST NOTIFICATION (blood_test_book template)
 // ============================================
 async function sendBloodTestNotification(executiveNumber, patientPhone, address, chatToken) {
   const istTime = getISTDateTime();
@@ -350,6 +348,9 @@ async function sendBloodTestNotification(executiveNumber, patientPhone, address,
     { name: "3", value: istTime },
     { name: "4", value: whatsappLink }
   ];
+  
+  console.log(`🩸 Sending BLOOD TEST notification to ${executiveNumber} with template: ${BLOOD_TEST_TEMPLATE_NAME}`);
+  console.log(`   Parameters: Phone=${safePhone}, Address=${safeAddress.substring(0, 50)}..., Time=${istTime}`);
   
   return await sendWatiTemplateMessage(executiveNumber, BLOOD_TEST_TEMPLATE_NAME, parameters);
 }
@@ -509,7 +510,6 @@ app.post('/wati-webhook', async (req, res) => {
     // Get message text from various possible sources
     let messageText = (msg.text || msg.body || '').trim();
     
-    // Check for button reply
     let buttonText = '';
     if (msg.buttonReply && msg.buttonReply.text) {
       buttonText = msg.buttonReply.text;
@@ -531,7 +531,7 @@ app.post('/wati-webhook', async (req, res) => {
     
     console.log(`📝 Message: "${finalMessage}" from ${senderNumber}`);
     
-    // ✅ BLOOD TEST DETECTION - HIGHEST PRIORITY
+    // ✅ BLOOD TEST DETECTION
     const lowerMsg = finalMessage.toLowerCase();
     const isBloodTestCampaign = 
       lowerMsg.includes('blood test') ||
@@ -557,7 +557,9 @@ app.post('/wati-webhook', async (req, res) => {
       });
     }
     
-    // ✅ CRITICAL: If blood test detected, handle it FIRST (before classification)
+    // ============================================
+    // ✅ BLOOD TEST CAMPAIGN FLOW (HIGHEST PRIORITY)
+    // ============================================
     if (isBloodTestCampaign) {
       console.log(`🩸 BLOOD TEST CAMPAIGN FLOW - Processing...`);
       
@@ -627,7 +629,7 @@ app.post('/wati-webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
-      // Already blood test campaign - just store message and check for address
+      // Already blood test campaign - handle address
       if (patient.campaign === 'blood_test') {
         // Store message
         await patientsCollection.updateOne(
@@ -652,10 +654,11 @@ app.post('/wati-webhook', async (req, res) => {
           source: patient.source
         });
         
-        // Check if this is an address (more than 10 chars, not a command)
+        // Check if this is an address
         const isAddress = finalMessage.length > 10 && 
                           !finalMessage.toLowerCase().includes('book') &&
-                          !finalMessage.toLowerCase().includes('test');
+                          !finalMessage.toLowerCase().includes('test') &&
+                          !finalMessage.toLowerCase().includes('blood');
         
         if (patient.currentStage === STAGES.AWAITING_ADDRESS && isAddress) {
           console.log(`✅ Blood Test - Address detected: "${finalMessage.substring(0, 50)}..."`);
@@ -670,11 +673,12 @@ app.post('/wati-webhook', async (req, res) => {
           );
           patient = await patientsCollection.findOne({ _id: patient._id });
           
-          // Send notification to executive
+          // Send notification to executive with blood_test_book template
           const session = await getOrCreateChatSession(patient);
           const executiveNumber = patient.executiveNumber;
           
           if (executiveNumber) {
+            console.log(`🩸 Sending BLOOD TEST lead to executive: ${executiveNumber}`);
             await sendBloodTestNotification(
               executiveNumber,
               senderNumber,
@@ -682,7 +686,11 @@ app.post('/wati-webhook', async (req, res) => {
               session.sessionToken
             );
             console.log(`✅ Blood Test lead sent to ${executiveNumber} - Address: ${finalMessage.substring(0, 50)}...`);
+          } else {
+            console.log(`❌ No executive assigned for blood test patient ${senderNumber}`);
           }
+        } else {
+          console.log(`📝 Blood Test - Message stored, waiting for address. Current stage: ${patient.currentStage}`);
         }
         
         await markMessageProcessed(msgId);
@@ -1058,6 +1066,7 @@ app.get('/health', (req, res) => {
     mongodb: db ? 'connected' : 'disconnected',
     time: getISTTime(),
     system: 'Miss Call System with Blood Test Campaign',
+    blood_test_template: BLOOD_TEST_TEMPLATE_NAME,
     executives: EXECUTIVES_LIST.map(e => ({ name: e.name, number: e.number, totalAssigned: e.totalAssigned }))
   });
 });
@@ -1068,6 +1077,7 @@ app.get('/', (req, res) => {
     version: '5.0.0',
     port: PORT,
     time: getISTTime(),
+    blood_test_template: BLOOD_TEST_TEMPLATE_NAME,
     executives: EXECUTIVES_LIST.map(e => ({ name: e.name, number: e.number })),
     features: {
       classification: 'Rules + OpenAI (80/20 hybrid)',
@@ -1075,8 +1085,7 @@ app.get('/', (req, res) => {
       assignment: 'Round Robin',
       blood_test_template: BLOOD_TEST_TEMPLATE_NAME,
       anti_spam: '2-hour cooldown',
-      rate_limit: '20 req/sec',
-      stage_persistence: 'Patient can reply anytime, system remembers stage'
+      rate_limit: '20 req/sec'
     },
     endpoints: {
       tata_misscall: '/tata-misscall-whatsapp',
@@ -1123,6 +1132,7 @@ async function startServer() {
   console.log('🔄 Initializing Miss Call System with Blood Test Campaign...');
   console.log(`📍 Configured PORT: ${PORT}`);
   console.log(`📍 Node version: ${process.version}`);
+  console.log(`🩸 Blood Test Template: ${BLOOD_TEST_TEMPLATE_NAME}`);
   console.log(`👥 Executives (Round Robin):`);
   EXECUTIVES_LIST.forEach((e, i) => {
     console.log(`   ${i + 1}. ${e.name} - ${e.number}`);
@@ -1151,26 +1161,18 @@ async function startServer() {
         console.log(`   ${i + 1}. ${e.name} - ${e.number}`);
       });
       console.log('='.repeat(60));
-      console.log('🧠 HYBRID AI CLASSIFIER ENABLED:');
-      console.log('   ✅ Fast Rules (0-5ms) - 80% of messages');
-      console.log('   ✅ OpenAI Fallback (500-1500ms) - 20% of messages');
-      console.log('   ✅ Stage-aware Classification');
-      console.log('   ✅ Stage Persistence - Patient can reply anytime');
-      console.log('='.repeat(60));
       console.log('🩸 BLOOD TEST CAMPAIGN:');
-      console.log('   ✅ Detects "FULL BODY BLOODTEST 3000" button click');
+      console.log(`   ✅ Template: ${BLOOD_TEST_TEMPLATE_NAME}`);
+      console.log('   ✅ Detects "Full Body BloodTest 3000" button click');
       console.log('   ✅ Highest priority - bypasses regular classification');
       console.log('   ✅ Converts existing regular patients to blood_test');
       console.log('   ✅ Asks for Address only');
       console.log('   ✅ Sends Phone + Address to Executive');
-      console.log(`   ✅ Template: ${BLOOD_TEST_TEMPLATE_NAME}`);
       console.log('='.repeat(60));
       console.log('🛡️ OTHER FEATURES:');
       console.log('   ✅ Anti-Spam Cooldown (2 hours)');
       console.log('   ✅ Executive Messages Skipped');
       console.log('   ✅ Rate Limiting (20 req/sec)');
-      console.log('   ✅ Patient can reply anytime, system remembers stage');
-      console.log('   ✅ Blood test campaign has highest priority');
       console.log('='.repeat(60) + '\n');
     });
     
