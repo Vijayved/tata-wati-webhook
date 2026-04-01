@@ -355,7 +355,7 @@ async function sendBloodTestNotification(executiveNumber, patientPhone, address,
 }
 
 // ============================================
-// ✅ TATA TELE WEBHOOK (With Round Robin & Blood Test Detection)
+// ✅ TATA TELE WEBHOOK
 // ============================================
 app.post('/tata-misscall-whatsapp', async (req, res) => {
   try {
@@ -423,7 +423,6 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
       );
       console.log(`✅ Patient updated - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}, Executive: ${existingPatient.executiveName || 'Not assigned'}`);
     } else {
-      // ✅ Get next executive using Round Robin
       const assignedExecutive = getNextExecutive();
       if (!assignedExecutive) {
         console.log('❌ No executives available!');
@@ -475,7 +474,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK (With Executive Skip & Stage Persistence)
+// ✅ WATI WEBHOOK (With Blood Test Detection from Button)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -507,15 +506,43 @@ app.post('/wati-webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
-    let messageText = (msg.text || msg.body || (msg.listReply && msg.listReply.title) || (msg.buttonReply && msg.buttonReply.title) || '').trim();
+    // Get message text from various possible sources
+    let messageText = (msg.text || msg.body || '').trim();
     
-    if (!messageText) {
+    // Check for button reply
+    let buttonText = '';
+    if (msg.buttonReply && msg.buttonReply.text) {
+      buttonText = msg.buttonReply.text;
+    }
+    if (msg.interactiveButtonReply && msg.interactiveButtonReply.text) {
+      buttonText = msg.interactiveButtonReply.text;
+    }
+    if (msg.listReply && msg.listReply.title) {
+      buttonText = msg.listReply.title;
+    }
+    
+    const finalMessage = messageText || buttonText;
+    
+    if (!finalMessage) {
       console.log(`⚠️ Ignored blank or non-text message from ${senderNumber}`);
       await markMessageProcessed(msgId);
       return res.sendStatus(200);
     }
     
-    console.log(`📝 Message: "${messageText}" from ${senderNumber}`);
+    console.log(`📝 Message: "${finalMessage}" from ${senderNumber}`);
+    
+    // ✅ BLOOD TEST DETECTION - Check for blood test keywords
+    const lowerMsg = finalMessage.toLowerCase();
+    const isBloodTestCampaign = 
+      lowerMsg.includes('blood test') ||
+      lowerMsg.includes('bloodtest') ||
+      lowerMsg.includes('full body bloodtest') ||
+      lowerMsg.includes('full body blood test') ||
+      lowerMsg.includes('book blood test') ||
+      lowerMsg.includes('blood test booking') ||
+      (lowerMsg.includes('3000') && (lowerMsg.includes('blood') || lowerMsg.includes('test')));
+    
+    console.log(`🔍 Blood Test Campaign Detected: ${isBloodTestCampaign ? '✅ YES' : '❌ NO'}`);
     
     let patient = await patientsCollection.findOne({
       patientPhone: senderNumber,
@@ -525,23 +552,47 @@ app.post('/wati-webhook', async (req, res) => {
     if (!patient) {
       console.log(`⚠️ No patient found for ${senderNumber}, creating new patient...`);
       const assignedExecutive = getNextExecutive();
-      const result = await patientsCollection.insertOne({
+      if (!assignedExecutive) {
+        console.log('❌ No executives available!');
+        await markMessageProcessed(msgId);
+        return res.sendStatus(200);
+      }
+      
+      assignedExecutive.totalAssigned += 1;
+      
+      await patientsCollection.insertOne({
         patientName: '',
         patientPhone: senderNumber,
         branch: 'Main Branch',
-        testType: '',
-        testDetails: '',
+        testType: isBloodTestCampaign ? 'Blood Test' : '',
+        testDetails: isBloodTestCampaign ? 'Home Collection' : '',
         address: '',
-        campaign: 'regular',
-        executiveNumber: assignedExecutive ? assignedExecutive.number : EXECUTIVES_LIST[0].number,
-        executiveName: assignedExecutive ? assignedExecutive.name : EXECUTIVES_LIST[0].name,
-        source: 'misscall',
-        currentStage: STAGES.AWAITING_NAME,
+        campaign: isBloodTestCampaign ? 'blood_test' : 'regular',
+        executiveNumber: assignedExecutive.number,
+        executiveName: assignedExecutive.name,
+        source: 'wati_campaign',
+        currentStage: isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME,
         status: 'pending',
         createdAt: new Date(),
-        updatedAt: new Date()
+        updatedAt: new Date(),
+        welcomeSent: false,
+        patientMessages: [{ text: finalMessage, timestamp: new Date() }]
       });
-      patient = await patientsCollection.findOne({ _id: result.insertedId });
+      
+      patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'misscall' });
+      console.log(`✅ New patient created - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}, Executive: ${assignedExecutive.name}`);
+      
+      // Send welcome message based on campaign
+      if (isBloodTestCampaign) {
+        await sendWatiTemplateMessage(senderNumber, BLOOD_TEST_TEMPLATE_NAME, [{ name: '1', value: 'Blood Test' }]);
+        console.log(`✅ Blood test welcome sent to ${senderNumber}`);
+      } else {
+        await sendWatiTemplateMessage(senderNumber, TEMPLATE_NAME, [{ name: '1', value: 'Main Branch' }]);
+        console.log(`✅ Regular welcome sent to ${senderNumber}`);
+      }
+      
+      await markMessageProcessed(msgId);
+      return res.sendStatus(200);
     }
     
     console.log(`📋 Current State - Campaign: ${patient.campaign}, Stage: ${patient.currentStage}, Executive: ${patient.executiveName || 'Not assigned'}, Address: "${patient.address || ''}"`);
@@ -552,7 +603,7 @@ app.post('/wati-webhook', async (req, res) => {
       {
         $push: {
           patientMessages: {
-            $each: [{ text: messageText, timestamp: new Date() }],
+            $each: [{ text: finalMessage, timestamp: new Date() }],
             $slice: -20
           }
         },
@@ -564,13 +615,13 @@ app.post('/wati-webhook', async (req, res) => {
       patientId: patient._id,
       patientPhone: patient.patientPhone,
       sender: 'patient',
-      text: messageText,
+      text: finalMessage,
       timestamp: new Date(),
       source: patient.source
     });
     
     // 🔥 HYBRID AI CLASSIFICATION
-    const result = await classifyWithStage(messageText, patient.currentStage);
+    const result = await classifyWithStage(finalMessage, patient.currentStage);
     
     console.log(`🔍 Classification: ${result.category} (${result.method}, confidence: ${result.confidence})`);
     
@@ -580,7 +631,6 @@ app.post('/wati-webhook', async (req, res) => {
     
     if (result.confidence >= 0.65 && result.category !== 'IGNORE' && result.category !== 'UNKNOWN') {
       
-      // Handle ASK_AGAIN - Send clarification using existing template
       if (result.category === 'ASK_AGAIN') {
         await sendWatiTemplateMessage(senderNumber, TEMPLATE_NAME, [{ name: '1', value: result.value }]);
         console.log(`❓ Asking patient: ${result.value}`);
@@ -591,15 +641,15 @@ app.post('/wati-webhook', async (req, res) => {
       // 🩸 BLOOD TEST CAMPAIGN HANDLING
       if (patient.campaign === 'blood_test') {
         if (patient.currentStage === STAGES.AWAITING_ADDRESS || result.category === 'ADDRESS') {
-          updateFields.address = messageText;
+          updateFields.address = finalMessage;
           updateFields.currentStage = STAGES.EXECUTIVE_NOTIFIED;
           stageChanged = true;
           shouldNotifyExecutive = true;
-          console.log(`✅ Blood Test - Address saved: "${messageText.substring(0, 50)}..." → Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
+          console.log(`✅ Blood Test - Address saved: "${finalMessage.substring(0, 50)}..." → Stage: ${STAGES.EXECUTIVE_NOTIFIED}`);
         }
         
       } else {
-        // Regular campaign handling (name, test type, test details)
+        // Regular campaign handling
         switch (result.category) {
           case 'PATIENT_NAME':
             updateFields.patientName = result.value;
@@ -996,7 +1046,8 @@ async function startServer() {
       console.log('   ✅ Stage Persistence - Patient can reply anytime');
       console.log('='.repeat(60));
       console.log('🩸 BLOOD TEST CAMPAIGN:');
-      console.log('   ✅ Detects calls to Blood Test Number');
+      console.log('   ✅ Detects "FULL BODY BLOODTEST 3000" button click');
+      console.log('   ✅ Detects blood test keywords in messages');
       console.log('   ✅ Asks for Address only');
       console.log('   ✅ Sends Phone + Address to Executive');
       console.log(`   ✅ Template: ${BLOOD_TEST_TEMPLATE_NAME}`);
