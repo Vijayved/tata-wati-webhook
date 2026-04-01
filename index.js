@@ -544,10 +544,19 @@ app.post('/wati-webhook', async (req, res) => {
     
     console.log(`🔍 Blood Test Campaign Detected: ${isBloodTestCampaign ? '✅ YES' : '❌ NO'}`);
     
+    // ✅ FIRST CHECK IF PATIENT EXISTS - FIX DUPLICATE ERROR
     let patient = await patientsCollection.findOne({
       patientPhone: senderNumber,
       source: 'misscall'
     });
+    
+    if (!patient) {
+      // Also check wati_campaign source
+      patient = await patientsCollection.findOne({
+        patientPhone: senderNumber,
+        source: 'wati_campaign'
+      });
+    }
     
     if (!patient) {
       console.log(`⚠️ No patient found for ${senderNumber}, creating new patient...`);
@@ -579,7 +588,7 @@ app.post('/wati-webhook', async (req, res) => {
         patientMessages: [{ text: finalMessage, timestamp: new Date() }]
       });
       
-      patient = await patientsCollection.findOne({ patientPhone: senderNumber, source: 'misscall' });
+      patient = await patientsCollection.findOne({ patientPhone: senderNumber });
       console.log(`✅ New patient created - Campaign: ${isBloodTestCampaign ? 'Blood Test' : 'Regular'}, Stage: ${isBloodTestCampaign ? STAGES.AWAITING_ADDRESS : STAGES.AWAITING_NAME}, Executive: ${assignedExecutive.name}`);
       
       // Send welcome message based on campaign
@@ -1057,6 +1066,7 @@ async function startServer() {
       console.log('   ✅ Executive Messages Skipped');
       console.log('   ✅ Rate Limiting (20 req/sec)');
       console.log('   ✅ Patient can reply anytime, system remembers stage');
+      console.log('   ✅ Duplicate patient fix (checks existing before creating)');
       console.log('='.repeat(60) + '\n');
     });
     
