@@ -474,7 +474,7 @@ app.post('/tata-misscall-whatsapp', async (req, res) => {
 });
 
 // ============================================
-// ✅ WATI WEBHOOK (With Blood Test Detection from Button)
+// ✅ WATI WEBHOOK (With Blood Test Detection + Address Collection)
 // ============================================
 app.post('/wati-webhook', async (req, res) => {
   try {
@@ -531,7 +531,7 @@ app.post('/wati-webhook', async (req, res) => {
     
     console.log(`📝 Message: "${finalMessage}" from ${senderNumber}`);
     
-    // ✅ BLOOD TEST DETECTION - Check for blood test keywords
+    // ✅ BLOOD TEST DETECTION - UPDATED
     const lowerMsg = finalMessage.toLowerCase();
     const isBloodTestCampaign = 
       lowerMsg.includes('blood test') ||
@@ -544,14 +544,13 @@ app.post('/wati-webhook', async (req, res) => {
     
     console.log(`🔍 Blood Test Campaign Detected: ${isBloodTestCampaign ? '✅ YES' : '❌ NO'}`);
     
-    // ✅ FIRST CHECK IF PATIENT EXISTS - FIX DUPLICATE ERROR
+    // ✅ FIRST CHECK IF PATIENT EXISTS
     let patient = await patientsCollection.findOne({
       patientPhone: senderNumber,
       source: 'misscall'
     });
     
     if (!patient) {
-      // Also check wati_campaign source
       patient = await patientsCollection.findOne({
         patientPhone: senderNumber,
         source: 'wati_campaign'
@@ -599,6 +598,32 @@ app.post('/wati-webhook', async (req, res) => {
         await sendWatiTemplateMessage(senderNumber, TEMPLATE_NAME, [{ name: '1', value: 'Main Branch' }]);
         console.log(`✅ Regular welcome sent to ${senderNumber}`);
       }
+      
+      await markMessageProcessed(msgId);
+      return res.sendStatus(200);
+    }
+    
+    // ✅ CRITICAL FIX: If blood test detected and patient is in regular campaign, update to blood test
+    if (isBloodTestCampaign && patient.campaign !== 'blood_test') {
+      console.log(`🩸 Converting patient from ${patient.campaign} to blood_test campaign...`);
+      await patientsCollection.updateOne(
+        { _id: patient._id },
+        {
+          $set: {
+            campaign: 'blood_test',
+            testType: 'Blood Test',
+            testDetails: 'Home Collection',
+            currentStage: STAGES.AWAITING_ADDRESS,
+            updatedAt: new Date()
+          }
+        }
+      );
+      patient = await patientsCollection.findOne({ _id: patient._id });
+      console.log(`✅ Patient converted to Blood Test campaign - Stage: ${STAGES.AWAITING_ADDRESS}`);
+      
+      // Send blood test welcome message
+      await sendWatiTemplateMessage(senderNumber, BLOOD_TEST_TEMPLATE_NAME, [{ name: '1', value: 'Blood Test' }]);
+      console.log(`✅ Blood test welcome sent to ${senderNumber}`);
       
       await markMessageProcessed(msgId);
       return res.sendStatus(200);
@@ -1057,6 +1082,7 @@ async function startServer() {
       console.log('🩸 BLOOD TEST CAMPAIGN:');
       console.log('   ✅ Detects "FULL BODY BLOODTEST 3000" button click');
       console.log('   ✅ Detects blood test keywords in messages');
+      console.log('   ✅ Converts existing regular patients to blood_test campaign');
       console.log('   ✅ Asks for Address only');
       console.log('   ✅ Sends Phone + Address to Executive');
       console.log(`   ✅ Template: ${BLOOD_TEST_TEMPLATE_NAME}`);
@@ -1067,6 +1093,7 @@ async function startServer() {
       console.log('   ✅ Rate Limiting (20 req/sec)');
       console.log('   ✅ Patient can reply anytime, system remembers stage');
       console.log('   ✅ Duplicate patient fix (checks existing before creating)');
+      console.log('   ✅ Blood test campaign override for existing patients');
       console.log('='.repeat(60) + '\n');
     });
     
